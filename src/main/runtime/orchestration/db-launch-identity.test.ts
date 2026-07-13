@@ -1,7 +1,7 @@
 // U6 orchestration dispatch launch-ownership: identity columns, additive
 // structured launch failure alongside the retained generic error, the
 // owner-authorized forgotten transition, the tombstone reference accessor, and
-// the v5 -> v6 schema migration.
+// the v5 -> v7 / main-v6 -> v7 schema migrations.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -230,6 +230,52 @@ describe('OrchestrationDb U6 launch identity, structured failure, and forget', (
       // migrated schema and forget it.
       const task = d.createTask({ spec: 'post-migration work' })
       const ctx = d.createDispatchContext(task.id, 'term_new')
+      expect(d.forgetDispatch(ctx.id)?.status).toBe('forgotten')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Why: main shipped v6 with only the pane-identity ALTERs, so a db stamped 6
+  // must still receive the v7 rebuild — and the rebuild must carry the
+  // populated assignee_pane_key data across.
+  it('migrates a main-v6 db (pane columns only), adding U6 columns and preserving pane keys', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-main-v6-'))
+    const file = join(dir, 'orch.db')
+    try {
+      const raw = new Database(file)
+      raw.exec(`
+        CREATE TABLE dispatch_contexts (
+          id TEXT PRIMARY KEY, task_id TEXT NOT NULL, assignee_handle TEXT,
+          status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','dispatched','completed','failed','circuit_broken')),
+          failure_count INTEGER NOT NULL DEFAULT 0, last_failure TEXT,
+          dispatched_at TEXT, completed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')), last_heartbeat_at TEXT,
+          assignee_pane_key TEXT
+        );
+        INSERT INTO dispatch_contexts (id, task_id, assignee_handle, assignee_pane_key, status)
+          VALUES ('ctx_v6', 'task_v6', 'term_v6', 'tab_1:leaf_1', 'completed');
+      `)
+      raw.pragma('user_version = 6')
+      raw.close()
+
+      const d = new OrchestrationDb(file)
+      db = d
+      const row = d.getDispatchContextById('ctx_v6')
+      // Main's pane-identity data survives the rebuild.
+      expect(row?.assignee_pane_key).toBe('tab_1:leaf_1')
+      expect(row?.status).toBe('completed')
+      expect(row?.requested_agent).toBeNull()
+      expect(row?.base_agent).toBeNull()
+      expect(row?.agent_launch_failure).toBeNull()
+      // The widened CHECK and identity columns now work on the migrated schema.
+      const task = d.createTask({ spec: 'post-v6 work' })
+      const ctx = d.createDispatchContext(task.id, 'term_new', undefined, {
+        requestedAgent: FAILURE.requestedAgent,
+        baseAgent: 'codex'
+      })
+      expect(ctx.requested_agent).toBe(FAILURE.requestedAgent)
       expect(d.forgetDispatch(ctx.id)?.status).toBe('forgotten')
     } finally {
       rmSync(dir, { recursive: true, force: true })

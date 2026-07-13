@@ -538,6 +538,33 @@ describe('worktree RPC methods', () => {
     )
   })
 
+  it('returns agentTerminalHandle for a host-resolved agentLaunch create', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      dedupeWorktreeCreate: passthroughDedupe,
+      showRepo: vi.fn().mockResolvedValue(repo),
+      createManagedWorktree: vi.fn().mockResolvedValue({
+        worktree: { id: 'wt-1' },
+        startupTerminal: { spawned: true, handle: 'term_agent' }
+      })
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: WORKTREE_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('worktree.create', {
+        repo: 'repo-1',
+        name: 'agent-launch-create',
+        agentLaunch: { selection: { kind: 'agent', agent: 'codex' }, prompt: 'summarize repo' },
+        activate: true
+      })
+    )
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: { agentTerminalHandle: 'term_agent' }
+    })
+  })
+
   it('drops invalid startup launch config env at the runtime RPC boundary', async () => {
     const runtime = {
       getRuntimeId: () => 'test-runtime',

@@ -253,6 +253,39 @@ describe('buildAgentStartupPlanFromResolvedLaunch', () => {
       expect(plan?.draftPrompt).toBe(bigDraft)
     })
 
+    it('falls back to paste for an env-var draft over the win32 env-block ceiling', () => {
+      const launch = resolvedLaunch({
+        agent: 'pi',
+        request: { platform: 'win32', shell: 'powershell', targetHomePath: 'C:\\Users\\me' }
+      })
+      const bigDraft = 'x'.repeat(24_001)
+      const plan = buildAgentStartupPlanFromResolvedLaunch({
+        launch,
+        prompt: bigDraft,
+        promptDelivery: 'draft'
+      })
+      expect(plan?.launchCommand).toBe(`& 'pi'`)
+      expect(plan?.draftPrompt).toBe(bigDraft)
+      expect(plan?.env).toBeUndefined()
+    })
+
+    it('still inlines a small env-var draft on win32', () => {
+      const launch = resolvedLaunch({
+        agent: 'pi',
+        request: { platform: 'win32', shell: 'powershell', targetHomePath: 'C:\\Users\\me' }
+      })
+      const plan = buildAgentStartupPlanFromResolvedLaunch({
+        launch,
+        prompt: 'do it',
+        promptDelivery: 'draft'
+      })
+      expect(plan?.launchCommand).toBe(
+        `& 'pi'; Remove-Item Env:ORCA_PI_PREFILL -ErrorAction SilentlyContinue`
+      )
+      expect(plan?.env).toEqual({ ORCA_PI_PREFILL: 'do it' })
+      expect(plan?.draftPrompt).toBeUndefined()
+    })
+
     it('leaves submit mode unchanged (native draft flag not applied)', () => {
       const launch = resolvedLaunch({ agent: 'claude' })
       const submitted = buildAgentStartupPlanFromResolvedLaunch({

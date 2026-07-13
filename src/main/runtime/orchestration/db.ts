@@ -93,11 +93,13 @@ function exposeMessageListTimestamps(messages: MessageRow[]): MessageRow[] {
 // explicit task_title/display_name fields for orchestration worker UI labels.
 // v5 → v6 adds pane-identity columns (dispatch_contexts.assignee_pane_key,
 // messages.sender_pane_key) so worker_done ownership survives terminal handle
-// remints without accepting completions from unrelated panes; it also (U6)
+// remints without accepting completions from unrelated panes. v6 → v7 (U6)
 // widens the dispatch status CHECK to include 'forgotten' and adds nullable
 // requested_agent/base_agent/agent_launch_failure columns — a table rebuild
-// because SQLite cannot ALTER a CHECK constraint.
-const SCHEMA_VERSION = 6
+// because SQLite cannot ALTER a CHECK constraint. v7 is a separate step
+// because main shipped v6 with only the pane ALTERs; a db already stamped 6
+// would otherwise short-circuit past the rebuild.
+const SCHEMA_VERSION = 7
 
 export class OrchestrationDb {
   private db: Database.Database
@@ -298,15 +300,29 @@ export class OrchestrationDb {
           this.db.exec(`ALTER TABLE tasks ADD COLUMN display_name TEXT`)
         }
       }
-      // v5 → v6: rebuild dispatch_contexts to widen the status CHECK for the
-      // additive 'forgotten' disposition and add the U6 identity/launch-failure
-      // columns plus the pane-identity column. Guarded on the new column so a
-      // fresh v6 db (already created with the new schema by createTables) skips
-      // the rebuild. The pre-migration table is the v5 shape (neither new
-      // column set), so the INSERT..SELECT copies only v5 columns and leaves
-      // the new ones NULL.
+      // v5 → v6: pane-identity columns, exactly as main shipped them — a db
+      // stamped 6 by a main build has run precisely this step and nothing else.
       if (current < 6) {
+        if (!this.hasColumn('dispatch_contexts', 'assignee_pane_key')) {
+          this.db.exec(`ALTER TABLE dispatch_contexts ADD COLUMN assignee_pane_key TEXT`)
+        }
+        if (!this.hasColumn('messages', 'sender_pane_key')) {
+          this.db.exec(`ALTER TABLE messages ADD COLUMN sender_pane_key TEXT`)
+        }
+      }
+      // v6 → v7: rebuild dispatch_contexts to widen the status CHECK for the
+      // additive 'forgotten' disposition and add the U6 identity/launch-failure
+      // columns. Guarded on the new column so a fresh v7 db (already created
+      // with the full schema by createTables) skips the rebuild.
+      if (current < 7) {
         if (!this.hasColumn('dispatch_contexts', 'requested_agent')) {
+          // A main-v6 db has assignee_pane_key with live data that must survive
+          // the rebuild; a v5 db gains the column in the v6 step above. The
+          // hasColumn check keeps the copy list valid for any odd intermediate
+          // shape rather than assuming the pane column is present.
+          const paneKeyColumn = this.hasColumn('dispatch_contexts', 'assignee_pane_key')
+            ? ', assignee_pane_key'
+            : ''
           this.db.exec(`
             CREATE TABLE dispatch_contexts_new (
               id                    TEXT PRIMARY KEY,
@@ -327,25 +343,17 @@ export class OrchestrationDb {
             );
             INSERT INTO dispatch_contexts_new (
               id, task_id, assignee_handle, status, failure_count, last_failure,
-              dispatched_at, completed_at, created_at, last_heartbeat_at
+              dispatched_at, completed_at, created_at, last_heartbeat_at${paneKeyColumn}
             )
             SELECT
               id, task_id, assignee_handle, status, failure_count, last_failure,
-              dispatched_at, completed_at, created_at, last_heartbeat_at
+              dispatched_at, completed_at, created_at, last_heartbeat_at${paneKeyColumn}
             FROM dispatch_contexts;
             DROP TABLE dispatch_contexts;
             ALTER TABLE dispatch_contexts_new RENAME TO dispatch_contexts;
             CREATE INDEX idx_dispatch_task ON dispatch_contexts(task_id);
             CREATE INDEX idx_dispatch_status ON dispatch_contexts(status);
           `)
-        }
-        // Guarded independently of the rebuild so a db whose rebuild path was
-        // skipped (or an earlier partial rollout) still gains the pane column.
-        if (!this.hasColumn('dispatch_contexts', 'assignee_pane_key')) {
-          this.db.exec(`ALTER TABLE dispatch_contexts ADD COLUMN assignee_pane_key TEXT`)
-        }
-        if (!this.hasColumn('messages', 'sender_pane_key')) {
-          this.db.exec(`ALTER TABLE messages ADD COLUMN sender_pane_key TEXT`)
         }
       }
       this.createUndeliveredInboxIndexIfPossible()

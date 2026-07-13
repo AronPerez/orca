@@ -19,6 +19,7 @@ import {
 } from './tui-agent-startup-shell'
 import { TUI_AGENT_CONFIG } from './tui-agent-config'
 import { planHermesStartupQueryFromArgv } from './hermes-startup-query'
+import { inlineAgentDraftFitsPlatform } from './agent-draft-platform-limit'
 
 export type ResolvedAgentStartupPlanArgs = {
   launch: ResolvedAgentLaunch
@@ -103,11 +104,22 @@ function draftParts(
     return { ...NO_PROMPT, draftPrompt: trimmedPrompt }
   }
   if (draftPromptEnvVar) {
+    const commandSuffix = `${commandSeparator(shell)}${clearEnvCommand(draftPromptEnvVar, shell)}`
+    const fits = inlineAgentDraftFitsPlatform({
+      command: `${buildShellCommandFromArgv(launch.argv, shell)}${commandSuffix}`,
+      env: { ...launch.agentEnv, [draftPromptEnvVar]: trimmedPrompt },
+      platform: launch.policy.platform
+    })
+    if (!fits) {
+      // Why: Windows CreateProcess env blocks have tight ceilings; an oversized
+      // draft falls back to post-ready paste with the FULL text.
+      return { ...NO_PROMPT, draftPrompt: trimmedPrompt }
+    }
     return {
       ...NO_PROMPT,
       // Why: clear the prefill var right after launch so the draft never leaks to
       // nested shells the agent spawns.
-      commandSuffix: `${commandSeparator(shell)}${clearEnvCommand(draftPromptEnvVar, shell)}`,
+      commandSuffix,
       extraEnv: { [draftPromptEnvVar]: trimmedPrompt }
     }
   }
