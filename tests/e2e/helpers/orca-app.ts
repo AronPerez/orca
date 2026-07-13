@@ -33,6 +33,8 @@ import {
   createElectronHomeIsolation
 } from './electron-home-isolation'
 import { createSeededTestRepo, isValidGitRepo } from './seeded-test-repo'
+import type { CustomTuiAgent } from '../../../src/shared/types'
+import type { SourceControlActionRecipe } from '../../../src/shared/source-control-ai-actions'
 
 type OrcaTestFixtures = {
   electronApp: ElectronApplication
@@ -62,6 +64,17 @@ type OrcaTestFixtures = {
   // PATH/token environment. Keep this fixture-owned so tests never mutate the
   // developer's shell or already-running Orca instance.
   launchEnv: NodeJS.ProcessEnv
+  // Why: the custom-agent launch spec seeds a custom agent into the persisted
+  // profile file (not authored via UI) so the launch boundary is exercised
+  // against a real v1 catalog entry. Fixture-owned so no other spec is affected.
+  // Wrapped in an object: Playwright's option-tuple detection silently truncates
+  // a bare multi-element array to its first element, so a bare array here would
+  // seed a partial catalog. The object keeps the array out of that detection.
+  seededCustomAgents: { agents: readonly CustomTuiAgent[] }
+  // Why: the recipe-args case seeds a source-control action recipe into the
+  // profile so a launch naming it (sourceRecord) resolves its stored agentArgs
+  // into host-owned perLaunchArgs. Fixture-owned so no other spec is affected.
+  seededSourceControlActions: Readonly<Record<string, SourceControlActionRecipe>>
 }
 
 type OrcaWorkerFixtures = {
@@ -179,7 +192,9 @@ export const test = base.extend<OrcaTestFixtures, OrcaWorkerFixtures>({
       orcaAppExtraEnv,
       orcaAppExtraArgs,
       codexRealHomeEnabled,
-      registerPostElectronShutdownCleanup
+      registerPostElectronShutdownCleanup,
+      seededCustomAgents,
+      seededSourceControlActions
     },
     provideFixture,
     testInfo
@@ -196,9 +211,27 @@ export const test = base.extend<OrcaTestFixtures, OrcaWorkerFixtures>({
       // every other test. Seed a completed-onboarding fresh-install profile:
       // an empty file would make persistence treat the profile as an
       // existing-user upgrade cohort and mount the telemetry notice overlay.
+      const seededAgents = seededCustomAgents.agents
+      // Guard: a non-array here means Playwright's option-tuple detection
+      // truncated the value (the wrapper object exists to prevent that). Throw
+      // loudly so this truncation class can never silently seed a partial catalog.
+      if (!Array.isArray(seededAgents)) {
+        throw new Error(
+          `seededCustomAgents.agents must be an array; received ${typeof seededAgents}. ` +
+            'Pass { agents: [...] } — a bare array is truncated by Playwright option detection.'
+        )
+      }
+      const hasSeededActions = Object.keys(seededSourceControlActions).length > 0
+      const profileOverrides =
+        seededAgents.length > 0 || hasSeededActions
+          ? {
+              ...(seededAgents.length > 0 ? { customTuiAgents: seededAgents } : {}),
+              ...(hasSeededActions ? { sourceControlActions: seededSourceControlActions } : {})
+            }
+          : undefined
       writeFileSync(
         path.join(userDataDir, 'orca-data.json'),
-        `${JSON.stringify(getE2ECompletedOnboardingProfile(), null, 2)}\n`
+        `${JSON.stringify(getE2ECompletedOnboardingProfile(profileOverrides), null, 2)}\n`
       )
     }
     const headful = shouldLaunchHeadful(testInfo)
@@ -281,6 +314,8 @@ export const test = base.extend<OrcaTestFixtures, OrcaWorkerFixtures>({
   orcaAppExtraEnv: [{}, { option: true }],
   orcaAppExtraArgs: [[], { option: true }],
   codexRealHomeEnabled: [false, { option: true }],
+  seededCustomAgents: [{ agents: [] }, { option: true }],
+  seededSourceControlActions: [{}, { option: true }],
 
   // Test-scoped: grab the first BrowserWindow, add the test repo, and wait
   // until the session is fully ready with a worktree active.

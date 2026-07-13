@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "filePath": "src/renderer/src/lib/resume-sleeping-agent-session-test-fixtures.ts",
+    "kind": "object-property:title",
+    "text": "shell",
+    "dynamic": false,
+    "count": 1,
+    "reason": "Test-only fixture builder for a terminal-tab shape; 'shell' is fixed test data, not a user-facing string."
+  }
+]

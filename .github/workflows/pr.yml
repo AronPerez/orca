@@ -165,3 +165,47 @@ jobs:
       # temp copy so Node cannot mask missing package deps with repo node_modules.
       - name: Smoke packaged CLI
         run: node config/scripts/smoke-packaged-cli.mjs --app-dir=dist/linux-unpacked
+
+  # Why: §U10 requires the pure custom-agent resolver/tokenizer/startup/runtime
+  # suites to pass on every supported desktop OS (macOS/Linux/Windows) so
+  # platform-dependent behavior — shell quoting on PowerShell/cmd, ~ and WSL/SSH
+  # path translation, drive-letter mapping — is proven cross-OS, not just on
+  # Linux. The SSH throwaway-container e2e is a SEPARATE Ubuntu-only job because
+  # macOS/Windows GitHub runners cannot host a Linux Docker container.
+  custom-agent-platform:
+    name: Custom agent platform (${{ matrix.os }})
+    strategy:
+      # Run every OS to completion so a platform-specific failure is not masked
+      # by a fail-fast cancel on another leg.
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-2022
+          - macos-15
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      # Why: these suites are pure TypeScript — their resolver/spawn/runtime
+      # import closure references neither node-pty, better-sqlite3, nor electron
+      # — so skip postinstall native builds. That keeps the cross-OS matrix fast
+      # and free of Windows/macOS native-build flakiness while still exercising
+      # the platform-dependent resolution/quoting logic.
+      - name: Install dependencies (no native postinstall)
+        run: pnpm install --no-frozen-lockfile --prefer-frozen-lockfile=false --ignore-scripts
+
+      - name: Custom agent platform suites (resolver, tokenizer, startup, runtime)
+        run: pnpm test:custom-agent-platform

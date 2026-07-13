@@ -229,7 +229,6 @@ inline src/renderer/src/components/right-sidebar/source-control-dropdown-items.t
 inline src/renderer/src/components/right-sidebar/useCreatePullRequestDialogFields.ts
 inline src/renderer/src/components/right-sidebar/useFileExplorerDragDrop.ts
 inline src/renderer/src/components/settings/AccountsPane.tsx
-inline src/renderer/src/components/settings/AgentsPane.tsx
 inline src/renderer/src/components/settings/RepositoryHooksSection.tsx
 inline src/renderer/src/components/settings/RuntimeEnvironmentsPane.tsx
 inline src/renderer/src/components/settings/Settings.tsx
