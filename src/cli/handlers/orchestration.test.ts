@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-const callMock = vi.fn()
-const getTerminalHandleMock = vi.hoisted(() => vi.fn())
-const originalTerminalHandle = process.env.ORCA_TERMINAL_HANDLE
-const originalPaneKey = process.env.ORCA_PANE_KEY
-function lifecycleGroupRecipientError(type: 'worker_done' | 'heartbeat'): string {
-  return `${type} messages must be sent to a concrete coordinator terminal handle, not a group address.`
-}
+import {
+  callMock,
+  getTerminalHandleMock,
+  handlerInvoker,
+  lifecycleGroupRecipientError,
+  restoreTerminalIdentityEnv,
+  staleHandleError,
+  stubStaleHandleRemint,
+  stubStaleHandleRemintFailure,
+  type CliFlagMap
+} from './orchestration-handler-test-harness'
 
 // Why: isolate the handler's flag-to-param mapping; printResult only writes output.
 vi.mock('../format', () => ({ printResult: vi.fn() }))
@@ -16,49 +19,14 @@ import { ORCHESTRATION_HANDLERS } from './orchestration'
 import { RuntimeClientError } from '../runtime-client'
 import { printResult } from '../format'
 
-function staleHandleError(): RuntimeClientError {
-  return new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-}
-
-// Queues the stale-handle remint chain shared by coordinator commands:
-// stale terminal.show → resolvePane returns liveHandle → downstream RPC result.
-function stubStaleHandleRemint(liveHandle: string, downstream: unknown): void {
-  callMock
-    .mockRejectedValueOnce(staleHandleError())
-    .mockResolvedValueOnce({ result: { terminal: { handle: liveHandle } } })
-    .mockResolvedValueOnce(downstream)
-}
-
-// Queues a stale terminal.show followed by a resolvePane remint that fails with `error`.
-function stubStaleHandleRemintFailure(error: RuntimeClientError): void {
-  callMock.mockRejectedValueOnce(staleHandleError()).mockRejectedValueOnce(error)
-}
-
-afterEach(() => {
-  getTerminalHandleMock.mockReset()
-  if (originalTerminalHandle === undefined) {
-    delete process.env.ORCA_TERMINAL_HANDLE
-  } else {
-    process.env.ORCA_TERMINAL_HANDLE = originalTerminalHandle
-  }
-  if (originalPaneKey === undefined) {
-    delete process.env.ORCA_PANE_KEY
-  } else {
-    process.env.ORCA_PANE_KEY = originalPaneKey
-  }
-})
+afterEach(restoreTerminalIdentityEnv)
 
 describe('orchestration reset CLI handler', () => {
   beforeEach(() => {
     callMock.mockReset().mockResolvedValue({ result: { reset: 'all' } })
   })
 
-  const invoke = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration reset']({
-      flags,
-      client: { call: callMock },
-      json: true
-    } as never)
+  const invoke = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration reset'])
 
   it('sends all: true for a bare `reset` (no scope flag)', async () => {
     await invoke(new Map())
@@ -96,13 +64,7 @@ describe('orchestration send structured payload flags', () => {
     delete process.env.ORCA_PANE_KEY
   })
 
-  const invokeSend = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration send']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
+  const invokeSend = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration send'])
 
   it('serializes common worker payload fields as JSON', async () => {
     await invokeSend(
@@ -347,29 +309,9 @@ describe('orchestration dispatch coordinator handle', () => {
     delete process.env.ORCA_PANE_KEY
   })
 
-  const invokeDispatch = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration dispatch']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
-
-  const invokeDispatchShow = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration dispatch-show']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
-
-  const invokeRun = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration run']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
+  const invokeDispatch = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration dispatch'])
+  const invokeDispatchShow = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration dispatch-show'])
+  const invokeRun = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration run'])
 
   it('remints a stale coordinator env handle from the caller pane key', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale_coord'
@@ -514,13 +456,8 @@ describe('orchestration dispatch Forget + raw read CLI handlers (W-T2)', () => {
     callMock.mockReset()
   })
 
-  const invoke = (key: string, flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS[key]({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
+  const invoke = (key: string, flags: CliFlagMap) =>
+    handlerInvoker(ORCHESTRATION_HANDLERS[key])(flags)
 
   it('dispatch-forget invokes dispatchForget with the task and expected failure id', async () => {
     callMock.mockResolvedValue({
@@ -583,13 +520,7 @@ describe('orchestration task-create caller handle', () => {
     delete process.env.ORCA_PANE_KEY
   })
 
-  const invokeTaskCreate = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration task-create']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
+  const invokeTaskCreate = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration task-create'])
 
   it('records a live env terminal handle as task creator', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_creator'
@@ -751,21 +682,8 @@ describe('orchestration timeout flag validation', () => {
     delete process.env.ORCA_PANE_KEY
   })
 
-  const invokeCheck = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration check']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
-
-  const invokeAsk = (flags: Map<string, string | boolean>) =>
-    ORCHESTRATION_HANDLERS['orchestration ask']({
-      flags,
-      client: { call: callMock },
-      cwd: '/tmp/repo',
-      json: true
-    } as never)
+  const invokeCheck = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration check'])
+  const invokeAsk = handlerInvoker(ORCHESTRATION_HANDLERS['orchestration ask'])
 
   it.each(invalidTimeoutValues)('rejects invalid check --timeout-ms: %s', async (_label, value) => {
     const flags = new Map<string, string | boolean>([
@@ -939,11 +857,9 @@ describe('orchestration task-list brief output', () => {
     })
     vi.mocked(printResult).mockClear()
 
-    await ORCHESTRATION_HANDLERS['orchestration task-list']({
-      flags: new Map([['brief', true]]),
-      client: { call: callMock },
-      json: true
-    } as never)
+    await handlerInvoker(ORCHESTRATION_HANDLERS['orchestration task-list'])(
+      new Map([['brief', true]])
+    )
 
     expect(callMock).toHaveBeenCalledWith(
       'orchestration.taskList',
@@ -963,11 +879,9 @@ describe('orchestration task-list brief output', () => {
     callMock.mockReset().mockResolvedValue({ result: { tasks: serverTasks, count: 1 } })
     vi.mocked(printResult).mockClear()
 
-    await ORCHESTRATION_HANDLERS['orchestration task-list']({
-      flags: new Map([['brief', true]]),
-      client: { call: callMock },
-      json: true
-    } as never)
+    await handlerInvoker(ORCHESTRATION_HANDLERS['orchestration task-list'])(
+      new Map([['brief', true]])
+    )
 
     const response = vi.mocked(printResult).mock.calls[0]?.[0] as {
       result: { tasks: { spec: string; spec_truncated: boolean }[] }

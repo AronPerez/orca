@@ -1,15 +1,20 @@
-// Single shared RpcClient per host, collapsing the old per-screen WebSocket connections.
-// Design: docs/mobile-shared-client-per-host.md.
+// Why: collapses the per-screen WebSocket connection model into a single
+// shared RpcClient per host. Implements the design in
+// docs/mobile-shared-client-per-host.md.
+//
+// Lifecycle rules:
+// - First request for a host opens its client lazily.
+// - Refcount tracks active subscribers; when it drops to zero we schedule
+//   a 30-second idle close timer. If a new subscriber arrives within that
+//   window we cancel and reuse the same client.
+// - removeHost() forces an immediate close so re-pairing gets a fresh
+//   transport.
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode
-} from 'react'
+  HostClientContext,
+  useHostClientContext as useRpcClientContext,
+  type HostClientContextValue
+} from './host-client-context-contract'
 import type { RpcClient } from './rpc-client'
 import { connectionLogStore } from './connection-log-buffer'
 import { subscribeConnectionRevivalTriggers } from './connection-revival-triggers'
@@ -20,6 +25,9 @@ import { openHostLogicalClient } from './host-logical-client'
 import type { MobileConnectionPath, StableLogicalRpcClient } from './stable-logical-rpc-client'
 import type { ConnectionState, HostProfile } from './types'
 
+export { useRpcClientContext }
+export type RpcClientContextValue = HostClientContextValue
+
 type StoreEntry = {
   client: RpcClient
   state: ConnectionState
@@ -29,25 +37,6 @@ type StoreEntry = {
   // subscription, disposed before the client is replaced or closed.
   agentSync: AgentSyncHandle
 }
-
-export type RpcClientContextValue = {
-  acquire: (hostId: string, host?: HostProfile) => RpcClient | null
-  release: (hostId: string) => void
-  forceReconnect: (hostId: string) => Promise<void>
-  closeHost: (hostId: string) => void
-  getState: (hostId: string) => ConnectionState
-  getReconnectAttempt: (hostId: string) => number
-  // Why: ms-epoch of the last 'connected' (null if never this session); UI escalates "Reconnecting…" into a re-pair prompt.
-  getLastConnectedAt: (hostId: string) => number | null
-  getActivePath: (hostId: string) => MobileConnectionPath
-  subscribeHostState: (hostId: string, listener: (state: ConnectionState) => void) => () => void
-  getAllClients: () => Array<{ hostId: string; client: RpcClient }>
-  subscribeAllHosts: (listener: () => void) => () => void
-  // Why: lets the home screen feed already-loaded HostProfiles so we don't pay loadHosts() latency twice.
-  primeHosts: (hosts: HostProfile[]) => void
-}
-
-const Ctx = createContext<RpcClientContextValue | null>(null)
 
 export function RpcClientProvider({ children }: { children: ReactNode }) {
   // Why: entries in a ref so state changes don't re-render the whole tree; propagation goes through per-host listener Sets.
@@ -300,7 +289,7 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const value = useMemo<RpcClientContextValue>(
+  const value = useMemo<HostClientContextValue>(
     () => ({
       acquire,
       release,
@@ -331,15 +320,7 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
     ]
   )
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
-export function useRpcClientContext(): RpcClientContextValue {
-  const ctx = useContext(Ctx)
-  if (!ctx) {
-    throw new Error('useHostClient must be used inside <RpcClientProvider>')
-  }
-  return ctx
+  return <HostClientContext.Provider value={value}>{children}</HostClientContext.Provider>
 }
 
 // Primary hook for screens: acquires the shared client on mount, releases on unmount, re-renders on state change.
