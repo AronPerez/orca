@@ -281,4 +281,62 @@ describe('OrchestrationDb U6 launch identity, structured failure, and forget', (
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  // Why: the pre-rebase custom-agents build stamped 6 after adding the U6
+  // columns but never ran main's v6 pane step. Its guard skips the v7 rebuild,
+  // so the pane columns must be added independently inside the v7 step.
+  it('migrates a pre-rebase-v6 db (U6 columns, no pane columns), adding the pane columns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-prerebase-v6-'))
+    const file = join(dir, 'orch.db')
+    try {
+      const raw = new Database(file)
+      raw.exec(`
+        CREATE TABLE dispatch_contexts (
+          id TEXT PRIMARY KEY, task_id TEXT NOT NULL, assignee_handle TEXT,
+          status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','dispatched','completed','failed','circuit_broken','forgotten')),
+          failure_count INTEGER NOT NULL DEFAULT 0, last_failure TEXT,
+          dispatched_at TEXT, completed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')), last_heartbeat_at TEXT,
+          requested_agent TEXT, base_agent TEXT, agent_launch_failure TEXT
+        );
+        CREATE TABLE messages (
+          id TEXT NOT NULL, from_handle TEXT NOT NULL, to_handle TEXT NOT NULL,
+          subject TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+          type TEXT NOT NULL DEFAULT 'status',
+          priority TEXT NOT NULL DEFAULT 'normal',
+          thread_id TEXT, payload TEXT, read INTEGER NOT NULL DEFAULT 0,
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')), delivered_at TEXT
+        );
+        INSERT INTO dispatch_contexts (id, task_id, assignee_handle, status, requested_agent)
+          VALUES ('ctx_pre', 'task_pre', 'term_pre', 'forgotten',
+                  'custom-agent:codex:11111111-1111-4111-8111-111111111111');
+      `)
+      raw.pragma('user_version = 6')
+      raw.close()
+
+      const d = new OrchestrationDb(file)
+      db = d
+      const row = d.getDispatchContextById('ctx_pre')
+      // The U6 data survives, and both pane columns now exist.
+      expect(row?.status).toBe('forgotten')
+      expect(row?.requested_agent).toBe(FAILURE.requestedAgent)
+      expect(row?.assignee_pane_key).toBeNull()
+      const raw2 = new Database(file)
+      const version = raw2.pragma('user_version', { simple: true }) as number
+      const messageCols = (raw2.pragma('table_info(messages)') as { name: string }[]).map(
+        (c) => c.name
+      )
+      raw2.close()
+      expect(version).toBe(7)
+      expect(messageCols).toContain('sender_pane_key')
+      // The pane column is writable on the migrated schema.
+      const task = d.createTask({ spec: 'post-pre-rebase work' })
+      const ctx = d.createDispatchContext(task.id, 'term_new', 'tab_9:leaf_9')
+      expect(ctx.assignee_pane_key).toBe('tab_9:leaf_9')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

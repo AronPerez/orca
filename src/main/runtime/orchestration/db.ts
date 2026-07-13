@@ -315,6 +315,16 @@ export class OrchestrationDb {
       // columns. Guarded on the new column so a fresh v7 db (already created
       // with the full schema by createTables) skips the rebuild.
       if (current < 7) {
+        // Re-run the pane ALTERs here too: a db stamped 6 by the pre-rebase
+        // custom-agents build already has the U6 columns (so the rebuild below
+        // is skipped) but never ran main's v6 pane step. hasColumn makes this
+        // a no-op for every other shape.
+        if (!this.hasColumn('dispatch_contexts', 'assignee_pane_key')) {
+          this.db.exec(`ALTER TABLE dispatch_contexts ADD COLUMN assignee_pane_key TEXT`)
+        }
+        if (!this.hasColumn('messages', 'sender_pane_key')) {
+          this.db.exec(`ALTER TABLE messages ADD COLUMN sender_pane_key TEXT`)
+        }
         if (!this.hasColumn('dispatch_contexts', 'requested_agent')) {
           // A main-v6 db has assignee_pane_key with live data that must survive
           // the rebuild; a v5 db gains the column in the v6 step above. The

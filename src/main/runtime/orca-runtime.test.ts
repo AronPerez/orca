@@ -29207,6 +29207,8 @@ describe('OrcaRuntimeService', () => {
       expect(result.agentLaunchResult.receipt.requestedAgent).toBe('codex')
       expect(result.agentLaunchResult.receipt.baseAgent).toBe('codex')
     }
+    // Agent callers dispatch to the spawned terminal via this handle.
+    expect(result.startupTerminal).toMatchObject({ spawned: true, handle: expect.any(String) })
     // Pending attribution is cleared once the launch registered.
     expect(metaById[result.worktree.id]?.pendingAgentLaunch).toBeUndefined()
   })
@@ -29274,6 +29276,112 @@ describe('OrcaRuntimeService', () => {
       })
     )
     expect(result.agentLaunchResult?.status).toBe('launched')
+    // The folder path returns the same dispatch handle as the local-git path.
+    expect(result.startupTerminal).toMatchObject({
+      spawned: true,
+      handle: expect.any(String),
+      surface: 'background'
+    })
+  })
+
+  it('returns the agent terminal handle for an SSH-remote worktree created with agentLaunch', async () => {
+    detectRemoteAgentsMock.mockResolvedValue(['claude'])
+    const created = {
+      path: '/remote/agentlaunch-remote',
+      head: 'def',
+      branch: 'refs/heads/agentlaunch-remote',
+      isBare: false,
+      isMainWorktree: false
+    }
+    const metaById: Record<string, WorktreeMeta> = {}
+    const remoteStore = {
+      ...store,
+      getRepos: () => [
+        {
+          id: TEST_REPO_ID,
+          path: '/remote/repo',
+          displayName: 'repo',
+          badgeColor: 'blue',
+          addedAt: 1,
+          connectionId: 'ssh-1'
+        }
+      ],
+      getRepo: () => ({
+        id: TEST_REPO_ID,
+        path: '/remote/repo',
+        displayName: 'repo',
+        badgeColor: 'blue',
+        addedAt: 1,
+        connectionId: 'ssh-1'
+      }),
+      getSettings: () => ({
+        ...store.getSettings(),
+        defaultTuiAgent: null,
+        agentCmdOverrides: {}
+      }),
+      getAllWorktreeMeta: () => metaById,
+      getWorktreeMeta: (worktreeId: string) => metaById[worktreeId],
+      setWorktreeMeta: (worktreeId: string, meta: Partial<WorktreeMeta>) => {
+        metaById[worktreeId] = { ...(metaById[worktreeId] ?? makeWorktreeMeta()), ...meta }
+        return metaById[worktreeId]
+      }
+    }
+    const provider = {
+      exec: vi.fn(async (args: string[]) => {
+        if (args[0] === 'config') {
+          return { stdout: 'Remote User\n', stderr: '' }
+        }
+        if (args[0] === 'branch') {
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'symbolic-ref') {
+          return { stdout: 'origin/main\n', stderr: '' }
+        }
+        if (isOriginMainBaseRefProbe(args)) {
+          return { stdout: 'main-sha\n', stderr: '' }
+        }
+        if (args[0] === 'fetch') {
+          return { stdout: '', stderr: '' }
+        }
+        throw new Error(`unexpected git call: ${args.join(' ')}`)
+      }),
+      addWorktree: vi.fn().mockResolvedValue(undefined),
+      listWorktrees: vi.fn().mockResolvedValue([created])
+    }
+    registerSshGitProvider('ssh-1', provider as never)
+    getActiveMultiplexerMock.mockReturnValue({ request: muxRequestMock, notify: vi.fn() })
+    const runtime = new OrcaRuntimeService(remoteStore as never)
+    const spawn = vi.fn().mockResolvedValue({ id: 'pty-agentlaunch-remote' })
+    runtime.setPtyController({
+      spawn,
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+
+    const result = await runtime.createManagedWorktree({
+      repoSelector: TEST_REPO_ID,
+      name: 'agentlaunch-remote',
+      agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, allowEmptyPromptLaunch: true }
+    })
+
+    expect(detectRemoteAgentsMock).toHaveBeenCalledWith({ connectionId: 'ssh-1' })
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: '/remote/agentlaunch-remote',
+        command: "'claude' '--dangerously-skip-permissions'",
+        connectionId: 'ssh-1',
+        worktreeId: result.worktree.id
+      })
+    )
+    expect(result.agentLaunchResult?.status).toBe('launched')
+    // The SSH path returns the same dispatch handle as the local-git path, so
+    // `worktree.create --agent --json` callers keep agentTerminalHandle remotely.
+    expect(result.startupTerminal).toMatchObject({
+      spawned: true,
+      handle: expect.any(String),
+      surface: 'background'
+    })
   })
 
   it('creates no worktree and spawns no PTY when the pre-git agentLaunch fails', async () => {
