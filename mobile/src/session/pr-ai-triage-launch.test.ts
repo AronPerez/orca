@@ -23,8 +23,11 @@ describe('createTerminalAndSendPrompt', () => {
     const client = clientReturning(createdTerminal, sendAccepted)
     await createTerminalAndSendPrompt(client, 'wt-1', 'do the thing')
 
+    // oracle-19: the mobile launch defers to the host's newest-revision default
+    // pick rather than pinning a client-cached agent id.
     expect(client.sendRequest).toHaveBeenNthCalledWith(1, 'session.tabs.createTerminal', {
       worktree: 'id:wt-1',
+      agentLaunch: { selection: { kind: 'default' } },
       activate: false,
       select: true,
       navigation: 'caller'

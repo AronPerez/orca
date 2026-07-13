@@ -14,6 +14,7 @@ import type { RpcClient } from './rpc-client'
 import { connectionLogStore } from './connection-log-buffer'
 import { subscribeConnectionRevivalTriggers } from './connection-revival-triggers'
 import { HostClientOpenRegistry } from './host-client-open-registry'
+import { mountAgentSync, type AgentSyncHandle } from './agent-sync-connection'
 import { loadHosts } from './host-store'
 import { openHostLogicalClient } from './host-logical-client'
 import type { MobileConnectionPath, StableLogicalRpcClient } from './stable-logical-rpc-client'
@@ -24,6 +25,9 @@ type StoreEntry = {
   state: ConnectionState
   refCount: number
   unsubState: () => void
+  // One agent catalog/reference sync per connection: owns a single client-event
+  // subscription, disposed before the client is replaced or closed.
+  agentSync: AgentSyncHandle
 }
 
 export type RpcClientContextValue = {
@@ -78,6 +82,7 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
     primedHostsRef.current.delete(hostId)
     const entry = storeRef.current.get(hostId)
     entry?.unsubState()
+    entry?.agentSync.dispose()
     storeRef.current.delete(hostId)
     entry?.client.close()
     notifyHostState(hostId, 'disconnected')
@@ -144,11 +149,14 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
         cur.state = state
         notifyHostState(hostId, state)
       })
+      // One agent catalog/reference sync per connection; it hydrates on connect
+      // and owns a single client-event subscription (see mountAgentSync).
       const entry: StoreEntry = {
         client,
         state: client.getState(),
         refCount: 0,
-        unsubState
+        unsubState,
+        agentSync: mountAgentSync(client, hostId)
       }
       storeRef.current.set(hostId, entry)
       notifyHostState(hostId, entry.state)
@@ -206,6 +214,7 @@ export function RpcClientProvider({ children }: { children: ReactNode }) {
       const savedRefCount = entry?.refCount ?? Math.max(1, listenerCount)
       if (entry) {
         entry.unsubState()
+        entry.agentSync.dispose()
         entry.client.close()
         storeRef.current.delete(hostId)
       }

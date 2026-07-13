@@ -210,6 +210,8 @@ import { getMobileTerminalActionSheetActions } from '../../../../src/session/mob
 import * as nativeChatTerminalStream from '../../../../src/session/mobile-native-chat-terminal-stream'
 import { useMobileNativeChatTerminalStream } from '../../../../src/session/use-mobile-native-chat-terminal-stream'
 import { subscribeMobileTerminalSafely } from '../../../../src/session/mobile-terminal-stream-subscribe'
+import { AgentLaunchNoticeBanner } from '../../../../src/session/AgentLaunchNoticeBanner'
+import { dropDismissedLaunchNotice } from '../../../../src/session/mobile-launch-notice-dismissal'
 import { activateMobileSessionTab } from '../../../../src/session/mobile-session-tab-activation'
 import { MobileTerminalDiagnostics } from '../../../../src/session/mobile-terminal-diagnostics'
 import {
@@ -237,6 +239,7 @@ import { colors, spacing } from '../../../../src/theme/mobile-theme'
 import { styles } from './mobile-session-styles'
 import { QuickCommandsTabButton } from './QuickCommandsTabButton'
 import type { DiffComment, TerminalQuickCommand } from '../../../../../src/shared/types'
+import type { AgentLaunchNoticeCode } from '../../../../../src/shared/agent-launch-contract'
 import type {
   DiffCommentActions,
   DiffNotesDelivery,
@@ -1021,6 +1024,13 @@ export default function SessionScreen() {
   // Why: sidebar resizes change the terminal frame width without a window-dim change; track it so the refit hook re-fits (see terminal-viewport-refit.ts).
   const [terminalFrameWidth, setTerminalFrameWidth] = useState(0)
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
+  // Why: launch notices attach to the terminal tab; key off the shown handle so
+  // the banner tracks the visible terminal even while a tap's activate is in flight.
+  const activeTerminalTab =
+    sessionTabs.find(
+      (tab): tab is Extract<MobileSessionTab, { type: 'terminal' }> =>
+        tab.type === 'terminal' && tab.terminal === activeHandle
+    ) ?? null
   const {
     clearPendingLiveInputCommit,
     flushPendingLiveInputBeforeExternalSend,
@@ -1154,6 +1164,29 @@ export default function SessionScreen() {
     onSendError: showNativeChatSendError
   })
   const { toggleTabChatView, showNativeChat, showNativeChatRef } = nativeChatController
+
+  const handleDismissLaunchNotice = useCallback(
+    (tab: Extract<MobileSessionTab, { type: 'terminal' }>, code: AgentLaunchNoticeCode) => {
+      const launchNotices = tab.launchNotices
+      if (!client || !launchNotices) {
+        return
+      }
+      const { launchToken } = launchNotices
+      // The host owns notice state; a stale/foreign token fails closed there.
+      void client.sendRequest('session.tabs.dismissLaunchNotice', {
+        worktree: `id:${worktreeId}`,
+        tabId: tab.id,
+        launchToken,
+        code
+      })
+      // Mirror the host removal locally so the banner clears immediately; a
+      // rejected dismissal (stale token) is restored by the next snapshot.
+      setSessionTabs(
+        (prev) => dropDismissedLaunchNotice(prev, launchToken, code) as MobileSessionTab[]
+      )
+    },
+    [client, worktreeId]
+  )
 
   const dictation = useMobileDictation({
     client,
@@ -4649,59 +4682,79 @@ export default function SessionScreen() {
               <View
                 style={styles.terminalFrame}
                 onLayout={(e) => {
-                  terminalFrameHeightRef.current = e.nativeEvent.layout.height
-                  // Why: notify height imperatively so dock settling re-fits the PTY without rerendering SessionScreen.
+                  // Trigger a refit only when the width actually changes (sidebar
+                  // resize, fold, rotation) — avoids churn on height-only changes.
+                  // The inner pane area owns the fit HEIGHT so a launch-notice
+                  // banner shrinks the terminal viewport instead of overlapping it.
                   const nextWidth = Math.round(e.nativeEvent.layout.width)
-                  const nextHeight = Math.round(e.nativeEvent.layout.height)
                   setTerminalFrameWidth((prev) => (prev === nextWidth ? prev : nextWidth))
-                  notifyTerminalFrameHeight(nextHeight)
                 }}
               >
-                {terminals.map((terminal) => (
-                  <TerminalPaneView
-                    key={terminal.handle}
-                    handle={terminal.handle}
-                    active={terminal.handle === activeHandle}
-                    keyboardLift={terminal.handle === activeHandle ? activeTerminalKeyboardLift : 0}
-                    terminalTheme={terminal.terminalTheme}
-                    textScale={terminalTextScale}
-                    onTextScaleChange={(scale) => {
-                      // Why: pinch-to-zoom reports a new preset; persist it so the size sticks across panes and launches.
-                      setTerminalTextScale(scale)
-                      void saveTerminalTextScale(scale)
-                    }}
-                    onRef={setTerminalWebViewRef}
-                    onWebReady={handleTerminalWebReady}
-                    onSelectionMode={handleSelectionMode}
-                    onSelectionCopy={handleSelectionCopy}
-                    onSelectionEvicted={handleSelectionEvicted}
-                    onModesChanged={handleModesChanged}
-                    onKeyboardAvoidanceMetrics={handleKeyboardAvoidanceMetrics}
-                    onHaptic={handleHaptic}
-                    onTerminalInput={handleTerminalInput}
-                    onTerminalQueryReply={handleTerminalQueryReply}
-                    onTerminalTap={handleTerminalTap}
-                    onFileTap={handleFileTap}
-                    onOpenUrl={handleTerminalOpenUrl}
+                {activeTerminalTab?.launchNotices ? (
+                  <AgentLaunchNoticeBanner
+                    notices={activeTerminalTab.launchNotices.notices}
+                    onDismiss={(code) => handleDismissLaunchNotice(activeTerminalTab, code)}
                   />
-                ))}
-                <MobileNativeChatOverlay
-                  controller={nativeChatController}
-                  onAttachImage={() => void attachImage('library')}
-                  isAttaching={isAttaching}
-                  onMicPress={handleDictationToggle}
-                  micActive={dictation.isRecording}
-                  dictationMode={dictationMode}
-                  onMicPressIn={handleDictationPressIn}
-                  onMicPressOut={handleDictationPressOut}
-                  inputLockReason={nativeChatInputLockReason}
-                  keyboardInset={keyboardLift}
-                />
-                {toastMessage && (
-                  <Animated.View pointerEvents="none" style={[styles.toast, toastAnimatedStyle]}>
-                    <Text style={styles.toastText}>{toastMessage}</Text>
-                  </Animated.View>
-                )}
+                ) : null}
+                <View
+                  style={styles.terminalPaneArea}
+                  onLayout={(e) => {
+                    const nextHeight = Math.round(e.nativeEvent.layout.height)
+                    terminalFrameHeightRef.current = nextHeight
+                    // Why: notify height imperatively so dock settling re-fits the
+                    // PTY without rerendering SessionScreen for layout callbacks.
+                    notifyTerminalFrameHeight(nextHeight)
+                  }}
+                >
+                  {terminals.map((terminal) => (
+                    <TerminalPaneView
+                      key={terminal.handle}
+                      handle={terminal.handle}
+                      active={terminal.handle === activeHandle}
+                      keyboardLift={
+                        terminal.handle === activeHandle ? activeTerminalKeyboardLift : 0
+                      }
+                      terminalTheme={terminal.terminalTheme}
+                      textScale={terminalTextScale}
+                      onTextScaleChange={(scale) => {
+                        // Why: pinch-to-zoom in the WebView reports a new preset; persist
+                        // it so the size sticks across panes and app launches.
+                        setTerminalTextScale(scale)
+                        void saveTerminalTextScale(scale)
+                      }}
+                      onRef={setTerminalWebViewRef}
+                      onWebReady={handleTerminalWebReady}
+                      onSelectionMode={handleSelectionMode}
+                      onSelectionCopy={handleSelectionCopy}
+                      onSelectionEvicted={handleSelectionEvicted}
+                      onModesChanged={handleModesChanged}
+                      onKeyboardAvoidanceMetrics={handleKeyboardAvoidanceMetrics}
+                      onHaptic={handleHaptic}
+                      onTerminalInput={handleTerminalInput}
+                      onTerminalQueryReply={handleTerminalQueryReply}
+                      onTerminalTap={handleTerminalTap}
+                      onFileTap={handleFileTap}
+                      onOpenUrl={handleTerminalOpenUrl}
+                    />
+                  ))}
+                  <MobileNativeChatOverlay
+                    controller={nativeChatController}
+                    onAttachImage={() => void attachImage('library')}
+                    isAttaching={isAttaching}
+                    onMicPress={handleDictationToggle}
+                    micActive={dictation.isRecording}
+                    dictationMode={dictationMode}
+                    onMicPressIn={handleDictationPressIn}
+                    onMicPressOut={handleDictationPressOut}
+                    inputLockReason={nativeChatInputLockReason}
+                    keyboardInset={keyboardLift}
+                  />
+                  {toastMessage && (
+                    <Animated.View pointerEvents="none" style={[styles.toast, toastAnimatedStyle]}>
+                      <Text style={styles.toastText}>{toastMessage}</Text>
+                    </Animated.View>
+                  )}
+                </View>
               </View>
             )}
 

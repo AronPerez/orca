@@ -27,7 +27,12 @@ type ResolveWorkspaceAgentSelectionArgs = WorkspaceAgentSelectionState & {
 }
 
 export function workspaceAgentLabel(agent: WorkspaceAgentChoice): string {
-  return agent === 'blank' ? 'Blank Terminal' : MOBILE_TUI_AGENT_LABELS[agent]
+  if (agent === 'blank') {
+    return 'Blank Terminal'
+  }
+  // Custom ids get their label from the synced catalog (later units); the
+  // static parity table only knows built-ins.
+  return isMobileTuiAgent(agent) ? MOBILE_TUI_AGENT_LABELS[agent] : agent
 }
 
 export function normalizeWorkspaceAgent(value: unknown): WorkspaceAgentChoice | null {

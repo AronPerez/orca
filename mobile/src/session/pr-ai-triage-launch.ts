@@ -3,6 +3,7 @@ import {
   readMobileReviewCreatedTerminal,
   readMobileReviewTerminalSendAccepted
 } from './mobile-diff-review-rpc'
+import { buildIdentityCreateTerminalParams } from './identity-create-terminal-params'
 
 // Pure launch path for the PR triage actions ("Fix checks with AI" / "Resolve
 // conflicts with AI"). Reuses the same two RPCs the diff-review send flow uses —
@@ -16,7 +17,7 @@ export async function createTerminalAndSendPrompt(
   prompt: string
 ): Promise<void> {
   const created = await client.sendRequest('session.tabs.createTerminal', {
-    worktree: `id:${worktreeId}`,
+    ...buildIdentityCreateTerminalParams(worktreeId),
     activate: false,
     select: true,
     navigation: 'caller'

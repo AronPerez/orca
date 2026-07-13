@@ -11,6 +11,7 @@ import {
   readMobileReviewTerminalSendAccepted,
   readMobileReviewTerminalTabs
 } from './mobile-diff-review-rpc'
+import { buildIdentityCreateTerminalParams } from './identity-create-terminal-params'
 import type { ReviewScreenState, SendSheetState } from './mobile-diff-review-screen-model'
 
 type SendActionsInput = {
@@ -99,7 +100,7 @@ export function useMobileDiffReviewSendActions(input: SendActionsInput) {
         throw new Error('Waiting for desktop...')
       }
       const response = await client.sendRequest('session.tabs.createTerminal', {
-        worktree: `id:${worktreeId}`,
+        ...buildIdentityCreateTerminalParams(worktreeId),
         activate: false,
         select: true,
         navigation: 'caller'

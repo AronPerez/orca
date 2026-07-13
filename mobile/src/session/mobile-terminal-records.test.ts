@@ -125,4 +125,23 @@ describe('mobile terminal records', () => {
       )
     ).toBe(false)
   })
+
+  it('treats a launch-notice dismissal as a session-tab change', () => {
+    const withNotice: MobileTerminalSessionTab = {
+      type: 'terminal',
+      id: 'term-1::leaf-1',
+      title: 'Claude',
+      terminal: 'pty-1',
+      isActive: true,
+      launchNotices: {
+        launchToken: 'lt-1',
+        notices: [{ code: 'env_withheld', label: 'Claude' }]
+      }
+    }
+    const dismissed: MobileTerminalSessionTab = { ...withNotice, launchNotices: undefined }
+
+    expect(mobileSessionTabsEqual([withNotice], [dismissed])).toBe(false)
+    // Identical notices stay equal so repeated snapshots don't churn the render.
+    expect(mobileSessionTabsEqual([withNotice], [{ ...withNotice }])).toBe(true)
+  })
 })

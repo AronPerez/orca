@@ -62,6 +62,40 @@ describe('createWorkspaceFromComposerSource', () => {
     })
   })
 
+  it('keeps the work-item draft while applying authoritative identity launch params', async () => {
+    const calls: Call[] = []
+    const client = fakeClient(() => ({ worktree: { id: 'wt-identity' } }), calls)
+    const selection: MobileComposerCreateSelection = {
+      kind: 'work-item',
+      item: {
+        provider: 'github',
+        type: 'issue',
+        number: 8,
+        title: 'Identity launch',
+        url: 'https://github.com/acme/app/issues/8',
+        repoId: 'repo-1'
+      }
+    }
+
+    await createWorkspaceFromComposerSource({
+      client,
+      selection,
+      ...baseArgs,
+      agent: {
+        choice: 'codex',
+        startupCommand: 'codex --legacy',
+        launchParams: { agentLaunch: { selection: { kind: 'agent', agent: 'codex' } } }
+      }
+    })
+
+    expect(calls[0]!.params).toMatchObject({
+      startupDraft: 'https://github.com/acme/app/issues/8',
+      agentLaunch: { selection: { kind: 'agent', agent: 'codex' } }
+    })
+    expect(calls[0]!.params).not.toHaveProperty('startupCommand')
+    expect(calls[0]!.params).not.toHaveProperty('createdWithAgent')
+  })
+
   it('passes composer-resolved PR base fields straight through (no re-resolve)', async () => {
     const calls: Call[] = []
     const client = fakeClient(() => ({ worktree: { id: 'wt-2' } }), calls)

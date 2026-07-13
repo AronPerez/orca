@@ -1,4 +1,4 @@
-import type { TuiAgent } from '../../../src/shared/types'
+import type { BuiltInTuiAgent, TuiAgent } from '../../../src/shared/types'
 import {
   filterEnabledMobileTuiAgents,
   isMobileTuiAgent,
@@ -20,14 +20,19 @@ export function orderMobileNewTabAgents(
   defaultAgent: TuiAgent | 'blank' | null | undefined,
   detectedAgents: Iterable<unknown>,
   disabledAgents?: unknown
-): TuiAgent[] {
+): BuiltInTuiAgent[] {
   const detected = new Set([...detectedAgents].filter(isMobileTuiAgent))
   const enabledDetected = filterEnabledMobileTuiAgents(
     MOBILE_TUI_AGENT_AUTO_PICK_ORDER,
     disabledAgents
   ).filter((agent) => detected.has(agent))
 
-  if (defaultAgent && defaultAgent !== 'blank' && enabledDetected.includes(defaultAgent)) {
+  if (
+    defaultAgent &&
+    defaultAgent !== 'blank' &&
+    isMobileTuiAgent(defaultAgent) &&
+    enabledDetected.includes(defaultAgent)
+  ) {
     return [defaultAgent, ...enabledDetected.filter((agent) => agent !== defaultAgent)]
   }
   return enabledDetected
