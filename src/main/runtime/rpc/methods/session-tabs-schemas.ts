@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import { MAX_QUICK_COMMAND_AGENT_PROMPT_LENGTH } from '../../../../shared/terminal-quick-commands'
-import { isTuiAgent } from '../../../../shared/tui-agent-config'
-import type { TuiAgent } from '../../../../shared/types'
+import { isBuiltInTuiAgent } from '../../../../shared/tui-agent-config'
+import type { BuiltInTuiAgent } from '../../../../shared/types'
 import { sleepingAgentLaunchConfigSchema } from '../../../../shared/workspace-session-sleeping-agents'
 import { RUNTIME_NAVIGATION_TARGETS } from '../../../../shared/runtime-navigation'
+import { AgentLaunchInputSchema } from './agent-launch-spawn-schema'
+import { agentLaunchNoticeCodeSchema } from '../../../../shared/agent-launch-notice-schema'
 import { OptionalBoolean } from '../schemas'
 
 export const WorktreeTabSelector = z.object({
@@ -112,6 +114,16 @@ export const SetTabProps = WorktreeTabSelector.extend({
   viewMode: z.enum(['terminal', 'chat']).optional()
 })
 
+export const DismissLaunchNotice = WorktreeTabSelector.extend({
+  tabId: z
+    .unknown()
+    .transform((v) => (typeof v === 'string' ? v : ''))
+    .pipe(z.string().min(1, 'Missing tab id')),
+  launchToken: z.string().min(1).max(128),
+  // A non-enum code fails validation here so dismissal fails closed.
+  code: agentLaunchNoticeCodeSchema
+})
+
 export const CreateTerminalTab = WorktreeTabSelector.extend({
   afterTabId: z.string().optional(),
   targetGroupId: z.string().optional(),
@@ -122,8 +134,10 @@ export const CreateTerminalTab = WorktreeTabSelector.extend({
   startupCommandDelivery: z.enum(['fast', 'shell-ready']).optional(),
   launchConfig: sleepingAgentLaunchConfigSchema,
   launchToken: z.string().min(1).max(128).optional(),
+  // Why: legacy preset field. Built-in ids only — a custom agent id is admitted
+  // solely on the sanctioned `agentLaunch` path (U3), never a legacy field.
   agent: z
-    .custom<TuiAgent>(isTuiAgent, {
+    .custom<BuiltInTuiAgent>(isBuiltInTuiAgent, {
       message: 'Unknown agent preset'
     })
     .optional(),
@@ -135,13 +149,16 @@ export const CreateTerminalTab = WorktreeTabSelector.extend({
     .refine((value) => value.trim().length > 0, { message: 'Agent prompt cannot be empty' })
     .optional(),
   // Why: `agent` is the legacy preset field; `launchAgent` is the launch-plan
-  // identity used when preserving resume config across runtime boundaries.
+  // identity used when preserving resume config across runtime boundaries. Both
+  // reject custom ids on the legacy path.
   launchAgent: z
-    .custom<TuiAgent>(isTuiAgent, {
+    .custom<BuiltInTuiAgent>(isBuiltInTuiAgent, {
       message: 'Unknown launch agent'
     })
     .optional(),
   viewMode: z.enum(['terminal', 'chat']).optional(),
+  // Sanctioned host-resolved launch path; the only field that admits a custom id.
+  agentLaunch: AgentLaunchInputSchema.optional(),
   activate: z.boolean().optional(),
   select: z.boolean().optional(),
   navigation: z.enum(RUNTIME_NAVIGATION_TARGETS).optional(),

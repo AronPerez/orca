@@ -32,6 +32,11 @@ import {
   SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE
 } from '../providers/ssh-filesystem-dispatch'
 import { getActiveSshAiVaultHostInfo, getActiveSshAiVaultHostInfos } from './ssh'
+import {
+  registerAiVaultResumeCommandHandler,
+  type ResolveRuntimeAiVaultResumeDetails
+} from './ai-vault-resume-command'
+import type { VaultResumeAssemblySettings } from '../agent-launch/agent-launch-vault-resume'
 
 const AI_VAULT_CACHE_TTL_MS = 15_000
 const AI_VAULT_ALL_HOST_RUNTIME_TIMEOUT_MS = 3_000
@@ -44,17 +49,15 @@ type AiVaultHandlerOptions = AiVaultSessionSources &
       args: AiVaultListArgs,
       options?: RuntimeAiVaultScanOptions
     ) => Promise<AiVaultListResult>
+    resolveRuntimeAiVaultResumeDetails?: ResolveRuntimeAiVaultResumeDetails
+    // Host settings for AI Vault resume-command assembly (cmd overrides, default
+    // args/env, Windows shell). Absent in tests → assembly falls back to defaults.
+    getVaultResumeSettings?: () => VaultResumeAssemblySettings | undefined
   }
 
-type RuntimeAiVaultScanOptions = {
-  timeoutMs?: number
-}
+type RuntimeAiVaultScanOptions = { timeoutMs?: number }
 
-type CachedAiVaultList = {
-  key: string
-  result: AiVaultListResult
-  expiresAt: number
-}
+type CachedAiVaultList = { key: string; result: AiVaultListResult; expiresAt: number }
 
 type RuntimeAiVaultHostInfo = {
   environmentId: string
@@ -273,6 +276,10 @@ function sshScanIssueResult(args: {
   })
 }
 
+// The desktop's OWN multi-host discovery (local + ssh + runtime), exported so the
+// resume surfaces re-validate against exactly what the picker showed.
+export { listAiVaultSessions as discoverAiVaultSessionsAcrossHosts }
+
 export function registerAiVaultHandlers(options: AiVaultHandlerOptions = {}): void {
   handlerOptions = options
   // Why: configure the SAME shared cache module the runtime RPC method uses so
@@ -289,6 +296,7 @@ export function registerAiVaultHandlers(options: AiVaultHandlerOptions = {}): vo
     (_event, args?: AiVaultSubagentListArgs): Promise<AiVaultSubagentListResult> =>
       listAiVaultSubagentSessions(args)
   )
+  registerAiVaultResumeCommandHandler(listAiVaultSessions, options)
   // DOM focus/visibility events don't fire in the renderer on macOS app
   // activation, so refresh-on-refocus needs this main-process signal.
   app.on('browser-window-focus', (_event, window) => {

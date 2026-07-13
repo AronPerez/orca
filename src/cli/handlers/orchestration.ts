@@ -645,6 +645,32 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
   },
 
   'orchestration dispatch-show': async ({ flags, client, cwd, json }) => {
+    // Why (§U9 W-T2): --raw reads the un-projected dispatch status, so an operator
+    // sees the durable 'forgotten' disposition (and its structured launch failure)
+    // rather than the legacy 'forgotten'->'failed' coalescing the default read keeps
+    // for older CLI versions. Mutually exclusive with --preamble (a preview concept).
+    if (flags.has('raw')) {
+      const result = await client.call<{
+        dispatch: {
+          id: string
+          task_id: string
+          status: string
+          agent_launch_failure: string | null
+        } | null
+      }>('orchestration.dispatchShowRaw', {
+        task: getRequiredStringFlag(flags, 'task')
+      })
+      printResult(result, json, (r) => {
+        if (!r.dispatch) {
+          return 'No dispatch context found.'
+        }
+        const failure = r.dispatch.agent_launch_failure
+          ? ` failure=${r.dispatch.agent_launch_failure}`
+          : ''
+        return `${r.dispatch.id} task=${r.dispatch.task_id} [${r.dispatch.status}]${failure}`
+      })
+      return
+    }
     const showPreamble = flags.has('preamble') ? true : undefined
     // Why: resolve --from so the previewed preamble embeds a real coordinator handle like an actual dispatch.
     const from = showPreamble
@@ -667,6 +693,25 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
         return 'No dispatch context found.'
       }
       return `${r.dispatch.id} task=${r.dispatch.task_id} [${r.dispatch.status}]`
+    })
+  },
+
+  'orchestration dispatch-forget': async ({ flags, client, json }) => {
+    // Why (§U9 W-T2, plan :498): owner-authorized Forget of a dispatch stranded in
+    // launch_state_unknown. The task returns to 'blocked' and requires an explicit
+    // later Retry — the existing `task-update --status ready` action, surfaced in the
+    // success hint so the CLI operator has the whole recovery loop in one place.
+    const result = await client.call<{
+      dispatch: { id: string; task_id: string; status: string } | null
+    }>('orchestration.dispatchForget', {
+      task: getRequiredStringFlag(flags, 'task'),
+      expectedFailureId: getOptionalStringFlag(flags, 'expected-failure-id')
+    })
+    printResult(result, json, (r) => {
+      if (!r.dispatch) {
+        return 'No dispatch context found.'
+      }
+      return `Forgot dispatch ${r.dispatch.id} task=${r.dispatch.task_id} [${r.dispatch.status}]. Task is blocked; retry with: orca orchestration task-update --id ${r.dispatch.task_id} --status ready`
     })
   },
 

@@ -69,6 +69,7 @@ import {
   type AgentProviderSessionMetadata
 } from '../../shared/agent-session-resume'
 import { isCommandCodeNewTurnWhileWorking } from '../../shared/command-code-turn-boundary'
+import { getHostAgentSessionRecordStore } from '../agent-launch/agent-session-record-store-host'
 
 export type { AgentHookSource }
 
@@ -949,6 +950,16 @@ export class AgentHookServer {
     const enriched = this.attachStatusTiming(effectivePayload, now)
     this.runtimeObservedStatusPaneKeys.add(enriched.paneKey)
     this.state.lastStatusByPaneKey.set(enriched.paneKey, enriched)
+    // Bind this launch's host-private resume record to the provider session the
+    // hook reports (U5). The store keys on the launch token, validates the session
+    // against the launch's OWN base agent (ignoring incompatible provider
+    // evidence), and no-ops after the first bind, so calling per event is cheap.
+    if (enriched.launchToken && enriched.providerSession) {
+      getHostAgentSessionRecordStore().bindProviderSessionByToken(
+        enriched.launchToken,
+        enriched.providerSession
+      )
+    }
     this.scheduleStatusPersist()
     this.notifyStatusChangeListeners()
     this.onAgentStatus?.(enriched)

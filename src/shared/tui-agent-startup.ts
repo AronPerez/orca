@@ -13,6 +13,7 @@ import {
   type AgentStartupShell
 } from './tui-agent-startup-shell'
 import { TUI_AGENT_CONFIG } from './tui-agent-config'
+import { requireBuiltInTuiAgentConfig } from './custom-tui-agents'
 import type { StartupCommandDelivery } from './codex-startup-delivery'
 import { buildSleepingAgentLaunchConfig } from './sleeping-agent-launch-config'
 import { planHermesStartupQuery } from './hermes-startup-query'
@@ -59,7 +60,7 @@ export function buildAgentStartupPlan(args: {
   const { agent, prompt, cmdOverrides, platform, allowEmptyPromptLaunch = false } = args
   const shell = resolveStartupShell(platform, args.shell)
   const trimmedPrompt = prompt.trim()
-  const config = TUI_AGENT_CONFIG[agent]
+  const config = requireBuiltInTuiAgentConfig(agent)
   const usesQuery = config.promptInjectionMode === 'hermes-query' && Boolean(trimmedPrompt)
   const baseCommand = resolveAgentLaunchCommand({
     agent,
@@ -260,7 +261,7 @@ export function buildAgentDraftLaunchPlan(args: {
 }): AgentDraftLaunchPlan | null {
   const { agent, draft, cmdOverrides, platform } = args
   const shell = resolveStartupShell(platform, args.shell)
-  const config = TUI_AGENT_CONFIG[agent]
+  const config = requireBuiltInTuiAgentConfig(agent)
   const trimmed = draft.trim()
   if (!trimmed) {
     return null

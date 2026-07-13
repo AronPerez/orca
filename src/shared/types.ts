@@ -29,6 +29,17 @@ import type {
   SourceControlAiSettings
 } from './source-control-ai-types'
 import type { StartupCommandDelivery } from './codex-startup-delivery'
+// Type-only import; the cycle with agent-launch-contract (which imports TuiAgent
+// from here) is erased at compile time.
+import type {
+  AgentLaunchFailure,
+  AgentLaunchReceipt,
+  AgentLaunchRequestError,
+  PersistedAgentLaunchFailure,
+  PersistedLaunchNoticeState
+} from './agent-launch-contract'
+import type { AgentLaunchSpawnRequest } from './agent-launch-spawn-request'
+import type { BackgroundAgentLaunchAttempt } from './background-agent-launch'
 import type { AgentKind, LaunchSource, RequestKind } from './telemetry-events'
 import type { SleepingAgentLaunchConfig, SleepingAgentSessionRecord } from './agent-session-resume'
 import type { ClaudeAgentTeamsMode } from './claude-agent-teams-tmux-compat'
@@ -530,6 +541,19 @@ export type Worktree = {
   diffComments?: DiffComment[]
   mobileDiffReview?: MobileDiffReviewState
   automationProvenance?: AutomationWorkspaceProvenance
+  /** Client-safe mirror of {@link WorktreeMeta.pendingAgentLaunch} for the
+   *  post-create recovery card; carries only anti-race guards and display
+   *  attribution, never the private launch snapshot or token. */
+  pendingAgentLaunch?: WorktreeMeta['pendingAgentLaunch']
+  /** Client-safe mirror of {@link WorktreeMeta.agentLaunchFailure}: the durable
+   *  post-create failure the recovery card renders. Only codes + repair hints. */
+  agentLaunchFailure?: PersistedAgentLaunchFailure
+  /** Client-safe projection of the SEPARATE generic background-attempt store
+   *  (U6), filtered to attempts targeting this worktree. Distinct from the
+   *  interactive two-stage `pendingAgentLaunch`/`agentLaunchFailure` above so an
+   *  unattended background failure survives reload and renders its own recovery
+   *  card without conflating the two. Omitted when there are none. */
+  backgroundAgentLaunches?: BackgroundAgentLaunchAttempt[]
 } & GitWorktreeInfo
 
 export type AutomationWorkspaceProvenance = {
@@ -616,6 +640,20 @@ export type WorktreeMeta = {
   pendingFirstAgentMessageRename?: boolean
   /** See {@link Worktree.firstAgentMessageRenameError}. */
   firstAgentMessageRenameError?: string | null
+  /** In-flight/committed agent launch for a two-stage creation transaction.
+   *  Client-safe: `operationId`/`priorFailureId` are anti-race guards (not
+   *  secrets, they appear in client metadata), `requestedAgent` is display
+   *  attribution. The private launch snapshot and token live only in the host
+   *  operation store and never enter this record. */
+  pendingAgentLaunch?: {
+    operationId: string
+    requestedAgent: TuiAgent
+    priorFailureId?: string
+  }
+  /** Durable failure from a post-create final-resolution or spawn failure. The
+   *  workspace is retained and Retry / Choose agent recover from this record;
+   *  a successful (re)launch clears it. */
+  agentLaunchFailure?: PersistedAgentLaunchFailure
   sparseDirectories?: string[]
   sparseBaseRef?: string
   sparsePresetId?: string
@@ -865,6 +903,10 @@ export type TerminalTab = {
    *  hook status overrides this once the agent does anything. Plain terminals
    *  and manually-started agents omit it. */
   launchAgent?: TuiAgent
+  /** Host-owned agent-launch notices + their dismissal token for this terminal.
+   *  The host is the sole owner; renderer/mobile mirror it and never recreate a
+   *  dismissed notice. Absent when no agent launch produced a notice. */
+  launchNotices?: PersistedLaunchNoticeState
   /** Why: when `setActiveWorktree` bumps generation on all-dead tabs to drive a
    *  TerminalPane remount, the fresh PTY that results is caused by navigation,
    *  not by the user doing work. Without this flag the resulting
@@ -2104,7 +2146,16 @@ export type WorktreeStartupLaunch = {
   launchToken?: string
   launchAgent?: TuiAgent
   startupCommandDelivery?: StartupCommandDelivery
-  telemetry?: { agent_kind: AgentKind; launch_source: LaunchSource; request_kind: RequestKind }
+  // agent_kind + used_custom_agent are host-authoritative on a resolved launch
+  // (the host overwrites them before spawn from the validated snapshot/receipt);
+  // launch_source/request_kind are surface-owned. Both are optional: host-resolved
+  // sites omit agent_kind, legacy non-resolver launches still thread it.
+  telemetry?: {
+    agent_kind?: AgentKind
+    launch_source: LaunchSource
+    request_kind: RequestKind
+    used_custom_agent?: boolean
+  }
 }
 
 export type WorktreeDefaultTabsLaunch = {
@@ -2191,6 +2242,17 @@ export type CreateWorktreeArgs = {
   /** Optional startup command for callers that want the backend to spawn the
    *  first terminal as soon as the worktree is registered. */
   startup?: WorktreeStartupLaunch
+  /** Host-resolved agent launch for a transactional two-stage create. When
+   *  present the host owns resolution and IGNORES createdWithAgent/startup for
+   *  the agent terminal — the same request shape carried by pty:spawn,
+   *  terminal.create, and session.tabs.createTerminal (one launch contract
+   *  across every surface). */
+  agentLaunch?: AgentLaunchSpawnRequest
+  /** Surface-owned `agent_started` fields for a host-emitted interactive create.
+   *  Sent only for interactive agentLaunch creates; the host derives agent_kind +
+   *  used_custom_agent from the resolved receipt and never accepts them here.
+   *  Omission means the host emits nothing (background/automation creates). */
+  agentLaunchTelemetry?: { launch_source: LaunchSource; request_kind: RequestKind }
   /** Correlates `createWorktree:progress` events back to a specific pending
    *  creation in the renderer, so concurrent background creates each drive
    *  their own status surface. Omitted by synchronous callers. */
@@ -2199,7 +2261,10 @@ export type CreateWorktreeArgs = {
   automationProvenanceRequest?: AutomationWorkspaceProvenanceRequest
 }
 
-export type CreateWorktreeResult = {
+export type CreatedWorktreeResult = {
+  // Discriminates the created arm from a pre-create rejection. Optional so the
+  // many producers that build a created result need not set it explicitly.
+  created?: true
   worktree: Worktree & {
     parentWorktreeId?: string | null
     childWorktreeIds?: string[]
@@ -2225,7 +2290,33 @@ export type CreateWorktreeResult = {
     surface?: 'visible' | 'background'
   }
   timing?: WorktreeCreateTiming
+  // Present only when the create requested an agent (two-stage launch). A
+  // post-create resolution/spawn failure is an RPC success carrying the created
+  // worktree plus `status: 'failed'`, never a rejected request that loses the id.
+  agentLaunchResult?:
+    | { status: 'launched'; receipt: AgentLaunchReceipt }
+    | { status: 'failed'; failure: PersistedAgentLaunchFailure }
 }
+
+/** Pre-create agent-launch rejection: validation failed before any git side
+ *  effect, so NO worktree exists. Carried in-band (never a thrown RPC error,
+ *  which serializes lossily and drops the typed hints) so every transport can
+ *  keep the composer open with client-safe recovery hints. */
+export type WorktreeAgentLaunchRejection =
+  // Transient (not persisted): no worktree was created, so there is no owner
+  // record to hold the failure. Mirrors terminal.create's pre-spawn outcome.
+  | { status: 'failed'; failure: AgentLaunchFailure }
+  | { status: 'rejected'; requestError: AgentLaunchRequestError }
+
+export type NotCreatedWorktreeResult = {
+  created: false
+  agentLaunchResult: WorktreeAgentLaunchRejection
+}
+
+/** Result of a worktree create request: either the created worktree (optionally
+ *  carrying a post-create launch result) or a pre-create rejection that created
+ *  nothing. The rejection arm only occurs on the runtime/host launch path. */
+export type CreateWorktreeResult = CreatedWorktreeResult | NotCreatedWorktreeResult
 
 export type PreservedWorktreeBranch = {
   branchName: string
@@ -2437,9 +2528,10 @@ export type ClaudeManagedAccountRuntimeSelection = {
   wsl: Record<string, string | null>
 }
 
-/** All AI coding agents Orca knows how to launch. Used for the agent picker in the new-workspace
- *  flow and for the default-agent setting. Extend this union as new agents are added. */
-export type TuiAgent =
+/** The closed set of built-in AI coding agents Orca knows how to launch. Static behavior
+ *  registries (launch config, display names, telemetry kind, permissions, mobile parity)
+ *  are keyed by this union only. Extend it as new built-in agents are added. */
+export type BuiltInTuiAgent =
   | 'claude' // Claude Code
   | 'claude-agent-teams' // Claude Code Agent Teams via Orca native panes
   | 'openclaude' // OpenClaude
@@ -2474,6 +2566,38 @@ export type TuiAgent =
   | 'grok' // xAI Grok CLI
   | 'devin' // Devin CLI
   | 'ante' // Ante (Antigma Labs)
+
+/** Durable identity of a user-defined agent derived from a built-in base harness.
+ *  Newly minted suffixes are canonical lowercase RFC 4122 UUIDs; ids are never reused. */
+export type CustomTuiAgentId = `custom-agent:${BuiltInTuiAgent}:${string}`
+
+/** Any agent identity a launch surface may request: a built-in or a custom derivative.
+ *  Dynamic identity collections (defaults, disabled lists, quick commands, sessions) use
+ *  this union; static behavior registries stay keyed by `BuiltInTuiAgent` and dynamic
+ *  values must resolve through the catalog identity accessor first. */
+export type TuiAgent = BuiltInTuiAgent | CustomTuiAgentId
+
+export type CustomTuiAgent = {
+  id: CustomTuiAgentId
+  baseAgent: BuiltInTuiAgent
+  label: string
+  /** One executable argv element replacing the whole base command prefix; never reparsed. */
+  commandOverride?: string
+  /** Freeform args template in the shell-independent v1 grammar (tokenized before interpolation). */
+  args: string
+  env: Record<string, string>
+  /** Whether launches started from paired devices may use this agent's env values on the host. */
+  syncEnv: boolean
+}
+
+/** Tombstone kept while any persisted owner still references the deleted id. It carries
+ *  identity/label only — args, env, and executable override are never recoverable. */
+export type DeletedCustomTuiAgent = {
+  id: CustomTuiAgentId
+  baseAgent: BuiltInTuiAgent
+  label: string
+  deletedAt: number
+}
 
 export type TaskViewPresetId = 'all' | 'issues' | 'review' | 'my-issues' | 'my-prs' | 'prs'
 
@@ -2790,13 +2914,30 @@ export type GlobalSettings = {
   /** Kill switch for main's model query responder (Phase 5); active only when both Phase-4 gates are also on. */
   terminalModelQueryAuthority?: boolean
   /** Which agent to pre-select in the new-workspace composer.
-   *  - null: auto (first detected agent)
+   *  - 'auto': first detected enabled built-in in canonical order (host-resolved)
    *  - 'blank': blank terminal (no agent launched)
-   *  - TuiAgent: a specific agent id */
-  defaultTuiAgent: TuiAgent | 'blank' | null
-  /** Agents hidden from picker/auto-launch; detection stays a raw PATH snapshot. */
+   *  - TuiAgent: a specific agent id
+   *  - null: invalid/repaired default needing user attention (never auto-selects).
+   *  Legacy pre-v1 `null` meant Auto; the one-time schema migration maps it to 'auto'. */
+  defaultTuiAgent: TuiAgent | 'auto' | 'blank' | null
+  /** Agents hidden from future picker and automatic launch choices. Authoritative
+   *  enabled-state for built-ins and custom agents alike. Detection remains a raw
+   *  PATH capability snapshot. */
   disabledTuiAgents: TuiAgent[]
-  /** One-shot guard: start Claude Agent Teams hidden for existing profiles without overriding later opt-ins. */
+  /** User-defined custom agents in creation order (the persisted array is the
+   *  creation-order authority; normalization never reorders surviving rows). */
+  customTuiAgents?: CustomTuiAgent[]
+  /** Reference-counted tombstones for deleted custom agents; pruned only after an
+   *  authoritative recheck proves zero references across every owner store. */
+  deletedCustomTuiAgents?: DeletedCustomTuiAgent[]
+  /** Agent catalog persistence schema version; 1 = custom-agent catalog with 'auto' default. */
+  agentCatalogSchemaVersion?: number
+  /** Monotonic revision incremented once per atomic agent-catalog mutation. */
+  agentCatalogRevision?: number
+  /** Monotonic revision incremented once per atomic agent-reference mutation. */
+  agentReferenceRevision?: number
+  /** One-shot guard so the experimental Claude Agent Teams launch mode starts
+   *  hidden for existing profiles without overriding later user opt-ins. */
   claudeAgentTeamsDefaultDisabledMigrated?: boolean
   /** Why: worktree deletion is destructive (rm -rf of the working dir), so confirm by default. */
   skipDeleteWorktreeConfirm: boolean
@@ -2830,20 +2971,23 @@ export type GlobalSettings = {
   minimaxUsageModels: string
   /** Extract OAuth credentials from the local Gemini CLI for rate-limit fetching. Off by default (explicit opt-in). */
   geminiCliOAuthEnabled: boolean
-  /** Per-agent CLI command overrides. A missing key means use the catalog default binary name. */
-  agentCmdOverrides: Partial<Record<TuiAgent, string>>
-  /** Custom CODEX_HOME for Codex session-history discovery (defaults to ~/.codex).
-   *  History-only: does not change which account/config/hooks Orca uses. */
+  /** Per-built-in CLI command overrides. A missing key means use the catalog default binary
+   *  name. Custom-agent configuration lives only on `CustomTuiAgent`. */
+  agentCmdOverrides: Partial<Record<BuiltInTuiAgent, string>>
+  /** Why: Orca bridges Codex session history from the user's real Codex home into
+   *  its managed home so /resume finds it, but defaults to ~/.codex. Users who run
+   *  Codex with a custom CODEX_HOME can point history discovery at that folder here.
+   *  History-only: this does not change which account/config/hooks Orca uses. */
   codexSessionSourceHome?: {
     /** Absolute host path; empty/undefined falls back to ~/.codex. */
     host?: string
     /** Per-WSL-distro absolute Linux path; missing distro falls back to <wslHome>/.codex. */
     wsl?: Record<string, string>
   }
-  /** Per-agent default CLI arguments appended after the binary/path and before prompts. */
-  agentDefaultArgs?: Partial<Record<TuiAgent, string>>
-  /** Per-agent launch environment defaults used when yolo mode is exposed as env. */
-  agentDefaultEnv?: Partial<Record<TuiAgent, Record<string, string>>>
+  /** Per-built-in default CLI arguments appended after the binary/path and before prompts. */
+  agentDefaultArgs?: Partial<Record<BuiltInTuiAgent, string>>
+  /** Per-built-in launch environment defaults used when yolo mode is exposed as env. */
+  agentDefaultEnv?: Partial<Record<BuiltInTuiAgent, Record<string, string>>>
   /** One-shot guard for adding yolo-mode default args to untouched agent launch profiles. */
   agentYoloDefaultsMigrated?: boolean
   /** Why: disabling must persist so startup doesn't reinstall global agent hook entries the user just removed. */

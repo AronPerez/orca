@@ -321,6 +321,9 @@ const MOBILE_RPC_METHOD_ALLOWLIST = new Set([
   'session.tabs.activate',
   'session.tabs.close',
   'session.tabs.createTerminal',
+  // Why: the mobile launch-notice banner dismisses host-owned notices; the
+  // dismissal is launchToken-scoped host-side, so allowlisting is read-safe.
+  'session.tabs.dismissLaunchNotice',
   'session.tabs.list',
   'session.tabs.listAll',
   'session.tabs.move',
@@ -333,6 +336,9 @@ const MOBILE_RPC_METHOD_ALLOWLIST = new Set([
   'nativeChat.unsubscribe',
   'settings.get',
   'settings.getTerminalQuickCommands',
+  // Why: env-free reference snapshot fetch for the mobile agent-reference
+  // cache; authoring mutations stay desktop-only and are NOT allowlisted.
+  'settings.agentReferences.get',
   'settings.update',
   'settings.updateTerminalQuickCommands',
   'ssh.connect',

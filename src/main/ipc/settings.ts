@@ -32,10 +32,38 @@ type LegacyTerminalScrollbackSettingsUpdate = Partial<GlobalSettings> & {
   terminalScrollbackBytes?: unknown
 }
 
+// Why: these keys are owned by the atomic catalog/reference mutation APIs
+// (settings.mutateAgentCatalog and the owner-specific reference mutations).
+// Accepting them through the generic settings write would bypass revision
+// checks, id minting, tombstone bookkeeping, and the reference index.
+const AGENT_CATALOG_OWNED_SETTINGS_KEYS = [
+  'defaultTuiAgent',
+  'disabledTuiAgents',
+  'customTuiAgents',
+  'deletedCustomTuiAgents',
+  'agentCatalogSchemaVersion',
+  'agentCatalogRevision',
+  'agentCmdOverrides',
+  'agentDefaultArgs',
+  'agentDefaultEnv'
+] as const
+const AGENT_REFERENCE_OWNED_SETTINGS_KEYS = [
+  'agentReferenceRevision',
+  'terminalQuickCommands',
+  'commitMessageAi',
+  'sourceControlAi'
+] as const
+
 function sanitizeRendererSettingsUpdate(args: Partial<GlobalSettings>): Partial<GlobalSettings> {
   const { terminalScrollbackBytes: _legacyScrollbackBytes, ...sanitizedArgs } =
     args as LegacyTerminalScrollbackSettingsUpdate
   void _legacyScrollbackBytes
+  for (const key of AGENT_CATALOG_OWNED_SETTINGS_KEYS) {
+    delete sanitizedArgs[key]
+  }
+  for (const key of AGENT_REFERENCE_OWNED_SETTINGS_KEYS) {
+    delete sanitizedArgs[key]
+  }
   return sanitizedArgs
 }
 

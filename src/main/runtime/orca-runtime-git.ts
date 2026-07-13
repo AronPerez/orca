@@ -16,6 +16,7 @@ import type {
   TuiAgent,
   Worktree
 } from '../../shared/types'
+import { resolveTuiAgentBaseAgent } from '../../shared/custom-tui-agents'
 import type { CommitMessageDraftContext } from '../../shared/commit-message-generation'
 import { getCommitMessageModelDiscoveryHostKey } from '../../shared/commit-message-host-key'
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
@@ -782,9 +783,18 @@ export class RuntimeGitCommands {
   ): Promise<DiscoverCommitMessageModelsResult> {
     const target = await this.host.resolveRuntimeGitTarget(worktreeSelector)
     const typedAgentId = agentId as TuiAgent
-    const agentCommandOverride =
-      settingsOverride?.agentCmdOverrides?.[typedAgentId] ??
-      this.host.getRuntimeSettings().agentCmdOverrides?.[typedAgentId]
+    // Resolve to base before indexing the built-in-only override map: a custom id
+    // shares its base CLI's model set, so its command override keys on the base.
+    const runtimeSettings = this.host.getRuntimeSettings()
+    const overrideBase = resolveTuiAgentBaseAgent(
+      typedAgentId,
+      runtimeSettings.customTuiAgents,
+      runtimeSettings.deletedCustomTuiAgents
+    )
+    const agentCommandOverride = overrideBase
+      ? (settingsOverride?.agentCmdOverrides?.[overrideBase] ??
+        runtimeSettings.agentCmdOverrides?.[overrideBase])
+      : undefined
     if (target.connectionId) {
       const provider = getSshGitProvider(target.connectionId)
       if (!provider) {

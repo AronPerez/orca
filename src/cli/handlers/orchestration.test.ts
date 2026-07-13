@@ -509,6 +509,72 @@ describe('orchestration dispatch coordinator handle', () => {
   })
 })
 
+describe('orchestration dispatch Forget + raw read CLI handlers (W-T2)', () => {
+  beforeEach(() => {
+    callMock.mockReset()
+  })
+
+  const invoke = (key: string, flags: Map<string, string | boolean>) =>
+    ORCHESTRATION_HANDLERS[key]({
+      flags,
+      client: { call: callMock },
+      cwd: '/tmp/repo',
+      json: true
+    } as never)
+
+  it('dispatch-forget invokes dispatchForget with the task and expected failure id', async () => {
+    callMock.mockResolvedValue({
+      dispatch: { id: 'ctx_1', task_id: 'task_1', status: 'forgotten' }
+    })
+
+    await invoke(
+      'orchestration dispatch-forget',
+      new Map<string, string | boolean>([
+        ['task', 'task_1'],
+        ['expected-failure-id', 'fail-1']
+      ])
+    )
+
+    expect(callMock).toHaveBeenCalledWith('orchestration.dispatchForget', {
+      task: 'task_1',
+      expectedFailureId: 'fail-1'
+    })
+  })
+
+  it('dispatch-forget omits expectedFailureId when the flag is absent', async () => {
+    callMock.mockResolvedValue({
+      dispatch: { id: 'ctx_1', task_id: 'task_1', status: 'forgotten' }
+    })
+
+    await invoke(
+      'orchestration dispatch-forget',
+      new Map<string, string | boolean>([['task', 'task_1']])
+    )
+
+    expect(callMock).toHaveBeenCalledWith('orchestration.dispatchForget', {
+      task: 'task_1',
+      expectedFailureId: undefined
+    })
+  })
+
+  it('dispatch-show --raw reads the un-projected status via dispatchShowRaw (never the projected read)', async () => {
+    callMock.mockResolvedValue({
+      dispatch: { id: 'ctx_1', task_id: 'task_1', status: 'forgotten', agent_launch_failure: null }
+    })
+
+    await invoke(
+      'orchestration dispatch-show',
+      new Map<string, string | boolean>([
+        ['task', 'task_1'],
+        ['raw', true]
+      ])
+    )
+
+    expect(callMock).toHaveBeenCalledWith('orchestration.dispatchShowRaw', { task: 'task_1' })
+    expect(callMock).not.toHaveBeenCalledWith('orchestration.dispatchShow', expect.anything())
+  })
+})
+
 describe('orchestration task-create caller handle', () => {
   beforeEach(() => {
     callMock.mockReset()

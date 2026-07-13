@@ -1,10 +1,9 @@
 import { getTuiAgentDetectCommands, TUI_AGENT_CONFIG } from './tui-agent-config'
 import type { AgentType } from './agent-status-types'
-import type { TuiAgent } from './types'
+import type { BuiltInTuiAgent } from './types'
 import { filterHeadlessOneShotAgentCommand } from './agent-headless-command'
-import { getFirstCommandToken } from './command-token-scanner'
 
-export type RecognizedAgentProcess = { agent: TuiAgent; processName: string }
+export type RecognizedAgentProcess = { agent: BuiltInTuiAgent; processName: string }
 
 const PROCESS_EXTENSION_RE = /\.(?:exe|cmd|bat|ps1)$/i
 const INTERPRETER_SCRIPT_EXTENSION_RE = /\.(?:js|mjs|cjs)$/i
@@ -54,18 +53,18 @@ const NODE_PACKAGE_SCRIPT_ENTRYPOINTS: Record<string, readonly string[]> = {
 }
 const PYTHON_SCRIPT_ENTRYPOINT_DIRECTORIES = ['/bin/', '/scripts/', '/site-packages/']
 
-const PROCESS_TO_AGENT = new Map<string, TuiAgent>()
-const AGENT_TYPE_IDS = new Set<TuiAgent>()
+const PROCESS_TO_AGENT = new Map<string, BuiltInTuiAgent>()
+const AGENT_TYPE_IDS = new Set<BuiltInTuiAgent>()
 
 for (const [agent, config] of Object.entries(TUI_AGENT_CONFIG) as [
-  TuiAgent,
-  (typeof TUI_AGENT_CONFIG)[TuiAgent]
+  BuiltInTuiAgent,
+  (typeof TUI_AGENT_CONFIG)[BuiltInTuiAgent]
 ][]) {
   AGENT_TYPE_IDS.add(agent)
   for (const candidate of [
     config.expectedProcess,
     ...getTuiAgentDetectCommands(config),
-    getFirstCommandToken(config.launchCmd)
+    config.launchArgv[0]
   ]) {
     const normalized = normalizeProcessName(candidate)
     if (normalized) {
@@ -79,7 +78,7 @@ for (const [agent, config] of Object.entries(TUI_AGENT_CONFIG) as [
   }
 }
 
-function agentForNormalizedProcess(normalized: string): TuiAgent | undefined {
+function agentForNormalizedProcess(normalized: string): BuiltInTuiAgent | undefined {
   const exact = PROCESS_TO_AGENT.get(normalized)
   if (exact) {
     return exact
@@ -330,7 +329,7 @@ export function isRecognizedAgentType(agentType: AgentType | null | undefined): 
     return false
   }
   return (
-    AGENT_TYPE_IDS.has(agentType as TuiAgent) ||
+    AGENT_TYPE_IDS.has(agentType as BuiltInTuiAgent) ||
     agentForNormalizedProcess(normalizeProcessName(agentType)) !== undefined
   )
 }

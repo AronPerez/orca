@@ -110,7 +110,9 @@ import {
   LOCAL_PTY_FORCE_KILL_RETRY_MS,
   LOCAL_PTY_GRACEFUL_FORCE_TIMEOUT_MS,
   LOCAL_PTY_PHYSICAL_EXIT_TIMEOUT_MS,
-  LocalPtyProvider
+  LocalPtyProvider,
+  PANE_IDENTITY_ENV_KEYS,
+  removeUnspecifiedPaneIdentityEnv
 } from './local-pty-provider'
 import { isRootLikePath } from './pty-path-safety'
 import { POWERLEVEL10K_WIZARD_DISABLE_ENV } from '../pty/powerlevel10k-wizard-env'
@@ -1864,5 +1866,39 @@ describe('LocalPtyProvider', () => {
 
       await expect(shutdown).resolves.toBeUndefined()
     })
+  })
+})
+
+// U6 pane-identity strip (ruling #7 verify-first): the spawn strips inherited
+// pane identity so an unattended launch (automation/orchestration/background)
+// never inherits a stale ORCA_PANE_KEY from a parent agent CLI. The daemon
+// subprocess carries an identical strip (pty-subprocess.ts:570).
+describe('removeUnspecifiedPaneIdentityEnv', () => {
+  it('strips every inherited pane-identity key the launch does not re-supply', () => {
+    const env: Record<string, string> = {
+      ORCA_PANE_KEY: 'stale-parent-pane',
+      ORCA_TAB_ID: 'stale-tab',
+      ORCA_WORKTREE_ID: 'stale-wt',
+      ORCA_AGENT_LAUNCH_TOKEN: 'stale-token',
+      PATH: '/usr/bin'
+    }
+    // No explicit env → every inherited pane key is removed; non-pane env stays.
+    removeUnspecifiedPaneIdentityEnv(env, undefined)
+    for (const key of PANE_IDENTITY_ENV_KEYS) {
+      expect(env[key]).toBeUndefined()
+    }
+    expect(env.PATH).toBe('/usr/bin')
+  })
+
+  it('keeps a pane key the launch explicitly supplies its own fresh value for', () => {
+    const env: Record<string, string> = {
+      ORCA_PANE_KEY: 'stale-parent-pane',
+      ORCA_TAB_ID: 'stale-tab'
+    }
+    // A background/automation launch supplies its OWN fresh pane env; that key is
+    // retained (it will be overwritten with the fresh value), the others stripped.
+    removeUnspecifiedPaneIdentityEnv(env, { ORCA_PANE_KEY: 'fresh-child-pane' })
+    expect(env.ORCA_PANE_KEY).toBe('stale-parent-pane')
+    expect(env.ORCA_TAB_ID).toBeUndefined()
   })
 })

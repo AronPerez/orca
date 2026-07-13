@@ -297,8 +297,15 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     terminalMainSideEffectAuthority: true,
     terminalHiddenDeliveryGate: true,
     terminalModelQueryAuthority: true,
-    defaultTuiAgent: null,
+    // Why: new installs persist the explicit 'auto' default directly; null is
+    // reserved post-v1 for a repaired default that needs user attention.
+    defaultTuiAgent: 'auto',
     disabledTuiAgents: [...DEFAULT_DISABLED_TUI_AGENTS],
+    customTuiAgents: [],
+    deletedCustomTuiAgents: [],
+    agentCatalogSchemaVersion: 1,
+    agentCatalogRevision: 1,
+    agentReferenceRevision: 1,
     claudeAgentTeamsDefaultDisabledMigrated: true,
     skipDeleteWorktreeConfirm: false,
     skipCloseTerminalWithRunningProcessConfirm: false,

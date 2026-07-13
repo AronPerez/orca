@@ -4,6 +4,7 @@ import { defineMethod, defineStreamingMethod, type RpcAnyMethod } from '../core'
 import {
   ActivateTab,
   CreateTerminalTab,
+  DismissLaunchNotice,
   MoveTab,
   SaveMarkdownTab,
   SessionTabsUnsubscribe,
@@ -49,8 +50,8 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'session.tabs.createTerminal',
     params: CreateTerminalTab,
-    handler: async (params, { runtime, signal, clientKind, pairedDeviceId }) =>
-      runtime.createMobileSessionTerminal(params.worktree, {
+    handler: async (params, { runtime, clientKind, signal, pairedDeviceId }) => {
+      const baseOpts = {
         afterTabId: params.afterTabId,
         targetGroupId: params.targetGroupId,
         command: params.command,
@@ -64,6 +65,8 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
         ...(params.launchToken ? { launchToken: params.launchToken } : {}),
         ...(params.launchAgent ? { launchAgent: params.launchAgent } : {}),
         ...(params.viewMode ? { viewMode: params.viewMode } : {}),
+        // Authenticated RPC scope for host-resolved launches; never client JSON.
+        clientKind,
         activate: params.activate,
         select: params.select,
         clientNavigationId: pairedDeviceId,
@@ -75,7 +78,16 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
         // Why: a dead client connection must cancel the surface wait instead
         // of running down the timeout and rolling back a live tab (#7718).
         signal
-      })
+      }
+      // A pre-spawn typed failure returns the failure arm as an RPC success.
+      if (params.agentLaunch) {
+        return runtime.createMobileSessionTerminal(params.worktree, {
+          ...baseOpts,
+          agentLaunch: params.agentLaunch
+        })
+      }
+      return runtime.createMobileSessionTerminal(params.worktree, baseOpts)
+    }
   }),
   defineMethod({
     name: 'session.tabs.move',
@@ -126,6 +138,19 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
         ...(params.color !== undefined ? { color: params.color } : {}),
         ...(params.isPinned !== undefined ? { isPinned: params.isPinned } : {}),
         ...(params.viewMode !== undefined ? { viewMode: params.viewMode } : {})
+      })
+  }),
+  defineMethod({
+    // Authenticated transport gates client access; the token + terminal + enum
+    // code are the per-terminal authorization. A non-enum code was already
+    // rejected by the schema, so this fails closed on a foreign/stale token.
+    name: 'session.tabs.dismissLaunchNotice',
+    params: DismissLaunchNotice,
+    handler: async (params, { runtime }) =>
+      runtime.dismissLaunchNotice(params.worktree, {
+        tabId: params.tabId,
+        launchToken: params.launchToken,
+        code: params.code
       })
   }),
   defineStreamingMethod({

@@ -3,6 +3,19 @@ import type { OrchestrationDb } from './db'
 import type { MessageRow, TaskRow, CoordinatorStatus } from './types'
 import { buildDispatchPreamble } from './preamble'
 import { reconcileLifecycleMessage } from './lifecycle-reconciliation'
+import type { PersistedAgentLaunchFailure } from '../../../shared/agent-launch-contract'
+
+/** The host-validated requested/base agent identity recorded on a dispatch. Null
+ *  in every production dispatch until U9 supplies the source; carried here so the
+ *  coordinator can resolve-only re-validate it before injecting a worker prompt. */
+export type DispatchAgentIdentity = { requestedAgent: string; baseAgent: string | null }
+
+/** Result of a resolve-only dispatch identity validation. `ok:false` carries the
+ *  structured launch failure the dispatch's owner record persists — the check
+ *  never creates a terminal or routes through the launch boundary. */
+export type DispatchAgentLaunchValidation =
+  | { ok: true }
+  | { ok: false; error: string; launchFailure: PersistedAgentLaunchFailure }
 
 export type CoordinatorRuntime = {
   sendTerminalAgentPrompt(handle: string, prompt: string): Promise<unknown>
@@ -30,6 +43,14 @@ export type CoordinatorRuntime = {
   getTerminalPaneKey?(handle: string): string | null
   // Why: Windows can host native and WSL workers at once, so the worker pane (not the coordinator) picks the packaged CLI name.
   getTerminalOrchestrationCliCommand?(handle: string): 'orca' | 'orca-ide'
+  // Why (§U6): resolve-only validation of a dispatch's host-validated agent
+  // identity — it classifies whether the identity still resolves to a launchable
+  // agent WITHOUT creating a terminal or routing through the launch boundary. The
+  // coordinator calls it only for a non-null dispatch identity, and production
+  // dispatches carry none until U9 plugs the identity source, so it is inert now.
+  validateDispatchAgentLaunch?(
+    identity: DispatchAgentIdentity
+  ): Promise<DispatchAgentLaunchValidation>
 }
 
 // Why (§3.1): 20 lets normal monorepo day-velocity pass but trips the 168-commit harm from ORCHESTRATOR_FEEDBACK.md (chosen in msg_eff3a646110d).
@@ -58,6 +79,14 @@ export type CoordinatorOptions = {
   maxConcurrent?: number
   worktree?: string
   onLog?: (msg: string) => void
+  // Why (§U6/§U9): the identity source is a seam, not a behavior — U6 left it
+  // absent so every production dispatch recorded a null identity and skipped
+  // launch validation (no behavior change). U9 plugs a resolver that reads the
+  // attribution of the terminal that ACTUALLY receives the work (targetHandle),
+  // not a parsed task field, so validation checks whether the agent this terminal
+  // runs is still launchable. `task` stays in the signature for symmetry; an
+  // unattributed target returns null and skips validation (never guessed).
+  resolveDispatchIdentity?: (task: TaskRow, targetHandle: string) => DispatchAgentIdentity | null
 }
 
 type CoordinatorState = {
@@ -79,9 +108,12 @@ export class Coordinator {
   private runtime: CoordinatorRuntime
   private state: CoordinatorState
   private stopped = false
-  private opts: Required<Omit<CoordinatorOptions, 'onLog' | 'worktree'>> & {
+  private opts: Required<
+    Omit<CoordinatorOptions, 'onLog' | 'worktree' | 'resolveDispatchIdentity'>
+  > & {
     onLog: (msg: string) => void
     worktree?: string
+    resolveDispatchIdentity?: (task: TaskRow, targetHandle: string) => DispatchAgentIdentity | null
   }
 
   constructor(db: OrchestrationDb, runtime: CoordinatorRuntime, options: CoordinatorOptions) {
@@ -93,7 +125,8 @@ export class Coordinator {
       pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_MS,
       maxConcurrent: options.maxConcurrent ?? MAX_CONCURRENT_DEFAULT,
       worktree: options.worktree,
-      onLog: options.onLog ?? (() => {})
+      onLog: options.onLog ?? (() => {}),
+      resolveDispatchIdentity: options.resolveDispatchIdentity
     }
     this.state = {
       runId: '',
@@ -414,13 +447,43 @@ export class Coordinator {
       }
     }
 
+    const identity = this.opts.resolveDispatchIdentity?.(task, targetHandle) ?? null
     const dispatch = this.db.createDispatchContext(
       task.id,
       targetHandle,
-      this.runtime.getTerminalPaneKey?.(targetHandle) ?? undefined
+      this.runtime.getTerminalPaneKey?.(targetHandle) ?? undefined,
+      identity ?? undefined
     )
 
-    // Why: dispatched agents use orca-dev in dev mode to reach the dev runtime's socket, not production (Section 6.4).
+    // Why (§U6): a dispatch carrying a host-validated agent identity is
+    // resolve-only re-validated before prompt injection. A null identity (every
+    // production dispatch until U9 supplies the source) skips this entirely. A
+    // non-null identity that no longer resolves fails the dispatch through the
+    // existing retry/circuit-break path and never injects a prompt, so no agent
+    // launches — the failure lands on the dispatch's owner record, not a PTY.
+    if (identity && this.runtime.validateDispatchAgentLaunch) {
+      const validation = await this.runtime.validateDispatchAgentLaunch(identity)
+      if (!validation.ok) {
+        const updated = this.db.failDispatch(
+          dispatch.id,
+          validation.error,
+          validation.launchFailure
+        )
+        if (updated?.status === 'circuit_broken') {
+          this.state.failedTasks.push(task.id)
+        }
+        this.opts.onLog(
+          `Dispatch of ${task.id} failed launch validation (${validation.launchFailure.code})`
+        )
+        return
+      }
+    }
+
+    // Why: agents dispatched by the coordinator must use orca-dev in dev mode
+    // so they talk to the dev runtime's socket, not production (Section 6.4).
+    // Why (§3.4): `strippedSpec` drops the `allow-stale-base: true` line so
+    // the worker's `--- TASK ---` block does not contain the infra flag (which
+    // the worker would otherwise read as part of its instructions).
     const preamble = buildDispatchPreamble({
       taskId: task.id,
       dispatchId: dispatch.id,

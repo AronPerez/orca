@@ -1334,6 +1334,146 @@ describe('orca cli worktree awareness', () => {
     })
   })
 
+  it('sends the stored-default agent launch for a bare --agent', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        worktree: buildWorktree('/tmp/repo/feature', 'feature', 'abc', 'repo-1'),
+        lineage: null,
+        warnings: [],
+        agentLaunchResult: {
+          status: 'launched',
+          receipt: {
+            requestedAgent: 'codex',
+            baseAgent: 'codex',
+            notices: [],
+            launchToken: 'tok-1',
+            catalogRevision: 1
+          }
+        }
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const priorExitCode = process.exitCode
+
+    await main(
+      [
+        'worktree',
+        'create',
+        '--repo',
+        'id:repo-1',
+        '--name',
+        'feature',
+        '--agent',
+        '--no-parent',
+        '--json'
+      ],
+      '/tmp/repo'
+    )
+
+    expect(callMock).toHaveBeenCalledWith(
+      'worktree.create',
+      expect.objectContaining({
+        agentLaunch: { selection: { kind: 'default' }, allowEmptyPromptLaunch: true },
+        activate: true
+      })
+    )
+    expect(process.exitCode ?? 0).toBe(0)
+
+    process.exitCode = priorExitCode
+  })
+
+  it('sends an explicit agent launch with the prompt for --agent <id>', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        worktree: buildWorktree('/tmp/repo/feature', 'feature', 'abc', 'repo-1'),
+        lineage: null,
+        warnings: [],
+        agentLaunchResult: {
+          status: 'launched',
+          receipt: {
+            requestedAgent: 'codex',
+            baseAgent: 'codex',
+            notices: [],
+            launchToken: 'tok-1',
+            catalogRevision: 1
+          }
+        }
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(
+      [
+        'worktree',
+        'create',
+        '--repo',
+        'id:repo-1',
+        '--name',
+        'feature',
+        '--agent',
+        'codex',
+        '--prompt',
+        'do it',
+        '--no-parent',
+        '--json'
+      ],
+      '/tmp/repo'
+    )
+
+    expect(callMock).toHaveBeenCalledWith(
+      'worktree.create',
+      expect.objectContaining({
+        agentLaunch: {
+          selection: { kind: 'agent', agent: 'codex' },
+          allowEmptyPromptLaunch: true,
+          prompt: 'do it'
+        }
+      })
+    )
+  })
+
+  it('exits non-zero and prints the stable code on a pre-create agent launch rejection', async () => {
+    // A well-formed but stale custom id passes the client shape check and reaches
+    // the host, which returns the fail-fast unknown_agent rejection.
+    const staleId = 'custom-agent:codex:01234567-89ab-4cde-8f01-23456789abcd'
+    queueFixtures(
+      callMock,
+      okFixture('req_create', {
+        created: false,
+        agentLaunchResult: {
+          status: 'failed',
+          failure: { code: 'unknown_agent', requestedAgent: staleId }
+        }
+      })
+    )
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const priorExitCode = process.exitCode
+
+    await main(
+      [
+        'worktree',
+        'create',
+        '--repo',
+        'id:repo-1',
+        '--name',
+        'feature',
+        '--agent',
+        staleId,
+        '--no-parent'
+      ],
+      '/tmp/repo'
+    )
+
+    expect(errSpy.mock.calls[0][0]).toBe('unknown_agent')
+    expect(errSpy.mock.calls.flat().join('\n')).toContain('--agent')
+    expect(process.exitCode).toBe(1)
+
+    process.exitCode = priorExitCode
+  })
+
   it('resolves project and host flags to the matching repo for worktree.create', async () => {
     queueFixtures(
       callMock,
@@ -2814,8 +2954,11 @@ describe('orca cli worktree awareness', () => {
       cwdParentWorktree: 'id:repo-1::/tmp/repo',
       noParent: false,
       callerTerminalHandle: undefined,
-      startupAgent: 'codex',
-      startupPrompt: 'hi'
+      agentLaunch: {
+        selection: { kind: 'agent', agent: 'codex' },
+        allowEmptyPromptLaunch: true,
+        prompt: 'hi'
+      }
     })
   })
 
@@ -2858,8 +3001,11 @@ describe('orca cli worktree awareness', () => {
       cwdParentWorktree: 'id:repo-1::/tmp/repo',
       noParent: false,
       callerTerminalHandle: undefined,
-      startupAgent: 'codex',
-      startupPrompt: 'hi'
+      agentLaunch: {
+        selection: { kind: 'agent', agent: 'codex' },
+        allowEmptyPromptLaunch: true,
+        prompt: 'hi'
+      }
     })
   })
 
@@ -2904,25 +3050,13 @@ describe('orca cli worktree awareness', () => {
     process.exitCode = priorExitCode
   })
 
-  it('rejects agent, prompt, and setup flags without values on worktree.create', async () => {
+  it('rejects prompt and setup flags without values on worktree.create', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const priorExitCode = process.exitCode
 
-    await main(
-      ['worktree', 'create', '--repo', 'id:repo-1', '--name', 'child', '--agent'],
-      '/tmp/repo'
-    )
-    expect(callMock.mock.calls.some(([method]) => method === 'worktree.create')).toBe(false)
-    expect([...logSpy.mock.calls, ...errSpy.mock.calls].flat().join('\n')).toContain(
-      'Missing value for --agent'
-    )
-
-    callMock.mockClear()
-    logSpy.mockClear()
-    errSpy.mockClear()
-    process.exitCode = priorExitCode
-
+    // A bare --agent is valid — it selects the stored default — so only --prompt
+    // and --setup still require values.
     await main(
       [
         'worktree',

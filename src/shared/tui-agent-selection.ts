@@ -1,8 +1,9 @@
-import type { TuiAgent } from './types'
+import type { BuiltInTuiAgent, TuiAgent } from './types'
 import { isTuiAgent } from './tui-agent-config'
 
 // Keep this order in sync with the desktop agent catalog. It defines the
-// automatic fallback priority when the user has not chosen a default agent.
+// automatic fallback priority for the Auto default. Auto never selects a
+// custom agent, so this list stays built-in-only.
 export const TUI_AGENT_AUTO_PICK_ORDER = [
   'claude',
   'claude-agent-teams',
@@ -38,14 +39,14 @@ export const TUI_AGENT_AUTO_PICK_ORDER = [
   'hermes',
   'devin',
   'openclaw'
-] as const satisfies readonly TuiAgent[]
+] as const satisfies readonly BuiltInTuiAgent[]
 
 // Why: fresh installs should expose Claude Agent Teams in agent pickers; the
 // persistence migration separately preserves the old hidden default for legacy profiles.
 export const DEFAULT_DISABLED_TUI_AGENTS = [] as const satisfies readonly TuiAgent[]
 
 export function pickTuiAgent(
-  preferred: TuiAgent | 'blank' | null | undefined,
+  preferred: TuiAgent | 'auto' | 'blank' | null | undefined,
   detected: Iterable<TuiAgent>,
   disabled?: Iterable<unknown> | null
 ): TuiAgent | null {
@@ -54,7 +55,14 @@ export function pickTuiAgent(
   }
   const disabledSet = new Set(normalizeDisabledTuiAgents(disabled))
   const detectedSet = detected instanceof Set ? detected : new Set(detected)
-  if (preferred && detectedSet.has(preferred) && !disabledSet.has(preferred)) {
+  if (
+    preferred &&
+    // Why: 'auto' is the migrated spelling of the legacy null Auto default and must
+    // take the auto-pick path, never be looked up as a concrete agent id.
+    preferred !== 'auto' &&
+    detectedSet.has(preferred) &&
+    !disabledSet.has(preferred)
+  ) {
     return preferred
   }
   for (const agent of TUI_AGENT_AUTO_PICK_ORDER) {
@@ -63,6 +71,19 @@ export function pickTuiAgent(
     }
   }
   return null
+}
+
+/** Interim adapter for surfaces still written against the pre-v1 default shape,
+ *  where `null` meant Auto. Maps the migrated `'auto'` back to that legacy `null`
+ *  so shipped Auto behavior is preserved until the U2 resolver and U8 UI replace
+ *  these call sites with explicit Auto/Blank/repair states. */
+export function toLegacyAutoPreference(
+  value: TuiAgent | 'auto' | 'blank' | null | undefined
+): TuiAgent | 'blank' | null {
+  if (value === 'auto' || value === undefined) {
+    return null
+  }
+  return value
 }
 
 export function normalizeDisabledTuiAgents(value: unknown): TuiAgent[] {

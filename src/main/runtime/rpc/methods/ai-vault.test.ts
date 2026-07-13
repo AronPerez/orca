@@ -4,6 +4,7 @@ import type { RpcRequest } from '../core'
 import { OrcaRuntimeService } from '../../orca-runtime'
 import type { AiVaultListResult, AiVaultSession } from '../../../../shared/ai-vault-types'
 import type { AiVaultScanOptions } from '../../../ai-vault/session-scanner-types'
+import { getHostAgentSessionRecordStore } from '../../../agent-launch/agent-session-record-store-host'
 
 const { scanAiVaultSessions } = vi.hoisted(() => ({
   scanAiVaultSessions: vi.fn()
@@ -263,5 +264,138 @@ describe('aiVault.listSessions handler + shared cache', () => {
     await runtime.listAiVaultSessions({})
     const options = scanAiVaultSessions.mock.calls[0]?.[0] as AiVaultScanOptions
     expect(options.additionalCodexSessionsDirs).toContain('/ctor/codex/home/sessions')
+  })
+})
+
+describe('aiVault.resumeCommand handler', () => {
+  beforeEach(() => {
+    resetAiVaultSessionListCacheForTests()
+    scanAiVaultSessions.mockReset()
+    scanAiVaultSessions.mockResolvedValue({
+      sessions: [makeSession()],
+      issues: [],
+      scannedAt: SCANNED_AT
+    })
+  })
+
+  afterEach(() => {
+    resetAiVaultSessionListCacheForTests()
+  })
+
+  function realRuntimeDispatcher(): RpcDispatcher {
+    // Why: use the real runtime so the RPC → resolveAiVaultResumeCommand → shared
+    // scan wiring is exercised end-to-end, not a hand-rolled stub.
+    const runtime = new OrcaRuntimeService(null, undefined, {})
+    return new RpcDispatcher({ runtime, methods: AI_VAULT_METHODS })
+  }
+
+  it('re-validates the echoed entry and returns the assembled command', async () => {
+    const response = (await realRuntimeDispatcher().dispatch(
+      makeRequest('aiVault.resumeCommand', {
+        entry: { executionHostId: 'local', agent: 'claude', sessionId: 'sess-1' }
+      })
+    )) as { ok: boolean; result: { status: string; command?: string } }
+    expect(response.ok).toBe(true)
+    expect(response.result.status).toBe('ok')
+    expect(response.result.command).toContain('sess-1')
+  })
+
+  it('fails closed when the host did not discover the echoed entry', async () => {
+    const response = (await realRuntimeDispatcher().dispatch(
+      makeRequest('aiVault.resumeCommand', {
+        entry: { executionHostId: 'local', agent: 'claude', sessionId: 'ghost' }
+      })
+    )) as { ok: boolean; result: { status: string; failure?: { code: string } } }
+    expect(response.ok).toBe(true)
+    expect(response.result).toEqual({
+      status: 'failed',
+      failure: { code: 'invalid_launch_snapshot' }
+    })
+  })
+
+  it('ignores a client-supplied filePath and re-derives from the discovered entry', async () => {
+    // The untrusted RPC surface must not let a client point resume at an
+    // arbitrary path; the host uses its own discovered session identity.
+    const response = (await realRuntimeDispatcher().dispatch(
+      makeRequest('aiVault.resumeCommand', {
+        entry: {
+          executionHostId: 'local',
+          agent: 'claude',
+          sessionId: 'sess-1',
+          filePath: '/attacker/controlled.jsonl'
+        }
+      })
+    )) as { ok: boolean; result: { status: string; command?: string } }
+    expect(response.result.status).toBe('ok')
+    expect(response.result.command).not.toContain('/attacker/controlled.jsonl')
+  })
+})
+
+describe('aiVault.resumeDetails handler', () => {
+  beforeEach(() => {
+    resetAiVaultSessionListCacheForTests()
+    scanAiVaultSessions.mockReset()
+    scanAiVaultSessions.mockResolvedValue({
+      sessions: [
+        {
+          ...makeSession(),
+          id: 'local:codex:sess-1:/tmp/t.jsonl',
+          agent: 'codex',
+          resumeCommand: 'codex resume sess-1'
+        }
+      ],
+      issues: [],
+      scannedAt: SCANNED_AT
+    })
+    getHostAgentSessionRecordStore().rebuildRecordsFrom([
+      {
+        worktreeId: 'wt-source',
+        requestedAgent: 'custom-agent:codex:11111111-1111-4111-8111-111111111111',
+        baseAgent: 'codex',
+        providerSession: { key: 'session_id', id: 'sess-1', transcriptPath: '/tmp/t.jsonl' },
+        launchSnapshot: {
+          version: 1,
+          requestedAgent: 'custom-agent:codex:11111111-1111-4111-8111-111111111111',
+          baseAgent: 'codex',
+          displayLabel: 'Codex Sol',
+          mode: 'custom',
+          argv: ['codex', '--model', 'gpt-5.6-Sol', '-c', 'model_reasoning_effort=medium'],
+          agentEnv: {},
+          capturedEnvPolicy: 'none',
+          target: {
+            platform: process.platform,
+            execution: 'native',
+            shell: process.platform === 'win32' ? 'powershell' : 'posix',
+            isRemote: false,
+            executionHostId: 'local'
+          }
+        },
+        registeredAt: 1,
+        updatedAt: 1
+      }
+    ])
+  })
+
+  afterEach(() => {
+    getHostAgentSessionRecordStore().rebuildRecordsFrom([])
+    resetAiVaultSessionListCacheForTests()
+  })
+
+  it('returns only the correlated captured argument suffix', async () => {
+    const runtime = new OrcaRuntimeService(null, undefined, {})
+    const dispatcher = new RpcDispatcher({ runtime, methods: AI_VAULT_METHODS })
+    const response = (await dispatcher.dispatch(
+      makeRequest('aiVault.resumeDetails', {
+        entry: { executionHostId: 'runtime:env-1', agent: 'codex', sessionId: 'sess-1' }
+      })
+    )) as { ok: boolean; result: { status: string; args?: string[] } }
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: {
+        status: 'ok',
+        args: ['--model', 'gpt-5.6-Sol', '-c', 'model_reasoning_effort=medium']
+      }
+    })
   })
 })

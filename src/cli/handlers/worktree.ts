@@ -1,8 +1,8 @@
 import type {
+  RuntimeWorktreeCreateResult,
   RuntimeWorktreeListResult,
   RuntimeWorktreePsResult,
   RuntimeWorktreeRecord,
-  RuntimeWorktreeCreateResult,
   RuntimeWorktreeRemoveResult
 } from '../../shared/runtime-types'
 import type { CommandHandler } from '../dispatch'
@@ -20,7 +20,6 @@ import {
   getRequiredWorktreeSelector,
   resolveCurrentWorktreeSelector
 } from '../selectors'
-import { isTuiAgent } from '../../shared/tui-agent-config'
 import { isWorkspaceKey, worktreeWorkspaceKey } from '../../shared/workspace-scope'
 import { printLineageSummary } from './worktree-lineage-summary'
 import {
@@ -33,6 +32,11 @@ import {
   resolveCreateParentSelector
 } from './worktree-create-parent-selector'
 import { getOptionalLinearIssueLinkFlag } from './worktree-linear-issue-link'
+import {
+  getWorktreeCreateAgentLaunch,
+  handleWorktreeCreatePreRejection,
+  printWorktreeCreateResult
+} from './worktree-create-agent-launch'
 
 type HookWarningResult = {
   warning?: string
@@ -99,20 +103,6 @@ function getPresentStringFlag(
     return value
   }
   throw new RuntimeClientError('invalid_argument', `Missing value for --${name}`)
-}
-
-function getOptionalStartupAgent(flags: Map<string, string | boolean>): string | undefined {
-  const agent = getPresentStringFlag(flags, 'agent')
-  if (agent === undefined) {
-    if (flags.has('prompt')) {
-      throw new RuntimeClientError('invalid_argument', '--prompt requires --agent')
-    }
-    return undefined
-  }
-  if (!isTuiAgent(agent)) {
-    throw new RuntimeClientError('invalid_argument', `Unknown TUI agent "${agent}"`)
-  }
-  return agent
 }
 
 function getOptionalSetupDecision(
@@ -206,7 +196,7 @@ export const WORKTREE_HANDLERS: Record<string, CommandHandler> = {
     const explicitParent = await resolveCreateParentSelector(flags, cwd, client)
     const explicitParentWorktree = explicitParent.parentWorktree
     const explicitParentWorkspace = explicitParent.parentWorkspace
-    const startupAgent = getOptionalStartupAgent(flags)
+    const agentLaunch = getWorktreeCreateAgentLaunch(flags)
     const setupDecision = getOptionalSetupDecision(flags)
     const noParent = flags.get('no-parent') === true
     const envParentWorkspace =
@@ -229,7 +219,9 @@ export const WORKTREE_HANDLERS: Record<string, CommandHandler> = {
       }
     }
     const linearIssueLink = getOptionalLinearIssueLinkFlag(flags, 'linear-issue')
-    const result = await client.call<RuntimeWorktreeCreateResult>('worktree.create', {
+    // The host resolves the agentLaunch identity and fails fast on the `cli`
+    // column; the CLI consumes the created / pre-create-rejection result union.
+    const response = await client.call<RuntimeWorktreeCreateResult>('worktree.create', {
       repo: await getCreateRepoSelector(flags, cwdParentWorktree, client),
       name: getRequiredStringFlag(flags, 'name'),
       baseBranch: getOptionalStringFlag(flags, 'base-branch'),
@@ -238,7 +230,7 @@ export const WORKTREE_HANDLERS: Record<string, CommandHandler> = {
       comment: getOptionalStringFlag(flags, 'comment'),
       runHooks: flags.get('run-hooks') === true,
       activate:
-        flags.get('activate') === true || flags.get('run-hooks') === true || Boolean(startupAgent),
+        flags.get('activate') === true || flags.get('run-hooks') === true || Boolean(agentLaunch),
       ...(setupDecision ? { setupDecision } : {}),
       parentWorktree: explicitParentWorktree,
       ...(explicitParentWorkspace ? { parentWorkspace: explicitParentWorkspace } : {}),
@@ -246,16 +238,15 @@ export const WORKTREE_HANDLERS: Record<string, CommandHandler> = {
       ...(cwdParentWorktree ? { cwdParentWorktree } : {}),
       noParent,
       callerTerminalHandle,
-      ...(startupAgent
-        ? {
-            startupAgent,
-            startupPrompt: getPresentStringFlag(flags, 'prompt', { allowEmpty: true }) ?? ''
-          }
-        : {})
+      ...(agentLaunch ? { agentLaunch: agentLaunch.request } : {})
     })
-    printHookWarning(result.result, json)
-    printLineageSummary(result.result, json)
-    printResult(result, json, formatWorktreeShow)
+    const created = handleWorktreeCreatePreRejection(response, agentLaunch?.source, json)
+    if (!created) {
+      return
+    }
+    printHookWarning(created, json)
+    printLineageSummary(created, json)
+    printWorktreeCreateResult(response, created, agentLaunch?.source, json)
   },
   'worktree set': async ({ flags, client, cwd, json }) => {
     assertParentWorktreeFlagsCompatible(flags)

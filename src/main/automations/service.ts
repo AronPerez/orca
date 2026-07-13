@@ -8,17 +8,19 @@ import {
   type AutomationPrecheckResult,
   type AutomationRun
 } from '../../shared/automations-types'
+import {
+  classifyAutomationLaunchDispatchFailure,
+  type AutomationAgentLaunchClassifier
+} from './automation-agent-launch-classifier'
+import { stampAutomationDispatchLaunchFailure } from './automation-launch-failure-stamp'
 import type { ClaudeUsageStore } from '../claude-usage/store'
 import type { CodexUsageStore } from '../codex-usage/store'
 import { runAutomationPrecheck } from './precheck-runner'
 import { resolveAutomationRunTarget, type AutomationRunTargetResult } from './run-target-resolution'
 import { collectAutomationRunUsage } from './run-usage-collection'
 import type { HeadlessAutomationDispatcher } from './headless-dispatch'
+import { runHeadlessAutomationDispatch } from './headless-dispatch-run'
 import { clearAutomationDispatchTokens, createAutomationDispatchToken } from './dispatch-tokens'
-import {
-  didAutomationPrecheckPass,
-  formatAutomationPrecheckFailure
-} from '../../shared/automation-precheck'
 
 const DEFAULT_TICK_MS = 60 * 1000
 
@@ -33,6 +35,7 @@ export class AutomationService {
   private readonly codexUsage: CodexUsageStore | null
   private readonly allowRemoteHostScheduling: boolean
   private readonly headlessDispatcher: HeadlessAutomationDispatcher | null
+  private readonly classifyAgentLaunch: AutomationAgentLaunchClassifier | null
 
   constructor(
     store: Store,
@@ -42,6 +45,10 @@ export class AutomationService {
       codexUsage?: CodexUsageStore
       allowRemoteHostScheduling?: boolean
       headlessDispatcher?: HeadlessAutomationDispatcher
+      // U6: resolve-only classification of the automation's agent identity. When
+      // it returns a failure the run records dispatch_failed + the structured
+      // failure (additive to the generic error) and NO terminal is spawned.
+      classifyAgentLaunch?: AutomationAgentLaunchClassifier
     } = {}
   ) {
     this.store = store
@@ -50,6 +57,7 @@ export class AutomationService {
     this.codexUsage = opts.codexUsage ?? null
     this.allowRemoteHostScheduling = opts.allowRemoteHostScheduling ?? false
     this.headlessDispatcher = opts.headlessDispatcher ?? null
+    this.classifyAgentLaunch = opts.classifyAgentLaunch ?? null
   }
 
   setWebContents(webContents: WebContents | null): void {
@@ -133,7 +141,7 @@ export class AutomationService {
   }
 
   async markDispatchResult(result: AutomationDispatchResult): Promise<AutomationRun> {
-    const run = this.store.updateAutomationRun(result)
+    const run = this.store.updateAutomationRun(stampAutomationDispatchLaunchFailure(result))
     clearAutomationDispatchTokens(run.automationId, run.id)
     if (!isFinalAutomationRunStatus(run.status)) {
       return run
@@ -163,6 +171,33 @@ export class AutomationService {
       terminalSessionId: run.terminalSessionId,
       usage,
       error: run.error
+    })
+  }
+
+  /** Owner-authorized Forget of a run stranded mid-flight — the renderer died
+   *  before markDispatchResult, or a headless completion promise hung — leaving
+   *  it in `dispatching`/`dispatched` with no settlement. The run moves to
+   *  dispatch_failed + agentLaunchForgottenAt and is never retried: the plan
+   *  deliberately keeps a mid-flight run non-final so retry/timeout loops cannot
+   *  re-dispatch it, so this is the only duplicate-safe escape. Spawns and kills
+   *  nothing; a no-op on an already-settled run (its terminal outcome stands). */
+  forgetAutomationRun(runId: string): AutomationRun {
+    const run = this.store.listAutomationRuns().find((entry) => entry.id === runId)
+    if (!run) {
+      throw new Error('Automation run not found.')
+    }
+    if (isFinalAutomationRunStatus(run.status)) {
+      return run
+    }
+    // Clear the dispatch token so a late renderer/headless completion for this
+    // run is rejected instead of resurrecting the forgotten run.
+    clearAutomationDispatchTokens(run.automationId, run.id)
+    return this.store.updateAutomationRun({
+      runId,
+      status: 'dispatch_failed',
+      workspaceId: run.workspaceId,
+      error: 'The automation run was forgotten while its launch state was unknown.',
+      agentLaunchForgottenAt: Date.now()
     })
   }
 
@@ -222,6 +257,20 @@ export class AutomationService {
         error: target.error
       })
     }
+    // Resolve-only agent-identity gate BEFORE any dispatch path (renderer or
+    // headless) and BOTH workspace modes: a known launch failure records the
+    // structured failure additively and spawns NO terminal.
+    const gated = classifyAutomationLaunchDispatchFailure(
+      this.classifyAgentLaunch,
+      automation,
+      run,
+      target
+    )
+    if (gated) {
+      // Same single stamping point as markDispatchResult: the classifier returns
+      // a PLAIN failure and the host mints the persisted wrapper here (ledger #12).
+      return this.store.updateAutomationRun(stampAutomationDispatchLaunchFailure(gated))
+    }
     const webContents = this.webContents
     if (!webContents || webContents.isDestroyed() || !this.rendererReady) {
       if (this.headlessDispatcher) {
@@ -254,63 +303,16 @@ export class AutomationService {
     run: AutomationRun,
     target: Extract<AutomationRunTargetResult, { ok: true }>
   ): Promise<AutomationRun> {
-    const precheckResult =
-      run.trigger === 'scheduled' && automation.precheck
-        ? await this.runPrecheck(automation.id, run.id)
-        : null
-    if (precheckResult && !didAutomationPrecheckPass(precheckResult)) {
-      return this.store.updateAutomationRun({
-        runId: run.id,
-        status: 'skipped_precheck',
-        workspaceId: automation.workspaceId,
-        precheckResult,
-        error: formatAutomationPrecheckFailure(precheckResult)
-      })
-    }
-    try {
-      const launch = await this.headlessDispatcher!({ automation, run, target })
-      const launchRunTarget = {
-        workspaceId: launch.workspaceId,
-        workspaceDisplayName: launch.workspaceDisplayName ?? null,
-        terminalSessionId: launch.terminalSessionId,
-        terminalPaneKey: launch.terminalPaneKey ?? null,
-        terminalPtyId: launch.terminalPtyId ?? null
-      }
-      const updated = this.store.updateAutomationRun({
-        runId: run.id,
-        status: 'dispatched',
-        ...launchRunTarget,
-        error: null
-      })
-      if (launch.completion) {
-        void launch.completion
-          .then((completion) =>
-            this.markDispatchResult({
-              runId: run.id,
-              status: completion.status,
-              ...launchRunTarget,
-              precheckResult,
-              outputSnapshot: completion.outputSnapshot ?? null,
-              error: completion.error ?? null
-            })
-          )
-          .catch((error) =>
-            this.markDispatchResult({
-              runId: run.id,
-              status: 'dispatch_failed',
-              ...launchRunTarget,
-              error: error instanceof Error ? error.message : String(error)
-            })
-          )
-      }
-      return updated
-    } catch (error) {
-      return this.store.updateAutomationRun({
-        runId: run.id,
-        status: 'dispatch_failed',
-        workspaceId: automation.workspaceId,
-        error: error instanceof Error ? error.message : String(error)
-      })
-    }
+    return runHeadlessAutomationDispatch(
+      {
+        store: this.store,
+        headlessDispatcher: this.headlessDispatcher!,
+        runPrecheck: (automationId, runId) => this.runPrecheck(automationId, runId),
+        markDispatchResult: (result) => this.markDispatchResult(result)
+      },
+      automation,
+      run,
+      target
+    )
   }
 }

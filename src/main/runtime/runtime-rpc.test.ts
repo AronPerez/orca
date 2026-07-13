@@ -1545,6 +1545,20 @@ describe('OrcaRuntimeRpcServer', () => {
       linearTeamMembers,
       linearAddIssueComment,
       getClientSettings: vi.fn(() => ({ defaultTuiAgent: 'codex', agentCmdOverrides: {} })),
+      getAgentCatalogSnapshot: vi.fn(() => ({
+        version: 1,
+        revision: 1,
+        defaultAgent: 'codex',
+        disabledAgents: [],
+        customAgents: [],
+        deletedCustomAgents: []
+      })),
+      getAgentReferenceRevision: vi.fn(() => 1),
+      getAgentReferenceSnapshot: vi.fn(() => ({
+        version: 1,
+        revision: 1,
+        terminalQuickCommands: []
+      })),
       updateClientSettings: vi.fn(() => ({ defaultTaskSource: 'linear' }))
     } as unknown as OrcaRuntimeService
     const server = new OrcaRuntimeRpcServer({ runtime, userDataPath, enableWebSocket: false })

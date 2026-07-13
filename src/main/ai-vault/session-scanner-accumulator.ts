@@ -12,6 +12,7 @@ import type {
   ResumableSessionParseState,
   SessionAccumulator
 } from './session-scanner-types'
+import { createAiVaultResumeLocator } from './ai-vault-resume-locator'
 import {
   extractPreviewContentText,
   extractString,
@@ -99,6 +100,13 @@ export function finalizeSession(
     ...(options.executionHostPlatform
       ? { executionHostPlatform: options.executionHostPlatform }
       : {}),
+    resumeLocator: createAiVaultResumeLocator({
+      executionHostId,
+      agent: accumulator.agent,
+      sessionId,
+      transcriptPath: accumulator.filePath,
+      platform
+    }),
     agent: accumulator.agent,
     sessionId,
     title,

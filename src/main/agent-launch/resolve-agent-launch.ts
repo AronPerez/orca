@@ -1,0 +1,282 @@
+// The authoritative agent-launch resolver. Pure CPU: no fs, subprocess, network,
+// or listeners (I15) — every host-produced input arrives in the request. Returns
+// a fully resolved launch, a typed launch failure, or a request/control-plane
+// error; never null, never a throw for expected lifecycle state.
+
+import type { GlobalSettings } from '../../shared/types'
+import { TUI_AGENT_CONFIG } from '../../shared/tui-agent-config'
+import { resolveStartupShell, CMD_UNENCODABLE_CHAR_RE } from '../../shared/tui-agent-startup-shell'
+import type { AgentStartupShell } from '../../shared/tui-agent-startup-shell'
+import { getAgentResumeArgv, isResumableTuiAgent } from '../../shared/agent-session-resume'
+import type { AgentCatalog } from '../../shared/agent-catalog-normalization'
+import type {
+  AgentLaunchResolution,
+  AgentLaunchSnapshot,
+  ResolveAgentLaunchRequest
+} from '../../shared/agent-launch-host-contract'
+import type { AgentLaunchNotice, AgentLaunchRequestError } from '../../shared/agent-launch-contract'
+import { resolveSelection } from './resolve-agent-selection'
+import { buildLaunchContext } from './resolve-agent-launch-context'
+import { assembleCommand } from './resolve-agent-command'
+import { prepareVariableValues } from './resolve-agent-variables'
+import { clientOfIntent } from './resolve-agent-env-admission'
+import { checkCommandTooLong, checkEnvPayloadTooLarge } from './agent-launch-payload-caps'
+import { buildResolvedLaunch, type LaunchTarget } from './resolve-agent-launch-result'
+import {
+  resolveMobileRemoveOnlyReplayEnv,
+  snapshotDefinitionChangedNotice
+} from './resolve-agent-launch-snapshot-comparison'
+
+export type ResolveAgentLaunchOutcome =
+  | AgentLaunchResolution
+  | { ok: false; requestError: AgentLaunchRequestError }
+
+function hasUserPathOverride(env: Record<string, string>): boolean {
+  return Object.keys(env).some((key) => key.toLowerCase() === 'path')
+}
+
+function deriveTarget(request: ResolveAgentLaunchRequest): LaunchTarget {
+  return {
+    platform: request.platform,
+    execution: request.executionHostId.startsWith('wsl:') ? 'wsl' : 'native',
+    shell: resolveStartupShell(request.platform, request.shell),
+    isRemote: request.isRemote,
+    executionHostId: request.executionHostId
+  }
+}
+
+/** A snapshot's structured argv re-quotes into any target shell except `cmd`,
+ *  whose double-quoted form cannot faithfully deliver `% ! ^ "`. A shell change is
+ *  therefore lossless unless a captured element is unencodable in the new shell. */
+function snapshotArgvEncodableInShell(
+  snapshot: AgentLaunchSnapshot,
+  shell: AgentStartupShell
+): boolean {
+  if (shell !== 'cmd') {
+    return true
+  }
+  return !snapshot.argv.some((element) => CMD_UNENCODABLE_CHAR_RE.test(element))
+}
+
+function targetMatchesSnapshot(target: LaunchTarget, snapshot: AgentLaunchSnapshot): boolean {
+  // Shell equality is not required: the snapshot stores structured argv, so a
+  // shell change replays whenever every element re-encodes losslessly in the new
+  // shell. Local-provider↔daemon needs no special case — both resolve to the same
+  // executionHostId, which is not part of command semantics.
+  return (
+    snapshot.target.platform === target.platform &&
+    snapshot.target.execution === target.execution &&
+    snapshot.target.isRemote === target.isRemote &&
+    snapshot.target.executionHostId === target.executionHostId &&
+    snapshotArgvEncodableInShell(snapshot, target.shell)
+  )
+}
+
+/** Replay a validated snapshot: argv/env come from the immutable snapshot, not
+ *  the current definition. Fails closed on identity/target mismatch, and carries
+ *  `snapshot_definition_changed` when the current effective definition drifted.  */
+function replayFromSnapshot(
+  request: ResolveAgentLaunchRequest,
+  target: LaunchTarget,
+  catalog: AgentCatalog,
+  settings: GlobalSettings
+): ResolveAgentLaunchOutcome {
+  const snapshot = request.persistedSnapshot
+  if (!snapshot) {
+    return { ok: false, failure: { code: 'invalid_launch_snapshot' } }
+  }
+  if (request.selection.kind === 'agent' && request.selection.agent !== snapshot.requestedAgent) {
+    return { ok: false, failure: { code: 'invalid_launch_snapshot', reason: 'identity_mismatch' } }
+  }
+  if (!targetMatchesSnapshot(target, snapshot)) {
+    return { ok: false, failure: { code: 'invalid_launch_snapshot' } }
+  }
+  const client = clientOfIntent(request.intent)
+  const comparisonInput = {
+    snapshot,
+    catalog,
+    settings,
+    target,
+    client,
+    variables: request.variables,
+    targetHomePath: request.targetHomePath ?? null
+  }
+  const env = Object.create(null) as Record<string, string>
+  let envWithheld = false
+  if (client === 'mobile' || client === 'paired-web') {
+    // Remove-only replay (§581): withhold any captured entry the current live
+    // definition no longer authorizes (opt-out, removed key, rotated value,
+    // deleted def) — never substitute current values or add new ones.
+    const replayEnv = resolveMobileRemoveOnlyReplayEnv(comparisonInput)
+    Object.assign(env, replayEnv.env)
+    envWithheld = replayEnv.withheld
+  } else {
+    // Desktop/host replay copies the captured env unchanged.
+    for (const key of Object.keys(snapshot.agentEnv)) {
+      env[key] = snapshot.agentEnv[key]
+    }
+  }
+  // Confidential transport is a current gate that constrains replay: captured
+  // env never crosses hosts on an authenticated-but-plaintext channel.
+  if (Object.keys(env).length > 0 && request.transportConfidentialityAvailable === false) {
+    return {
+      ok: false,
+      failure: {
+        code: 'secure_env_transport_unavailable',
+        requestedAgent: snapshot.requestedAgent,
+        baseAgent: snapshot.baseAgent
+      }
+    }
+  }
+  // Append the provider resume flags to the replayed base argv, derived from the
+  // record's session (never persisted in the snapshot). A resume against a
+  // non-resumable base or a session whose key type does not match the base cannot
+  // produce a valid resume command, so it invalidates the replay.
+  let resumeArgvSuffix: readonly string[] | undefined
+  if (request.resumeProviderSession) {
+    if (!isResumableTuiAgent(snapshot.baseAgent)) {
+      return { ok: false, failure: { code: 'invalid_launch_snapshot' } }
+    }
+    const resumeArgv = getAgentResumeArgv(snapshot.baseAgent, request.resumeProviderSession)
+    if (!resumeArgv) {
+      return { ok: false, failure: { code: 'invalid_launch_snapshot' } }
+    }
+    resumeArgvSuffix = resumeArgv.slice(1)
+  }
+  const definitionNotice = snapshotDefinitionChangedNotice(comparisonInput)
+  const notices: AgentLaunchNotice[] = []
+  if (definitionNotice) {
+    notices.push(definitionNotice)
+  }
+  if (envWithheld) {
+    // One generic notice for any mobile/paired remove-only withholding; it names
+    // no keys/values (secrets rule).
+    notices.push({ code: 'env_withheld', label: snapshot.displayLabel })
+  }
+  return {
+    ok: true,
+    launch: buildResolvedLaunch({
+      mode: snapshot.mode,
+      requestedAgent: snapshot.requestedAgent,
+      baseAgent: snapshot.baseAgent,
+      displayLabel: snapshot.displayLabel,
+      argv: [...snapshot.argv] as unknown as typeof snapshot.argv,
+      ...(resumeArgvSuffix ? { resumeArgvSuffix } : {}),
+      env,
+      envPolicy: Object.keys(env).length > 0 ? 'full' : 'none',
+      referenced: [],
+      values: { repoPath: null, worktreePath: null },
+      notices,
+      target,
+      targetHomePath: request.targetHomePath ?? null,
+      intentKind: request.intent.kind,
+      client,
+      config: TUI_AGENT_CONFIG[snapshot.baseAgent],
+      basis: 'snapshot',
+      definitionDigestSource: { replaySnapshot: snapshot.argv },
+      transportConfidential: request.transportConfidentialityAvailable ?? null
+    })
+  }
+}
+
+/** Resolve a launch request against the normalized catalog and current settings. */
+export function resolveAgentLaunch(
+  request: ResolveAgentLaunchRequest,
+  catalog: AgentCatalog,
+  settings: GlobalSettings
+): ResolveAgentLaunchOutcome {
+  const selection = resolveSelection(request, catalog)
+  if (selection.kind === 'failure') {
+    return { ok: false, failure: selection.failure }
+  }
+  if (selection.kind === 'request-error') {
+    return { ok: false, requestError: selection.requestError }
+  }
+
+  const target = deriveTarget(request)
+
+  if (selection.decision.launch === 'replay-snapshot') {
+    return replayFromSnapshot(request, target, catalog, settings)
+  }
+
+  const client = clientOfIntent(request.intent)
+  const context = buildLaunchContext(selection.decision, catalog, settings, client)
+  const values = prepareVariableValues(request.variables, target.execution)
+
+  // Env may cross to a different terminal host only inside an authenticated,
+  // confidential channel; it never downgrades to plaintext or silently drops
+  // values. Env-free launches may continue over a non-confidential channel.
+  if (Object.keys(context.env).length > 0 && request.transportConfidentialityAvailable === false) {
+    return {
+      ok: false,
+      failure: {
+        code: 'secure_env_transport_unavailable',
+        requestedAgent: context.requestedAgent,
+        baseAgent: context.baseAgent
+      }
+    }
+  }
+
+  const command = assembleCommand({
+    config: context.config,
+    platform: request.platform,
+    isRemote: request.isRemote,
+    shell: target.shell,
+    targetHomePath: request.targetHomePath ?? null,
+    commandOverride: context.commandOverride,
+    prefixOverride: context.prefixOverride,
+    argsTemplate: context.argsTemplate,
+    isCustomArgs: context.isCustomArgs,
+    ...(request.perLaunchArgs !== undefined ? { perLaunchArgs: request.perLaunchArgs } : {}),
+    envValues: Object.keys(context.env).map((key) => context.env[key]),
+    values
+  })
+  if (!command.ok) {
+    return { ok: false, failure: command.failure }
+  }
+
+  // Stock-name detection gates only stock catalog argv with no accepted user PATH
+  // override; configured/custom prefixes and custom PATH env cannot be evaluated
+  // by name detection and proceed to preflight/spawn.
+  if (
+    command.prefixSource === 'catalog' &&
+    request.detectedStockBaseAgents !== null &&
+    !request.detectedStockBaseAgents.has(context.baseAgent) &&
+    !hasUserPathOverride(context.env)
+  ) {
+    return { ok: false, failure: { code: 'base_agent_unavailable', baseAgent: context.baseAgent } }
+  }
+
+  const commandCap = checkCommandTooLong(command.argv, target.shell)
+  if (commandCap) {
+    return { ok: false, failure: commandCap }
+  }
+  const envCap = checkEnvPayloadTooLarge(command.argv, context.env, target)
+  if (envCap) {
+    return { ok: false, failure: envCap }
+  }
+
+  return {
+    ok: true,
+    launch: buildResolvedLaunch({
+      mode: context.mode,
+      requestedAgent: context.requestedAgent,
+      baseAgent: context.baseAgent,
+      displayLabel: context.displayLabel,
+      argv: command.argv,
+      env: context.env,
+      envPolicy: context.envPolicy,
+      referenced: command.referenced,
+      values,
+      notices: context.notices,
+      target,
+      targetHomePath: request.targetHomePath ?? null,
+      intentKind: request.intent.kind,
+      client,
+      config: context.config,
+      basis: selection.basis,
+      definitionDigestSource: context.definitionDigestSource,
+      transportConfidential: request.transportConfidentialityAvailable ?? null
+    })
+  }
+}

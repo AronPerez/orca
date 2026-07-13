@@ -10,6 +10,8 @@ import { CLIPBOARD_TEXT_MEASURE_YIELD_CODE_UNITS } from '../../shared/clipboard-
 import { redactPtyIdForDiagnostics } from '../../shared/pty-delivery-diagnostics'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../shared/constants'
 import type { TuiAgent } from '../../shared/types'
+import { getHostAgentSessionRecordStore } from '../agent-launch/agent-session-record-store-host'
+import { getHostAgentLaunchBoundary } from '../agent-launch/agent-launch-boundary-host'
 
 const isWindowsHost = process.platform === 'win32'
 const posixOnlyIt = isWindowsHost ? it.skip : it
@@ -1559,6 +1561,403 @@ describe('registerPtyHandlers', () => {
       expect(env.HTTPS_PROXY).toBe('http://proxy.example:8080')
       expect(env.ALL_PROXY).toBe('http://proxy.example:8080')
       expect(env.NO_PROXY).toBe('localhost,*.internal')
+    })
+
+    describe('host-resolved agent launch (agentLaunch)', () => {
+      // Why: when the client opts into `agentLaunch`, the host resolves the
+      // launch and the resolved plan — not any client command — is what spawns.
+      function makeAgentLaunchSpy(spawnResult?: Record<string, unknown>): ReturnType<typeof vi.fn> {
+        const spawnSpy = vi.fn(async (options: Record<string, unknown>) => ({
+          id: 'agent-launch-pty',
+          pid: 321,
+          ...options,
+          ...spawnResult
+        }))
+        setLocalPtyProvider({
+          spawn: spawnSpy,
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(),
+          shutdown: vi.fn(),
+          onData: vi.fn(() => vi.fn()),
+          onExit: vi.fn(() => vi.fn()),
+          listProcesses: vi.fn(async () => []),
+          getForegroundProcess: vi.fn(async () => null)
+        } as never)
+        return spawnSpy
+      }
+
+      const agentLaunchSettings =
+        (overrides?: Record<string, unknown>) => (): Record<string, unknown> => ({
+          customTuiAgents: [],
+          deletedCustomTuiAgents: [],
+          disabledTuiAgents: [],
+          ...overrides
+        })
+
+      it('resolves host-side, ignores the client command, and spawns one PTY', async () => {
+        const spawnSpy = makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          // Client command/launchAgent must be dropped in favor of the resolved plan.
+          command: 'evil --client-controlled',
+          launchAgent: 'codex',
+          agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'hi' }
+        })) as {
+          id?: string
+          agentLaunch?: { status: string; receipt?: { launchToken: string; baseAgent: string } }
+        }
+
+        expect(spawnSpy).toHaveBeenCalledTimes(1)
+        const options = spawnSpy.mock.calls.at(-1)![0] as {
+          command?: string
+          commandDelivery?: string
+          launchAgent?: string
+          launchToken?: string
+        }
+        expect(options.command).toContain('claude')
+        expect(options.command).not.toContain('evil')
+        expect(options.commandDelivery).toBe('provider')
+        expect(options.launchAgent).toBe('claude')
+        expect(typeof options.launchToken).toBe('string')
+        expect(result.agentLaunch?.status).toBe('launched')
+        expect(result.agentLaunch?.receipt?.baseAgent).toBe('claude')
+        expect(result.agentLaunch?.receipt?.launchToken).toBe(options.launchToken)
+      })
+
+      it('emits agent_started from the resolved receipt, ignoring a spoofed client agent_kind', async () => {
+        // Oracle 17: the host overwrites the client-threaded agent_kind +
+        // used_custom_agent with the values derived from the validated launch,
+        // so a spoofed client kind never reaches the wire. A built-in claude
+        // launch reports claude-code + used_custom_agent:false even though the
+        // client threaded `codex`.
+        trackMock.mockReset()
+        makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'hi' },
+          telemetry: {
+            agent_kind: 'codex',
+            launch_source: 'new_workspace_composer',
+            request_kind: 'new'
+          }
+        })
+        expect(trackMock).toHaveBeenCalledWith('agent_started', {
+          agent_kind: 'claude-code',
+          launch_source: 'new_workspace_composer',
+          request_kind: 'new',
+          used_custom_agent: false
+        })
+      })
+
+      it('returns a typed failure and creates no PTY when the base agent is disabled', async () => {
+        const spawnSpy = makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings({ disabledTuiAgents: ['claude'] }) as never
+        )
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'hi' }
+        })) as { id?: string; agentLaunch?: { status: string; failure?: { code: string } } }
+
+        expect(spawnSpy).not.toHaveBeenCalled()
+        expect(result.id).toBeUndefined()
+        expect(result.agentLaunch?.status).toBe('failed')
+        expect(result.agentLaunch?.failure?.code).toBeDefined()
+      })
+
+      it('leaves the legacy command path byte-identical when agentLaunch is absent', async () => {
+        const spawnSpy = makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          command: 'my-shell-command'
+        })) as { id?: string; agentLaunch?: unknown }
+
+        expect(spawnSpy).toHaveBeenCalledTimes(1)
+        const options = spawnSpy.mock.calls.at(-1)![0] as {
+          command?: string
+          launchToken?: string
+        }
+        expect(options.command).toBe('my-shell-command')
+        expect(options.launchToken).toBeUndefined()
+        expect(result.agentLaunch).toBeUndefined()
+        expect(result.id).toBe('agent-launch-pty')
+      })
+
+      it('injects the admitted receipt token into spawn env and ignores a client token', async () => {
+        makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        // A verified pane key (env pane key matches tabId+leafId) is required for
+        // the base-env block to retain ORCA_AGENT_LAUNCH_TOKEN in the spawn env.
+        const leafId = '11111111-1111-4111-8111-111111111111'
+        const paneKey = `tab-1:${leafId}`
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          tabId: 'tab-1',
+          leafId,
+          // The client-supplied token must be overwritten by the admitted receipt token.
+          env: { ORCA_PANE_KEY: paneKey, ORCA_AGENT_LAUNCH_TOKEN: 'client-forged-token' },
+          agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'hi' }
+        })) as {
+          env?: Record<string, string>
+          launchConfig?: { agentEnv?: Record<string, string> }
+          agentLaunch?: { status: string; receipt?: { launchToken: string } }
+        }
+
+        const receiptToken = result.agentLaunch?.receipt?.launchToken
+        expect(typeof receiptToken).toBe('string')
+        expect(result.env?.ORCA_AGENT_LAUNCH_TOKEN).toBe(receiptToken)
+        expect(result.env?.ORCA_AGENT_LAUNCH_TOKEN).not.toBe('client-forged-token')
+        // The launch token is an Orca control key injected only into spawn env; it
+        // must never enter the durable agentEnv that the admitted snapshot persists.
+        expect(result.launchConfig?.agentEnv ?? {}).not.toHaveProperty('ORCA_AGENT_LAUNCH_TOKEN')
+      })
+
+      it('returns the resolved followup prompt for stdin-after-start agents only', async () => {
+        makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        // aider launches bare and takes its prompt over stdin after readiness, so
+        // the host returns followupPrompt for the renderer's paste writer.
+        const stdinResult = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          agentLaunch: { selection: { kind: 'agent', agent: 'aider' }, prompt: 'do the thing' }
+        })) as { followupPrompt?: string }
+        expect(stdinResult.followupPrompt).toBe('do the thing')
+
+        // claude injects the prompt into argv, so nothing is delivered post-start.
+        const argvResult = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'do the thing' }
+        })) as { followupPrompt?: string }
+        expect(argvResult.followupPrompt).toBeUndefined()
+      })
+
+      it('surfaces a draft prompt only when the agent lacks a native draft affordance', async () => {
+        makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        // codex has no draft flag/env, so the host returns the draft for the
+        // renderer to paste unsubmitted.
+        const pasteResult = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          agentLaunch: {
+            selection: { kind: 'agent', agent: 'codex' },
+            prompt: 'draft me',
+            promptDelivery: 'draft'
+          }
+        })) as { draftPrompt?: string }
+        expect(pasteResult.draftPrompt).toBe('draft me')
+
+        // claude --prefill delivers the draft host-side on argv, so nothing paste.
+        const nativeResult = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          agentLaunch: {
+            selection: { kind: 'agent', agent: 'claude' },
+            prompt: 'draft me',
+            promptDelivery: 'draft'
+          }
+        })) as { draftPrompt?: string }
+        expect(nativeResult.draftPrompt).toBeUndefined()
+      })
+
+      it('suppresses the launch outcome and releases the admission token when the provider reattaches', async () => {
+        // A resolved launch the provider satisfies by reattaching an existing
+        // process (daemon-retry race, or u3's cold-restore miss-fallback preamble
+        // whose reattach HIT) never exec'd: no 'launched' receipt (receipt-cannot-
+        // lie), no post-start prompt paste, register skipped, and the fresh
+        // admission token released rather than retained. Suppression is variant-
+        // agnostic — a fresh selection that reattaches shares the resume path here.
+        const spawnSpy = makeAgentLaunchSpy({ isReattach: true })
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        const registerSpy = vi.spyOn(getHostAgentSessionRecordStore(), 'register')
+        const leafId = '22222222-2222-4222-8222-222222222222'
+        // aider takes its prompt over stdin after start, so a fresh launch would
+        // return a followupPrompt; the reattach must suppress that too.
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          tabId: 'tab-reattach',
+          leafId,
+          worktreeId: 'wt-reattach',
+          env: { ORCA_PANE_KEY: `tab-reattach:${leafId}` },
+          agentLaunch: { selection: { kind: 'agent', agent: 'aider' }, prompt: 'do the thing' }
+        })) as {
+          isReattach?: boolean
+          agentLaunch?: unknown
+          followupPrompt?: unknown
+        }
+
+        expect(result.isReattach).toBe(true)
+        expect(result.agentLaunch).toBeUndefined()
+        expect(result.followupPrompt).toBeUndefined()
+        expect(registerSpy).not.toHaveBeenCalled()
+        const spawnOptions = spawnSpy.mock.calls.at(-1)![0] as { env?: Record<string, string> }
+        const mintedToken = spawnOptions.env?.ORCA_AGENT_LAUNCH_TOKEN
+        expect(typeof mintedToken).toBe('string')
+        expect(getHostAgentLaunchBoundary().retainedFor(mintedToken!)).toBeNull()
+        registerSpy.mockRestore()
+      })
+
+      it('emits the receipt and retains the token when a reattach misses and spawns fresh', async () => {
+        // The one-shot miss-fallback exec'd the resolved launch — a normal fresh
+        // spawn: receipt returned, resume record registered, token retained.
+        makeAgentLaunchSpy({ isReattach: false })
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        const registerSpy = vi.spyOn(getHostAgentSessionRecordStore(), 'register')
+        const leafId = '33333333-3333-4333-8333-333333333333'
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          tabId: 'tab-miss',
+          leafId,
+          worktreeId: 'wt-miss',
+          env: { ORCA_PANE_KEY: `tab-miss:${leafId}` },
+          agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'hi' }
+        })) as { agentLaunch?: { status?: string; receipt?: { launchToken?: string } } }
+
+        expect(result.agentLaunch?.status).toBe('launched')
+        const receiptToken = result.agentLaunch?.receipt?.launchToken
+        expect(typeof receiptToken).toBe('string')
+        expect(registerSpy).toHaveBeenCalledTimes(1)
+        expect(getHostAgentLaunchBoundary().retainedFor(receiptToken!)).not.toBeNull()
+        registerSpy.mockRestore()
+      })
+
+      it('resolves a resume variant with provider command delivery so the relay writer delivers it', async () => {
+        // u3's cold-restore flip stopped client-assembling the resume command over
+        // SSH — the resolved RESUME command must ride commandDelivery:'provider' so
+        // the host/relay startup-command writer submits it to the (possibly remote)
+        // shell, exactly like a fresh agentLaunch. ssh-pty-provider forwards
+        // command + commandDelivery:'provider' to the relay (ssh-pty-provider.test)
+        // and the relay delivers any provider startupCommand (pty-handler.test);
+        // this proves the RESUME path emits that provider-delivered command (the
+        // resume-vs-fresh split lives in the resolver, never in delivery).
+        const spawnSpy = makeAgentLaunchSpy()
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          undefined,
+          undefined,
+          agentLaunchSettings() as never
+        )
+        const store = getHostAgentSessionRecordStore()
+        store.register({
+          worktreeId: 'wt-resume-delivery',
+          requestedAgent: 'claude',
+          baseAgent: 'claude',
+          launchSnapshot: {
+            version: 1,
+            requestedAgent: 'claude',
+            baseAgent: 'claude',
+            displayLabel: 'Claude',
+            mode: 'built-in',
+            argv: ['claude'],
+            agentEnv: {},
+            capturedEnvPolicy: 'none',
+            target: {
+              platform: isWindowsHost ? 'win32' : 'darwin',
+              execution: 'native',
+              shell: isWindowsHost ? 'powershell' : 'posix',
+              isRemote: false,
+              executionHostId: 'local'
+            }
+          },
+          launchToken: 'resume-delivery-token'
+        })
+        store.bindProviderSessionByToken('resume-delivery-token', {
+          key: 'session_id',
+          id: 'resume-sess-1'
+        })
+        const result = (await handlers.get('pty:spawn')!(null, {
+          cols: 80,
+          rows: 24,
+          worktreeId: 'wt-resume-delivery',
+          agentLaunch: {
+            resume: {
+              operation: 'resume',
+              sessionKey: {
+                worktreeId: 'wt-resume-delivery',
+                baseAgent: 'claude',
+                providerSessionId: 'resume-sess-1'
+              }
+            }
+          }
+        })) as { agentLaunch?: { status?: string } }
+
+        expect(result.agentLaunch?.status).toBe('launched')
+        const options = spawnSpy.mock.calls.at(-1)![0] as {
+          command?: string
+          commandDelivery?: string
+        }
+        expect(options.commandDelivery).toBe('provider')
+        expect(options.command).toContain('claude')
+        // The command is the RESUME command, not a bare fresh launch — it carries
+        // the bound provider session id.
+        expect(options.command).toContain('resume-sess-1')
+      })
     })
 
     describe('daemon-active provider (parity with LocalPtyProvider)', () => {
@@ -5228,7 +5627,10 @@ describe('registerPtyHandlers', () => {
       baseEnv: expect.objectContaining({
         CLAUDE_PROFILE: 'captured',
         ORCA_AGENT_TEAMS_TEAM_ID: 'team-stale'
-      })
+      }),
+      // Validated custom env propagates to teammate panes; stale team identity
+      // is stripped before it can reach a child.
+      childEnv: { CLAUDE_PROFILE: 'captured' }
     })
     expect(spawnOptions.env).toMatchObject({
       CLAUDE_PROFILE: 'captured',
@@ -5242,13 +5644,12 @@ describe('registerPtyHandlers', () => {
     expect(spawnOptions.env.PATH.split(delimiter)[0]).toBe('/tmp/fresh-agent-teams')
     expect(spawnOptions.env.TERM_PROGRAM).toBeUndefined()
     expect(spawnOptions.env.ORCA_ATTRIBUTION_SHIM_DIR).toBeUndefined()
-    expect(result.launchConfig?.agentEnv).toMatchObject({
-      CLAUDE_PROFILE: 'captured',
-      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-      ORCA_AGENT_TEAMS_TEAM_ID: 'team-fresh',
-      ORCA_AGENT_TEAMS_TOKEN: 'fresh-token',
-      TMUX: '/tmp/orca-claude-agent-teams/team-fresh,0,1'
-    })
+    // The durable snapshot keeps only custom env; regenerated team identity and
+    // any stale team keys never persist.
+    expect(result.launchConfig?.agentEnv).toEqual({ CLAUDE_PROFILE: 'captured' })
+    expect(result.launchConfig?.agentEnv.ORCA_AGENT_TEAMS_TEAM_ID).toBeUndefined()
+    expect(result.launchConfig?.agentEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBeUndefined()
+    expect(result.launchConfig?.agentEnv.TMUX).toBeUndefined()
     expect(runtime.registerPreAllocatedHandleForPty).toHaveBeenCalledWith(
       expect.any(String),
       'term_agent_teams'
@@ -5366,7 +5767,9 @@ describe('registerPtyHandlers', () => {
 
     expect(runtime.prepareClaudeAgentTeamsLeaderForHandle).toHaveBeenCalledWith({
       handle: 'term_agent_teams',
-      baseEnv: expect.any(Object)
+      baseEnv: expect.any(Object),
+      // Validated custom agent env (empty here) propagates to teammate panes.
+      childEnv: {}
     })
   })
 
@@ -11998,7 +12401,9 @@ describe('registerPtyHandlers', () => {
       expect(trackMock).toHaveBeenCalledWith('agent_started', {
         agent_kind: 'claude-code',
         launch_source: 'new_workspace_composer',
-        request_kind: 'new'
+        request_kind: 'new',
+        // No host resolution on this direct path => not a custom agent.
+        used_custom_agent: false
       })
     })
 
@@ -12019,6 +12424,34 @@ describe('registerPtyHandlers', () => {
           agent_kind: 'claude-code',
           launch_source: 'not_a_real_surface',
           request_kind: 'new'
+        }
+      })
+      expect(trackMock).not.toHaveBeenCalledWith('agent_started', expect.anything())
+    })
+
+    it('does not emit agent_started on a reattach (no duplicate launch event)', async () => {
+      // Why: a reattach reconnects to an already-launched process; the original
+      // spawn already emitted, so a second agent_started would double-count.
+      setLocalPtyProvider({
+        spawn: vi.fn(async () => ({ id: 'reattach-pty', pid: 7, isReattach: true })),
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        shutdown: vi.fn(),
+        onData: vi.fn(() => vi.fn()),
+        onExit: vi.fn(() => vi.fn()),
+        listProcesses: vi.fn(async () => []),
+        getForegroundProcess: vi.fn(async () => null)
+      } as never)
+      handlers.clear()
+      registerPtyHandlers(mainWindow as never)
+      await handlers.get('pty:spawn')!(null, {
+        cols: 80,
+        rows: 24,
+        telemetry: {
+          agent_kind: 'claude-code',
+          launch_source: 'new_workspace_composer',
+          request_kind: 'resume'
         }
       })
       expect(trackMock).not.toHaveBeenCalledWith('agent_started', expect.anything())

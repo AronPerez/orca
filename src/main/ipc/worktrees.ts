@@ -18,6 +18,7 @@ import type {
   AutomationWorkspaceProvenance,
   CreateWorktreeArgs,
   CreateWorktreeResult,
+  CreatedWorktreeResult,
   DetectedWorktree,
   DetectedWorktreeListResult,
   ForceDeleteWorktreeBranchResult,
@@ -30,6 +31,12 @@ import type {
   Worktree,
   WorktreeMeta
 } from '../../shared/types'
+import type {
+  RetryAgentLaunchAction,
+  WorktreeRetryAgentLaunchResult,
+  ForgetUnknownAgentLaunchResult
+} from '../../shared/agent-launch-worktree-recovery'
+import type { PendingAgentLaunchSummary } from '../../shared/agent-launch-pending-summary'
 import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
 import { getRepoExecutionHostId, type ExecutionHostId } from '../../shared/execution-host'
 import {
@@ -839,7 +846,15 @@ function mergeFolderWorkspace(repo: Repo, worktreeId: string, meta: WorktreeMeta
     ...(meta.priorWorktreeIds !== undefined ? { priorWorktreeIds: meta.priorWorktreeIds } : {}),
     workspaceStatus: meta.workspaceStatus ?? DEFAULT_WORKSPACE_STATUS_ID,
     diffComments: meta.diffComments,
-    mobileDiffReview: meta.mobileDiffReview
+    mobileDiffReview: meta.mobileDiffReview,
+    // Client-safe recovery-card mirrors (codes+hints / anti-race guards only);
+    // the private launch snapshot and token never enter the Worktree DTO.
+    ...(meta.agentLaunchFailure !== undefined
+      ? { agentLaunchFailure: meta.agentLaunchFailure }
+      : {}),
+    ...(meta.pendingAgentLaunch !== undefined
+      ? { pendingAgentLaunch: meta.pendingAgentLaunch }
+      : {})
   }
 }
 
@@ -911,7 +926,7 @@ function createFolderWorkspace(
   args: CreateWorktreeArgsWithSystemProvenance,
   repo: Repo,
   store: Store
-): CreateWorktreeResult {
+): CreatedWorktreeResult {
   const now = Date.now()
   const instanceId = randomUUID()
   const worktreeId = getFolderWorkspaceInstanceId(repo, instanceId)
@@ -995,6 +1010,14 @@ export function registerWorktreeHandlers(
   ipcMain.removeHandler('worktrees:updateLineage')
   ipcMain.removeHandler('worktrees:persistSortOrder')
   ipcMain.removeHandler('worktrees:getBranchRenameFailureOutput')
+  ipcMain.removeHandler('worktrees:retryAgentLaunch')
+  ipcMain.removeHandler('worktrees:forgetAgentLaunch')
+  ipcMain.removeHandler('worktrees:forgetRevokedRemoteAgentLaunch')
+  ipcMain.removeHandler('worktrees:retryBackgroundAgentLaunch')
+  ipcMain.removeHandler('worktrees:forgetBackgroundAgentLaunch')
+  ipcMain.removeHandler('worktrees:pendingAgentLaunchSummary')
+  ipcMain.removeHandler('worktrees:unknownAgentLaunchSiblingCount')
+  ipcMain.removeHandler('worktrees:forgetUnknownAgentLaunchSiblings')
   ipcMain.removeHandler('hooks:check')
   ipcMain.removeHandler('hooks:inspectSetupScriptImports')
   ipcMain.removeHandler('hooks:createIssueCommandRunner')
@@ -1239,7 +1262,35 @@ export function registerWorktreeHandlers(
           automationProvenance
         }
 
-        let result: CreateWorktreeResult
+        // Two-stage host-atomic agent launch on the desktop-local IPC path
+        // (parallel-wire). Stage 1 reserves capacity + pins identity BEFORE git so
+        // a capacity/identity failure creates no worktree; the rejection is carried
+        // in-band as `created: false` (never a thrown IPC error, which serializes
+        // lossily). Dormant until the renderer passes `agentLaunch`.
+        const agentLaunchPrepared = args.agentLaunch
+          ? await runtime.prepareLocalWorktreeCreateAgentLaunch(repo, args.agentLaunch)
+          : null
+        if (agentLaunchPrepared && !agentLaunchPrepared.ok) {
+          releaseAutomationWorkspaceProvenanceRequest(args.automationProvenanceRequest)
+          if (agentLaunchPrepared.failure) {
+            return {
+              created: false,
+              agentLaunchResult: { status: 'failed', failure: agentLaunchPrepared.failure }
+            }
+          }
+          return {
+            created: false,
+            agentLaunchResult: {
+              status: 'rejected',
+              requestError: agentLaunchPrepared.requestError ?? {
+                code: 'stale_agent_launch_failure'
+              }
+            }
+          }
+        }
+        const agentLaunchFinish = agentLaunchPrepared?.ok ? agentLaunchPrepared : null
+
+        let result: CreatedWorktreeResult
         try {
           // Why: wrap only the helpers; the pre-validation throws above are IPC-shape bugs, not the git/filesystem failures the funnel tracks.
           result = isFolderRepo(repo)
@@ -1248,6 +1299,10 @@ export function registerWorktreeHandlers(
               ? await createRemoteWorktree(createArgs, repo, store, mainWindow)
               : await createLocalWorktree(createArgs, repo, store, mainWindow, runtime)
         } catch (error) {
+          // Git creation threw, so no worktree exists to attribute the launch to;
+          // release the held reservation so a stranded reservation never burns
+          // capacity forever (execute releases on its own resolution failures).
+          agentLaunchFinish?.release()
           releaseAutomationWorkspaceProvenanceRequest(args.automationProvenanceRequest)
           track('workspace_create_failed', {
             source,
@@ -1270,6 +1325,31 @@ export function registerWorktreeHandlers(
 
         if (isFolderRepo(repo)) {
           notifyWorktreesChanged(mainWindow, repo.id)
+        }
+
+        // Stage 2: the worktree now exists, so convert the reservation and host-
+        // spawn the single agent terminal, wrapping the setup sequence around it.
+        // A launched result is the proof the host spawned the primary; the
+        // renderer materializes setup/default tabs around it and never spawns a
+        // primary of its own. A failed result keeps the workspace with a durable
+        // card (I9). The wrapped setup command rides result.setup.
+        if (agentLaunchFinish) {
+          const finished = await runtime.finishLocalWorktreeCreateAgentLaunch(
+            agentLaunchFinish,
+            result.worktree.id,
+            { repoPath: repo.path, worktreePath: result.worktree.path },
+            result.setup
+          )
+          result = {
+            ...result,
+            ...(finished.agentLaunchResult
+              ? { agentLaunchResult: finished.agentLaunchResult }
+              : {}),
+            ...(finished.startupTerminal ? { startupTerminal: finished.startupTerminal } : {}),
+            ...(finished.wrappedSetupCommand && result.setup
+              ? { setup: { ...result.setup, command: finished.wrappedSetupCommand } }
+              : {})
+          }
         }
 
         return result
@@ -2075,6 +2155,139 @@ export function registerWorktreeHandlers(
       }
       return readBranchRenameFailureOutputForDisplay(args.worktreeId)
     }
+  )
+
+  // Local desktop equivalent of worktree.retryAgentLaunch. The runtime
+  // orchestrator owns idempotency, the failure-id guard, and server-side
+  // recovery-card gating; a local invoke is an authenticated local principal, so
+  // clientKind is undefined. clientMutationId/expectedFailureId are validated
+  // against a durable failure host-side, so no fail-closed guard belongs here.
+  ipcMain.handle(
+    'worktrees:retryAgentLaunch',
+    async (
+      _event,
+      args: {
+        worktreeId: string
+        expectedFailureId: string
+        clientMutationId: string
+        action: RetryAgentLaunchAction
+      }
+    ): Promise<WorktreeRetryAgentLaunchResult> =>
+      runtime.retryWorktreeAgentLaunch(
+        `id:${args.worktreeId}`,
+        {
+          expectedFailureId: args.expectedFailureId,
+          clientMutationId: args.clientMutationId,
+          action: args.action
+        },
+        undefined
+      )
+  )
+
+  // Local desktop equivalent of worktree.forgetAgentLaunch. Never kills or
+  // spawns; releases Orca's local bookkeeping for a launch stranded in
+  // launch_state_unknown. expectedOperationId is an anti-race guard, not a secret.
+  ipcMain.handle(
+    'worktrees:forgetAgentLaunch',
+    async (
+      _event,
+      args: { worktreeId: string; expectedOperationId: string; clientMutationId: string }
+    ): Promise<ForgetUnknownAgentLaunchResult> =>
+      runtime.forgetUnknownWorktreeAgentLaunch(
+        `id:${args.worktreeId}`,
+        {
+          expectedOperationId: args.expectedOperationId,
+          clientMutationId: args.clientMutationId
+        },
+        undefined
+      )
+  )
+
+  // LOCAL-DESKTOP-ONLY revoked-principal forget override (plan :498). No runtime RPC
+  // counterpart exists — a remote caller must never reach it — so this IPC handler is
+  // the only surface. The runtime proves the row's owning remote principal is revoked
+  // (no paired device of its scope) before forgetting; expectedOperationId is an
+  // anti-race guard, not a secret. Never kills or spawns.
+  ipcMain.handle(
+    'worktrees:forgetRevokedRemoteAgentLaunch',
+    async (
+      _event,
+      args: { worktreeId: string; expectedOperationId: string; clientMutationId: string }
+    ): Promise<ForgetUnknownAgentLaunchResult> =>
+      runtime.forgetRevokedRemoteWorktreeAgentLaunch(`id:${args.worktreeId}`, {
+        expectedOperationId: args.expectedOperationId,
+        clientMutationId: args.clientMutationId
+      })
+  )
+
+  // Local desktop equivalent of worktree.retryBackgroundAgentLaunch. Keyed by the
+  // host-minted attempt id; the runtime owns idempotency, the failure-id guard, and
+  // recovery-card gating. A local invoke is an authenticated local principal.
+  ipcMain.handle(
+    'worktrees:retryBackgroundAgentLaunch',
+    async (
+      _event,
+      args: {
+        attemptId: string
+        expectedFailureId: string
+        clientMutationId: string
+        action: RetryAgentLaunchAction
+      }
+    ): Promise<WorktreeRetryAgentLaunchResult> =>
+      runtime.retryBackgroundAgentLaunch(
+        {
+          attemptId: args.attemptId,
+          expectedFailureId: args.expectedFailureId,
+          clientMutationId: args.clientMutationId,
+          action: args.action
+        },
+        undefined
+      )
+  )
+
+  // Local desktop equivalent of worktree.forgetBackgroundAgentLaunch. Never kills or
+  // spawns; frees exactly one background-attempt reservation stranded in
+  // launch_state_unknown. expectedOperationId is an anti-race guard, not a secret.
+  ipcMain.handle(
+    'worktrees:forgetBackgroundAgentLaunch',
+    async (
+      _event,
+      args: { attemptId: string; expectedOperationId: string; clientMutationId: string }
+    ): Promise<ForgetUnknownAgentLaunchResult> =>
+      runtime.forgetBackgroundAgentLaunch(
+        {
+          attemptId: args.attemptId,
+          expectedOperationId: args.expectedOperationId,
+          clientMutationId: args.clientMutationId
+        },
+        undefined
+      )
+  )
+
+  // Local desktop equivalent of worktree.pendingAgentLaunchSummary. A local invoke
+  // is an authenticated local principal, so clientKind is undefined; the runtime
+  // scopes rows to that principal and redacts every secret host-side.
+  ipcMain.handle(
+    'worktrees:pendingAgentLaunchSummary',
+    async (): Promise<PendingAgentLaunchSummary> => runtime.pendingAgentLaunchSummary(undefined)
+  )
+
+  // Local desktop equivalent of worktree.unknownAgentLaunchSiblingCount. A local
+  // invoke is an authenticated local principal (clientKind undefined); the runtime
+  // scopes siblings to that principal and the anchor's disconnected remote host.
+  ipcMain.handle(
+    'worktrees:unknownAgentLaunchSiblingCount',
+    async (_event, args: { worktreeId: string }): Promise<{ count: number }> => ({
+      count: await runtime.unknownWorktreeAgentLaunchSiblingCount(`id:${args.worktreeId}`, undefined)
+    })
+  )
+
+  // Local desktop equivalent of worktree.forgetUnknownAgentLaunchSiblings. Never kills
+  // or spawns; frees only each sibling's own reservation on the disconnected host.
+  ipcMain.handle(
+    'worktrees:forgetUnknownAgentLaunchSiblings',
+    async (_event, args: { worktreeId: string }): Promise<{ forgottenCount: number }> =>
+      runtime.forgetUnknownWorktreeAgentLaunchSiblings(`id:${args.worktreeId}`, undefined)
   )
 
   ipcMain.handle(

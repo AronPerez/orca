@@ -262,6 +262,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
         command: opts.command,
         startupCommandDelivery: opts.startupCommandDelivery,
         launchAgent: opts.launchAgent,
+        ...(opts.launchToken ? { launchToken: opts.launchToken } : {}),
         // Why: without forwarding the override, the daemon falls back to cmd.exe/PowerShell, ignoring the shell the renderer chose; this matches LocalPtyProvider.
         shellOverride: opts.shellOverride,
         terminalWindowsWslDistro: opts.terminalWindowsWslDistro,

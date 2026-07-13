@@ -1,6 +1,5 @@
-import { isCursorAgentTitle } from '../../../shared/agent-title-core'
-import { buildAgentNameRe } from '../../../shared/agent-name-token-match'
 import type { RuntimeTerminalSummary } from '../../../shared/runtime-types'
+import type { BuiltInTuiAgent } from '../../../shared/types'
 
 // Why: group addresses enable broadcast messaging to logical groups of agents.
 // Resolution is done at send-time: one message record per recipient, same thread_id,
@@ -20,29 +19,25 @@ const AGENT_NAME_GROUPS = [
 
 type AgentNameGroup = (typeof AGENT_NAME_GROUPS)[number]
 
+// Base-to-group map (oracle 16): agent-name groups resolve from a terminal's
+// validated base harness, never its title text. Only bases with an addressable
+// group appear; the `mimo-code` base maps to the existing `@mimo` group name.
+const BASE_AGENT_TO_GROUP: Partial<Record<BuiltInTuiAgent, AgentNameGroup>> = {
+  claude: 'claude',
+  openclaude: 'openclaude',
+  codex: 'codex',
+  opencode: 'opencode',
+  'mimo-code': 'mimo',
+  gemini: 'gemini',
+  droid: 'droid',
+  grok: 'grok',
+  cursor: 'cursor'
+}
+
 export type GroupAddress = '@all' | '@idle' | `@${AgentNameGroup}` | `@worktree:${string}`
 
 export function isGroupAddress(to: string): boolean {
   return to.startsWith('@')
-}
-
-// Why: a name token identifies an agent only when the name is a coined word. `cursor` is
-// also ordinary vocabulary in another agent's task-summary title ("fix the text cursor
-// blink"), so token-matching it would route @cursor into a live Claude/Codex prompt. Names
-// with that ambiguity register the identity predicate delivery already applies to them.
-const GROUP_TITLE_MATCHERS: Partial<Record<AgentNameGroup, (title: string) => boolean>> = {
-  cursor: isCursorAgentTitle
-}
-
-function titleMatchesAgentNameGroup(title: string, agentName: string): boolean {
-  const identityMatcher = GROUP_TITLE_MATCHERS[agentName as AgentNameGroup]
-  if (identityMatcher) {
-    return identityMatcher(title)
-  }
-  // Why: reuse the shared whole-token matcher so orchestration groups honor the
-  // same Windows launcher-suffix rule (e.g. `grok.exe`) as the rest of Orca's
-  // agent-title detection, instead of maintaining a divergent regex here.
-  return buildAgentNameRe(agentName).test(title)
 }
 
 export function resolveGroupAddress(
@@ -78,9 +73,9 @@ export function resolveGroupAddress(
       .map((t) => t.handle)
   }
 
-  // Why: agent-name groups (@claude, @droid, etc.) match by terminal title so
-  // the sender can address all instances of a particular agent type without
-  // knowing their handles.
+  // Why: agent-name groups (@claude, @droid, etc.) match by the terminal's
+  // validated base harness, not title text — a custom agent joins its base's
+  // group, and an unattributed terminal is omitted rather than guessed.
   const agentName = group.slice(1) // remove @
   if ((AGENT_NAME_GROUPS as readonly string[]).includes(agentName)) {
     return terminals
@@ -88,7 +83,7 @@ export function resolveGroupAddress(
         if (t.handle === senderHandle) {
           return false
         }
-        return titleMatchesAgentNameGroup(t.title ?? '', agentName)
+        return t.baseAgent !== undefined && BASE_AGENT_TO_GROUP[t.baseAgent] === agentName
       })
       .map((t) => t.handle)
   }

@@ -340,7 +340,12 @@ const agentStartedSchema = z
     agent_kind: agentKindSchema,
     launch_source: launchSourceSchema,
     request_kind: requestKindSchema,
-    nth_repo_added: nthRepoAddedSchema
+    nth_repo_added: nthRepoAddedSchema,
+    // Host-derived from the validated launch snapshot (mode === 'custom'); never a
+    // client assertion. Optional so pre-rollout events (absent = not custom) stay
+    // valid. `.strict()` still rejects any custom id/label/command/argv/env/path —
+    // the marker is the only custom-launch signal that crosses the wire.
+    used_custom_agent: z.boolean().optional()
   })
   .strict()
 const agentPromptSentSchema = z

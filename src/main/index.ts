@@ -194,6 +194,8 @@ import { AutomationService } from './automations/service'
 import { createHeadlessAutomationOutputSnapshotBuffer } from './automations/headless-dispatch'
 import { buildHeadlessAutomationWorktreeCreateArgs } from './automations/headless-workspace-create'
 import { AgentAwakeService } from './agent-awake-service'
+import { initHostAgentLaunchOperationStorePersistence } from './agent-launch/agent-launch-operation-store-persistence'
+import { initHostAgentSessionRecordStorePersistence } from './agent-launch/agent-session-record-store-persistence'
 import { registerSystemResumeBroadcast } from './system-resume-broadcast'
 import {
   recordCoalescedCrashBreadcrumb,
@@ -1808,6 +1810,9 @@ app.whenReady().then(async () => {
       syncMacMenuBarIcon(settings.showMenuBarIcon !== false)
     }
   })
+  // Rehydrate host-private launch state before any IPC/runtime launch surface can mutate it.
+  initHostAgentLaunchOperationStorePersistence(app.getPath('userData'))
+  initHostAgentSessionRecordStorePersistence(app.getPath('userData'))
   // Why: run before ClaudeRuntimeAuthService's constructor sync — a surviving daemon Claude CLI holds the single-use refresh token; early refresh rotates it out mid-session.
   attachClaudeLivePtyPersistence(store)
   const persistedClaudePtyIds = store.getClaudeLivePtySessionIds()
@@ -1985,6 +1990,8 @@ app.whenReady().then(async () => {
       .map((account) => ({ id: account.id, managedHomePath: account.managedHomePath }))
   })
   const runtimeService = new OrcaRuntimeService(store, stats, {
+    // Why: local IPC and runtime RPC must share one catalog authority for revisions and repair tokens.
+    agentCatalogStore: store ?? undefined,
     // Why: resolve the PTY provider lazily — a daemon swap happens later, so an eager reference would freeze the pre-daemon provider (design §4.3).
     getLocalProvider: () => getLocalPtyProvider(),
     // Why: SSH relay providers register after construction and may reconnect, so destructive cleanup must resolve the current generation.
@@ -2012,7 +2019,13 @@ app.whenReady().then(async () => {
         systemCodexHomePath: resolveHostCodexSessionSourceHome(store!.getSettings())
       }),
     buildAgentHookPtyEnv: () =>
-      isAgentStatusHooksEnabled(store?.getSettings()) ? agentHookServer.buildPtyEnv() : {}
+      isAgentStatusHooksEnabled(store?.getSettings()) ? agentHookServer.buildPtyEnv() : {},
+    // Why: sourced lazily — runtimeRpc (and its DeviceRegistry) is constructed after
+    // this service. The revoked-principal forget override reads the paired-device
+    // scopes to prove a remote principal is explicitly revoked (no device remains),
+    // not merely disconnected (plan :498).
+    getPairedDeviceScopes: () =>
+      runtimeRpc?.getDeviceRegistry()?.listDevices().map((device) => device.scope) ?? []
   })
   runtime = runtimeService
   browserManager.setBrowserGuestStateChangedListener((worktreeId) => {
@@ -2023,6 +2036,11 @@ app.whenReady().then(async () => {
     codexUsage,
     // Why: desktop clients mirror remote-host automations, but only a server process should execute remote_host_service-owned schedules.
     allowRemoteHostScheduling: isServeMode,
+    // U6: resolve-only classification of the automation's agent BEFORE dispatch,
+    // so a deleted/disabled/unbuildable agent records a structured failure and
+    // spawns no terminal (both dispatch paths and both workspace modes).
+    classifyAgentLaunch: (automation, run, target) =>
+      runtimeService.classifyAgentLaunchForAutomation(automation.agentId, target.repo, run.id),
     headlessDispatcher: isServeMode
       ? async ({ automation, run, target }) => {
           const terminalSnapshotLimit = 2_000

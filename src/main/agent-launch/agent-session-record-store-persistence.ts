@@ -1,0 +1,150 @@
+// Host-private durable persistence for the session record store (U5). Records
+// carry the immutable launch snapshot (resolved argv + admitted agent env) and,
+// for legacy handoffs, the opaque replay config — both secret-bearing — plus the
+// launch token, so the whole record set is encrypted at rest via Electron
+// safeStorage (the secret-settings standard), with a permission-hardened plaintext
+// fallback only when OS-backed encryption is unavailable. Written with the same
+// atomic tmp+rename discipline as the launch-operation store. The encode/decode
+// core takes an injected cipher so the envelope round-trip is testable without
+// Electron. This file is never client-synced.
+
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { safeStorage } from 'electron'
+import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secure-file'
+import type {
+  AgentSessionRecordStoreDurableState,
+  HostSessionLaunchRecord
+} from './agent-session-record-store'
+import { getHostAgentSessionRecordStore } from './agent-session-record-store-host'
+
+const STORE_FILENAME = 'agent-session-records.json'
+
+export function agentSessionRecordStorePath(userDataPath: string): string {
+  return join(userDataPath, STORE_FILENAME)
+}
+
+/** Crypto boundary for the encrypted records section. Injected so the envelope
+ *  round-trip is unit-testable without an Electron/OS keychain. */
+export type AgentSessionRecordCipher = {
+  available: () => boolean
+  encrypt: (plaintext: string) => Buffer
+  decrypt: (ciphertext: Buffer) => string
+}
+
+export function electronSafeStorageCipher(): AgentSessionRecordCipher {
+  return {
+    available: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plaintext) => safeStorage.encryptString(plaintext),
+    decrypt: (ciphertext) => safeStorage.decryptString(ciphertext)
+  }
+}
+
+type PersistedRecordsSection =
+  | { format: 'electron-safe-storage-v1'; ciphertext: string }
+  | { format: 'plaintext-v1'; records: HostSessionLaunchRecord[] }
+
+type PersistedFile = {
+  version: 1
+  records: PersistedRecordsSection
+}
+
+export function encodeAgentSessionRecordStore(
+  state: AgentSessionRecordStoreDurableState,
+  cipher: AgentSessionRecordCipher
+): PersistedFile {
+  const records = [...state.records]
+  const section: PersistedRecordsSection = cipher.available()
+    ? {
+        format: 'electron-safe-storage-v1',
+        ciphertext: cipher.encrypt(JSON.stringify(records)).toString('base64')
+      }
+    : { format: 'plaintext-v1', records }
+  return { version: 1, records: section }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function decodeRecords(
+  section: unknown,
+  cipher: AgentSessionRecordCipher
+): HostSessionLaunchRecord[] {
+  if (!isRecord(section)) {
+    return []
+  }
+  if (section.format === 'plaintext-v1' && Array.isArray(section.records)) {
+    return section.records as HostSessionLaunchRecord[]
+  }
+  if (
+    section.format === 'electron-safe-storage-v1' &&
+    typeof section.ciphertext === 'string' &&
+    cipher.available()
+  ) {
+    // A decrypt failure (keychain reset) drops only the records, never blocks
+    // boot: those sessions then require an explicit current-settings relaunch
+    // rather than a mis-attributed replay.
+    const parsed = JSON.parse(cipher.decrypt(Buffer.from(section.ciphertext, 'base64')))
+    return Array.isArray(parsed) ? (parsed as HostSessionLaunchRecord[]) : []
+  }
+  return []
+}
+
+export function decodeAgentSessionRecordStore(
+  raw: unknown,
+  cipher: AgentSessionRecordCipher
+): AgentSessionRecordStoreDurableState {
+  if (!isRecord(raw) || raw.version !== 1) {
+    return { records: [] }
+  }
+  try {
+    return { records: decodeRecords(raw.records, cipher) }
+  } catch {
+    return { records: [] }
+  }
+}
+
+export function loadAgentSessionRecordStoreState(
+  path: string,
+  cipher: AgentSessionRecordCipher
+): AgentSessionRecordStoreDurableState {
+  if (!existsSync(path)) {
+    return { records: [] }
+  }
+  try {
+    hardenExistingSecureFile(path)
+    return decodeAgentSessionRecordStore(JSON.parse(readFileSync(path, 'utf-8')), cipher)
+  } catch {
+    // A corrupt store must never block boot; start empty and let live sessions
+    // rebind on their next hook.
+    return { records: [] }
+  }
+}
+
+export function writeAgentSessionRecordStoreState(
+  path: string,
+  state: AgentSessionRecordStoreDurableState,
+  cipher: AgentSessionRecordCipher
+): void {
+  writeSecureJsonFile(path, encodeAgentSessionRecordStore(state, cipher))
+}
+
+/** Boot-time wiring: rehydrate durable records, then attach the write-back sink so
+ *  every later bind/ingest/forget is persisted. Called once from main-process
+ *  startup after the user data dir is stable. */
+export function initHostAgentSessionRecordStorePersistence(userDataPath: string): void {
+  const path = agentSessionRecordStorePath(userDataPath)
+  const cipher = electronSafeStorageCipher()
+  const state = loadAgentSessionRecordStoreState(path, cipher)
+  const store = getHostAgentSessionRecordStore()
+  store.rebuildRecordsFrom(state.records)
+  store.setDurablePersistence((next) => {
+    try {
+      writeAgentSessionRecordStoreState(path, next, cipher)
+    } catch {
+      // A failed persist must not break an in-flight bind; the in-memory store
+      // stays authoritative and the next mutation retries the write.
+    }
+  })
+}

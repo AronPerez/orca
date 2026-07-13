@@ -1,11 +1,13 @@
-import type { TuiAgent } from './types'
+import type { BuiltInTuiAgent } from './types'
 
 /** Why: plain-English agent names for non-localized surfaces (keybinding
  * titles in the shared registry, which main, renderer, and the keybindings
  * file sanitizer all read). The renderer's localized agent catalog
  * (`agent-catalog.tsx`) stays the source of truth for UI labels; keep these
- * in sync with its `label` values when adding an agent. */
-export const TUI_AGENT_DISPLAY_NAMES: Record<TuiAgent, string> = {
+ * in sync with its `label` values when adding an agent. These are also the
+ * canonical English product names custom-agent labels are collision-checked
+ * against (stable catalog constants, never locale-translated UI strings). */
+export const TUI_AGENT_DISPLAY_NAMES: Record<BuiltInTuiAgent, string> = {
   claude: 'Claude',
   'claude-agent-teams': 'Claude Agent Teams',
   openclaude: 'OpenClaude',
@@ -42,6 +44,6 @@ export const TUI_AGENT_DISPLAY_NAMES: Record<TuiAgent, string> = {
   grok: 'Grok'
 }
 
-/** Canonical agent id list derived from the exhaustive display-name record,
- * so shared modules can enumerate agents without importing renderer code. */
-export const ALL_TUI_AGENTS = Object.keys(TUI_AGENT_DISPLAY_NAMES) as readonly TuiAgent[]
+/** Canonical built-in agent id list derived from the exhaustive display-name record,
+ * so shared modules can enumerate built-ins without importing renderer code. */
+export const ALL_TUI_AGENTS = Object.keys(TUI_AGENT_DISPLAY_NAMES) as readonly BuiltInTuiAgent[]

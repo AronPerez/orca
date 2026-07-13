@@ -99,6 +99,10 @@ const AutomationRuns = z.object({
   automationId: OptionalString
 })
 
+const AutomationRunId = z.object({
+  runId: requiredString('Missing run id')
+})
+
 const AutomationCreate = z.object({
   name: requiredString('Missing automation name'),
   prompt: requiredString('Missing automation prompt'),
@@ -186,5 +190,13 @@ export const AUTOMATION_METHODS: RpcMethod[] = [
     handler: (params, { runtime }) => ({
       runs: runtime.listAutomationRuns(params.automationId)
     })
+  }),
+  defineMethod({
+    // Why (§U9 W-T3, SSH use case): forgetting a run stranded in launch_state_unknown
+    // must reach the host that owns the runId; the desktop-IPC forgetRun only settles
+    // local-owned runs, so a remote/SSH-owned run needs this target-routed method.
+    name: 'automation.forgetRun',
+    params: AutomationRunId,
+    handler: (params, { runtime }) => ({ run: runtime.forgetAutomationRun(params.runId) })
   })
 ]

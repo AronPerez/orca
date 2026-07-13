@@ -28,6 +28,7 @@ import type {
   Repo,
   TuiAgent
 } from '../../shared/types'
+import { resolveTuiAgentBaseAgent } from '../../shared/custom-tui-agents'
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
 import {
   buildRgArgs,
@@ -1456,7 +1457,17 @@ export function registerFilesystemHandlers(
       args: { agentId: string; worktreePath?: string; connectionId?: string }
     ): Promise<DiscoverCommitMessageModelsResult> => {
       const agentId = args.agentId
-      const agentCommandOverride = store.getSettings().agentCmdOverrides?.[agentId as TuiAgent]
+      // Resolve to base before indexing the built-in-only override map: a custom id
+      // shares its base CLI's model set, so its command override keys on the base.
+      const discoverSettings = store.getSettings()
+      const overrideBase = resolveTuiAgentBaseAgent(
+        agentId as TuiAgent,
+        discoverSettings.customTuiAgents,
+        discoverSettings.deletedCustomTuiAgents
+      )
+      const agentCommandOverride = overrideBase
+        ? discoverSettings.agentCmdOverrides?.[overrideBase]
+        : undefined
       if (args.connectionId) {
         if (!args.worktreePath) {
           return { success: false, error: 'Missing worktree path for remote model discovery.' }

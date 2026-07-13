@@ -1,5 +1,5 @@
 import type {
-  CreateWorktreeResult,
+  CreatedWorktreeResult,
   WorktreeDefaultTabsLaunch,
   WorktreeSetupLaunch,
   WorktreeStartupLaunch
@@ -19,6 +19,12 @@ export type RuntimeClientEvent =
       identifier: string
       workspaceId: string
     }
+  // Why: the agent catalog and its reference owners sync as revisioned full
+  // snapshots. A revision bump announces the new number so connected
+  // mobile/paired clients refetch the affected snapshot; reconnect always does
+  // a full hydrate, so a missed event self-heals.
+  | { type: 'agentCatalogChanged'; revision: number }
+  | { type: 'agentReferencesChanged'; revision: number }
   | {
       type: 'activateWorktree'
       repoId: string
@@ -44,9 +50,9 @@ export type RuntimeActivateWorktreeEvent = Extract<RuntimeClientEvent, { type: '
 export function toRuntimeActivateWorktreeEvent(
   repoId: string,
   worktreeId: string,
-  setup?: CreateWorktreeResult['setup'],
+  setup?: CreatedWorktreeResult['setup'],
   startup?: WorktreeStartupLaunch,
-  defaultTabs?: CreateWorktreeResult['defaultTabs']
+  defaultTabs?: CreatedWorktreeResult['defaultTabs']
 ): RuntimeActivateWorktreeEvent {
   return {
     type: 'activateWorktree',

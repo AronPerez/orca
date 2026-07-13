@@ -49,7 +49,11 @@ const RUNTIME_PASSTHROUGH_CODES: ReadonlySet<string> = new Set([
   'no_active_terminal',
   'repo_not_found',
   'timeout',
-  'invalid_limit'
+  'invalid_limit',
+  // Why: settings.update rejects legacy whole-owner agent writes with this stable
+  // code so new clients can detect they must upgrade rather than silently drop
+  // the write. Standard error envelope, no extra payload.
+  'client_upgrade_required'
 ])
 
 const COMPUTER_PASSTHROUGH_CODES: ReadonlySet<string> = new Set(Object.values(COMPUTER_ERROR_CODES))

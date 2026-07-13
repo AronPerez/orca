@@ -3,6 +3,10 @@ import { z } from 'zod'
 import { defineMethod, type RpcMethod } from '../core'
 import { OptionalFiniteNumber, OptionalString, OptionalBoolean, requiredString } from '../schemas'
 import type { MessageType, MessagePriority, TaskStatus } from '../../orchestration/db'
+import {
+  projectDispatchStatusForLegacyReaders,
+  type DispatchContextRow
+} from '../../orchestration/types'
 import { buildDispatchPreamble } from '../../orchestration/preamble'
 import { formatMessageBanner } from '../../orchestration/formatter'
 import { isGroupAddress, resolveGroupAddress } from '../../orchestration/groups'
@@ -32,6 +36,29 @@ const TASK_STATUSES: TaskStatus[] = [
 
 function getLifecycleGroupRecipientError(type: 'worker_done' | 'heartbeat'): string {
   return `${type} messages must be sent to a concrete coordinator terminal handle, not a group address.`
+}
+
+/** Project a dispatch context for the CLI/RPC read surface: coalesce the additive
+ *  `forgotten` disposition to `failed` so an independently-versioned reader that
+ *  predates it treats the dispatch as failed-and-blocked rather than an unknown
+ *  status. Internal retry-gating reads the DB row directly and still sees
+ *  `forgotten`, so gating is unaffected. */
+function toReaderDispatchContext(ctx: DispatchContextRow): DispatchContextRow {
+  return { ...ctx, status: projectDispatchStatusForLegacyReaders(ctx.status) }
+}
+
+// The dispatch's structured launch-failure failureId, used as the Forget
+// anti-race guard. Tolerant of a null/legacy/malformed blob → null.
+function parseDispatchFailureId(agentLaunchFailure: string | null): string | null {
+  if (!agentLaunchFailure) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(agentLaunchFailure) as { failureId?: unknown }
+    return typeof parsed.failureId === 'string' ? parsed.failureId : null
+  } catch {
+    return null
+  }
 }
 
 const SendParams = z
@@ -163,6 +190,18 @@ const DispatchShowParams = z.object({
   preamble: OptionalBoolean,
   from: OptionalString,
   devMode: OptionalBoolean
+})
+
+const DispatchForgetParams = z.object({
+  task: requiredString('Missing --task'),
+  // Anti-race guard: only forget the exact stranded failure the caller saw. The
+  // failureId comes from the dispatch's structured agent_launch_failure (never a
+  // secret). Absent = forget the current stranded dispatch unconditionally.
+  expectedFailureId: OptionalString
+})
+
+const DispatchShowRawParams = z.object({
+  task: requiredString('Missing --task')
 })
 
 const AskParams = z.object({
@@ -547,9 +586,59 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
           devMode: params.devMode,
           ...(ctx ? { cliCommand: runtime.getTerminalOrchestrationCliCommand(workerHandle) } : {})
         })
-        return { dispatch: ctx ?? null, preamble }
+        return { dispatch: ctx ? toReaderDispatchContext(ctx) : null, preamble }
       }
 
+      return { dispatch: ctx ? toReaderDispatchContext(ctx) : null }
+    }
+  }),
+
+  defineMethod({
+    name: 'orchestration.dispatchForget',
+    params: DispatchForgetParams,
+    // Why (§U9 W-T2, plan :498): owner-authorized Forget of a dispatch stranded in
+    // launch_state_unknown. Returns the RAW 'forgotten' dispatch (NOT the legacy
+    // 'failed' projection) so the current renderer renders the forgotten state; the
+    // task moves to 'blocked' and requires an explicit Retry (taskUpdate → 'ready').
+    // Single-dispatch and task-scoped: never bulk, never spawns/kills.
+    handler: (params, { runtime }) => {
+      const db = runtime.getOrchestrationDb()
+      const ctx = db.getDispatchContext(params.task)
+      if (!ctx) {
+        throw new Error(`No dispatch context for task: ${params.task}`)
+      }
+      // Idempotent: a repeat forget on an already-forgotten dispatch is a success.
+      if (ctx.status === 'forgotten') {
+        return { dispatch: ctx }
+      }
+      if (
+        params.expectedFailureId !== undefined &&
+        parseDispatchFailureId(ctx.agent_launch_failure) !== params.expectedFailureId
+      ) {
+        throw new Error(`Stale forget for task ${params.task}: dispatch launch failure changed`)
+      }
+      const forgotten = db.forgetDispatch(ctx.id)
+      if (!forgotten) {
+        throw new Error(`Dispatch for task ${params.task} is not in a forgettable state`)
+      }
+      return { dispatch: forgotten }
+    }
+  }),
+
+  defineMethod({
+    name: 'orchestration.dispatchShowRaw',
+    params: DispatchShowRawParams,
+    // Why (§U9 W-T2 reader, plan :498 + ledger #12c): the U9 renderer ships WITH the
+    // host, so its recovery surface must read the RAW dispatch status — including the
+    // durable 'forgotten' state — NOT the 'forgotten'→'failed' projection dispatchShow
+    // applies for independently-versioned CLI readers. On a fresh mount (app reload, or
+    // the plan's "explicit later Retry" flow where no mutation result is in hand) a
+    // projected read would render 'failed' with the wrong retry affordance, silently
+    // erasing the distinction the user created by forgetting. Per-task scoped; carries
+    // agent_launch_failure so the surface reads the failureId for the forget anti-race.
+    handler: (params, { runtime }) => {
+      const db = runtime.getOrchestrationDb()
+      const ctx = db.getDispatchContext(params.task)
       return { dispatch: ctx ?? null }
     }
   }),

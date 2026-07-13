@@ -69,7 +69,11 @@ import { mergeGitConfigEnvProtocol } from '../../shared/git-credential-prompt-en
 import { PtyStartupIngress, type PtyIngressEmission } from '../../shared/pty-startup-ingress'
 import { resolvePtyOwnerBackend } from '../../shared/pty-owner-backend'
 
-const PANE_IDENTITY_ENV_KEYS = [
+// Exported for the U6 pane-identity strip assertion: an unattended launch
+// (automation/orchestration/background) must never inherit a stale ORCA_PANE_KEY
+// from a parent agent CLI's env — the spawn strips every inherited pane key that
+// the launch does not explicitly re-supply.
+export const PANE_IDENTITY_ENV_KEYS = [
   'ORCA_PANE_KEY',
   'ORCA_TAB_ID',
   'ORCA_WORKTREE_ID',
@@ -139,7 +143,7 @@ function getDefaultCwd(): string {
 /**
  * Removes inherited pane identity unless this PTY explicitly supplies it.
  */
-function removeUnspecifiedPaneIdentityEnv(
+export function removeUnspecifiedPaneIdentityEnv(
   env: Record<string, string>,
   explicitEnv: Record<string, string> | undefined
 ): void {

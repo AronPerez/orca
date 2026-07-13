@@ -13,6 +13,8 @@ export type CreateOrAttachOptions = {
   command?: string
   startupCommandDelivery?: StartupCommandDelivery
   launchAgent?: TuiAgent
+  /** Host admission launch token persisted on the session record at creation. */
+  launchToken?: string
   /** Explicit shell the renderer asked for, forwarded to the subprocess. */
   shellOverride?: string
   terminalWindowsWslDistro?: string | null

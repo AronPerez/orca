@@ -3,8 +3,11 @@ import {
   releaseAutomationWorkspaceProvenanceRequest,
   resolveAutomationWorkspaceProvenance
 } from '../../../automations/workspace-provenance'
+import { WorktreeAgentLaunchPreCreateError } from '../../../agent-launch/agent-launch-worktree-resolution'
+import { shouldRejectLegacyCustomAgentLaunch } from '../../../agent-launch/legacy-launch-custom-agent-guard'
 import { defineMethod, type RpcMethod } from '../core'
 import { resolveRuntimeNavigationTarget } from '../../../../shared/runtime-navigation'
+import { WORKTREE_AGENT_LAUNCH_RECOVERY_METHODS } from './worktree-agent-launch-recovery-methods'
 import {
   WorktreeCreate,
   WorktreeDetectedListParams,
@@ -76,11 +79,28 @@ export const WORKTREE_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'worktree.create',
     params: WorktreeCreate,
-    handler: async (params, { runtime }) =>
+    handler: async (params, { runtime, clientKind }) => {
+      // U7: a remote client (authenticated clientKind) may not name a custom id on
+      // the legacy built-in create path — it cannot be host-resolved without the
+      // host-atomic agentLaunch request. Reject at the boundary (no worktree),
+      // in-band as created:false so the composer keeps its typed recovery hints.
+      // In-process desktop/automation callers bypass this handler and keep customs.
+      if (
+        shouldRejectLegacyCustomAgentLaunch({
+          hasAgentLaunch: params.agentLaunch !== undefined,
+          requestClientKind: clientKind,
+          requestedAgentId: params.startupAgent ?? params.createdWithAgent
+        })
+      ) {
+        return {
+          created: false,
+          agentLaunchResult: { status: 'rejected', requestError: { code: 'untrusted_reference' } }
+        }
+      }
       // Why: a mobile create interrupted by a connection migration is retried with
       // the same clientMutationId; dedupe so the host returns the in-flight/created
       // worktree instead of spawning a duplicate. No key (desktop/CLI) runs plainly.
-      runtime.dedupeWorktreeCreate(params.repo, params.clientMutationId, async () => {
+      return runtime.dedupeWorktreeCreate(params.repo, params.clientMutationId, async () => {
         const repo = await runtime.showRepo(params.repo)
         const automationProvenance = resolveAutomationWorkspaceProvenance({
           authority: runtime,
@@ -134,6 +154,15 @@ export const WORKTREE_METHODS: RpcMethod[] = [
             ...(params.startupAgent ? { startupAgent: params.startupAgent } : {}),
             ...(params.startupPrompt !== undefined ? { startupPrompt: params.startupPrompt } : {}),
             startupDraft: params.startupDraft,
+            // The host-atomic launch request; when present the host ignores the
+            // client startup/createdWithAgent for the agent terminal. clientKind
+            // scopes admission/intent and is never derived from client JSON.
+            ...(params.agentLaunch
+              ? { agentLaunch: params.agentLaunch, agentLaunchClientKind: clientKind }
+              : {}),
+            ...(params.agentLaunchTelemetry
+              ? { agentLaunchTelemetry: params.agentLaunchTelemetry }
+              : {}),
             lineage: {
               parentWorkspace: params.parentWorkspace,
               envParentWorkspace: params.envParentWorkspace,
@@ -152,10 +181,28 @@ export const WORKTREE_METHODS: RpcMethod[] = [
             : result
         } catch (error) {
           releaseAutomationWorkspaceProvenanceRequest(params.automationProvenanceRequest)
+          // A pre-create agent-launch rejection created no worktree. Return it
+          // in-band as `created: false` rather than throwing: an RPC error
+          // envelope serializes lossily and would drop the typed recovery hints
+          // the composer needs to stay open on every transport.
+          if (error instanceof WorktreeAgentLaunchPreCreateError && error.failure) {
+            return {
+              created: false,
+              agentLaunchResult: { status: 'failed', failure: error.failure }
+            }
+          }
+          if (error instanceof WorktreeAgentLaunchPreCreateError && error.requestError) {
+            return {
+              created: false,
+              agentLaunchResult: { status: 'rejected', requestError: error.requestError }
+            }
+          }
           throw error
         }
       })
+    }
   }),
+  ...WORKTREE_AGENT_LAUNCH_RECOVERY_METHODS,
   defineMethod({
     name: 'worktree.prefetchCreateBase',
     params: WorktreePrefetchCreateBase,

@@ -198,7 +198,10 @@ export class SshPtyProvider implements IPtyProvider {
             startupIngressVersion: PTY_STARTUP_INGRESS_VERSION,
             startupIngress: opts.startupIngress
           }
-        : {})
+        : {}),
+      // Why: the token travels inside the spawn request so the relay persists it
+      // on the ManagedPty record at creation for crash reconciliation.
+      ...(opts.launchToken ? { launchToken: opts.launchToken } : {})
     })
     return {
       ...(result as PtySpawnResult),

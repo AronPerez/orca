@@ -12,13 +12,15 @@ import type {
   BrowserLoadError,
   BrowserSessionProfile,
   BrowserSessionProfileSource,
-  CreateWorktreeResult,
+  CreatedWorktreeResult,
+  BuiltInTuiAgent,
   GitWorktreeInfo,
   RemoveWorktreeResult,
   Repo,
   TabGroupLayoutNode,
   TerminalColorOverrides,
   TerminalLayoutSnapshot,
+  NotCreatedWorktreeResult,
   TuiAgent,
   Worktree,
   WorktreeLineage,
@@ -31,6 +33,12 @@ import type {
   RuntimeMarkdownSaveTabResult
 } from './mobile-markdown-document'
 import type { RuntimeCapability } from './protocol-version'
+import type { AgentLaunchSpawnOutcome } from './agent-launch-spawn-request'
+import type {
+  AgentLaunchReceipt,
+  PersistedAgentLaunchFailure,
+  PersistedLaunchNoticeState
+} from './agent-launch-contract'
 import type { RemoteRuntimeSharedConnectionDiagnostics } from './remote-runtime-shared-control-types'
 import type {
   AgentProviderSessionMetadata,
@@ -153,6 +161,8 @@ export type RuntimeMobileSessionTerminalTab = {
   terminalTheme?: RuntimeMobileTerminalTheme
   agentStatus?: AgentStatusEntry | null
   launchAgent?: TuiAgent
+  /** Host-owned launch notices + dismissal token mirrored to paired clients. */
+  launchNotices?: PersistedLaunchNoticeState
   startupCwd?: string
   parentLayout?: TerminalLayoutSnapshot
   /** Tab-level color/pin (per parentTabId), host-persisted for remote servers. */
@@ -303,6 +313,14 @@ export type RuntimeMobileSessionCreateTerminalResult = {
   tab: RuntimeMobileSessionTerminalClientTab
   publicationEpoch: string
   snapshotVersion: number
+  // U3: receipt for a host-resolved agentLaunch (never argv/env/snapshot).
+  agentLaunch?: Extract<AgentLaunchSpawnOutcome, { status: 'launched' }>
+}
+
+/** Pre-spawn host-resolved agentLaunch failure for a mobile session terminal: no
+ *  tab created, returned as an RPC success carrying a client-safe failure. */
+export type RuntimeMobileSessionCreateTerminalAgentLaunchFailure = {
+  agentLaunch: Extract<AgentLaunchSpawnOutcome, { status: 'failed' | 'rejected' }>
 }
 
 export type RuntimeMobileSessionTabsRemovedResult = RuntimeMobileSessionTabsResult & {
@@ -400,6 +418,15 @@ export type RuntimeTerminalSummary = {
   writable: boolean
   lastOutputAt: number | null
   preview: string
+  /** Validated launch attribution: the requested agent identity (built-in or
+   *  custom), when this terminal was launched through the launch boundary.
+   *  Absent for terminals with no launch attribution (e.g. coordinator-created). */
+  requestedAgent?: TuiAgent
+  /** The base harness this terminal runs, from launch attribution then hook base
+   *  metadata. Drives base-to-group orchestration addressing; absent when the
+   *  terminal is unattributed (such terminals are omitted from agent-name groups,
+   *  never guessed from title text). */
+  baseAgent?: BuiltInTuiAgent
 }
 
 export type RuntimeTerminalVisualTerminalNode = {
@@ -537,6 +564,18 @@ export type RuntimeTerminalCreate = {
   title: string | null
   surface?: 'background' | 'visible'
   warning?: string
+  // U3: present when the terminal was created from a host-resolved agentLaunch —
+  // receipt only (never argv/env/snapshot). A launch that resolved to a typed
+  // failure never reaches this shape; it returns the failure arm below instead.
+  agentLaunch?: Extract<AgentLaunchSpawnOutcome, { status: 'launched' }>
+}
+
+/** A host-resolved agentLaunch that failed before any spawn: NO terminal was
+ *  created and — for the RPC surfaces — this is a successful response carrying a
+ *  client-safe failure, not an error envelope (mirrors the worktree.create
+ *  pattern so old-client error semantics stay intact). */
+export type RuntimeTerminalCreateAgentLaunchFailure = {
+  agentLaunch: Extract<AgentLaunchSpawnOutcome, { status: 'failed' | 'rejected' }>
 }
 
 export type RuntimeTerminalSplit = {
@@ -693,15 +732,32 @@ export type RuntimeWorktreeRecord = Worktree & {
   git: GitWorktreeInfo
 }
 
-export type RuntimeWorktreeCreateResult = {
+export type CreatedRuntimeWorktreeCreateResult = {
+  // Discriminates the created arm from a pre-create rejection; optional so
+  // producers building a created result need not set it explicitly.
+  created?: true
   worktree: RuntimeWorktreeRecord
   lineage: WorktreeLineage | null
   workspaceLineage?: WorkspaceLineage | null
   warnings: WorktreeLineageWarning[]
   warning?: string
-  startupTerminal?: CreateWorktreeResult['startupTerminal']
+  startupTerminal?: CreatedWorktreeResult['startupTerminal']
   agentTerminalHandle?: string
+  /** Present only when the create requested an agent. A post-create resolution
+   *  or spawn failure is an RPC success carrying the created worktree plus
+   *  `status: 'failed'` — never a rejected request that loses the worktree id.
+   *  Absent when no agent was requested. */
+  agentLaunchResult?:
+    | { status: 'launched'; receipt: AgentLaunchReceipt }
+    | { status: 'failed'; failure: PersistedAgentLaunchFailure }
 }
+
+/** Runtime-client view of a worktree create: created worktree or an in-band
+ *  pre-create agent-launch rejection (no worktree). Mirrors CreateWorktreeResult
+ *  across the RPC boundary; the rejection arm shares NotCreatedWorktreeResult. */
+export type RuntimeWorktreeCreateResult =
+  | CreatedRuntimeWorktreeCreateResult
+  | NotCreatedWorktreeResult
 
 export type RuntimeWorktreeRemoveResult = RemoveWorktreeResult & {
   removed: boolean

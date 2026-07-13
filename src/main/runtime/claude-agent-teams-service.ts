@@ -17,6 +17,32 @@ export type {
   AgentTeamsTmuxCompatResponse
 } from './claude-agent-teams-types'
 
+/** Env keys minted per leader PTY by createLaunchEnv. They are process-local
+ *  team identity regenerated from the resolved base policy at every launch, so
+ *  they must never persist into a durable launch snapshot. */
+const EPHEMERAL_AGENT_TEAMS_ENV_PREFIX = 'ORCA_AGENT_TEAMS_'
+const EPHEMERAL_AGENT_TEAMS_ENV_KEYS = new Set([
+  'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'TMUX',
+  'TMUX_PANE'
+])
+
+/** Drop generated Agent Teams identity from an env map before it enters a
+ *  durable snapshot; custom (user-configured) agent env is preserved. */
+export function stripEphemeralAgentTeamsEnv(env: Record<string, string>): Record<string, string> {
+  const cleaned: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (
+      key.startsWith(EPHEMERAL_AGENT_TEAMS_ENV_PREFIX) ||
+      EPHEMERAL_AGENT_TEAMS_ENV_KEYS.has(key)
+    ) {
+      continue
+    }
+    cleaned[key] = value
+  }
+  return cleaned
+}
+
 export class ClaudeAgentTeamsService {
   private readonly teams = new Map<string, AgentTeam>()
   private readonly dispatcher = new ClaudeAgentTeamsTmuxDispatcher()
@@ -26,6 +52,10 @@ export class ClaudeAgentTeamsService {
     baseEnv: Record<string, string | undefined>
     shimDir: string
     shimBin: string
+    /** Validated custom agent env that teammate panes must inherit; folded under
+     *  the generated team keys so children get custom auth/config while each
+     *  replaces pane identity with its own. */
+    childEnv?: Record<string, string>
   }): AgentTeamsLaunchEnv {
     const teamId = `team-${randomUUID()}`
     const token = randomBytes(32).toString('base64url')
@@ -63,7 +93,7 @@ export class ClaudeAgentTeamsService {
       sessionName: 'orca',
       windowIndex: '0',
       tmuxValue,
-      baseEnv: env,
+      baseEnv: args.childEnv ? { ...args.childEnv, ...env } : env,
       panes: new Map([[leaderPane, leader]]),
       paneOrder: [leaderPane],
       nextPaneNumber: 2,

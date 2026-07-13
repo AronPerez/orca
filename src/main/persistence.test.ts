@@ -22,6 +22,7 @@ import type {
   GlobalSettings,
   TerminalPaneLayoutNode,
   TerminalTab,
+  TuiAgent,
   WorktreeLineage,
   WorkspaceLineage,
   WorkspaceSessionState
@@ -386,6 +387,38 @@ describe('Store', () => {
       reloaded.getWorkspaceSession().defaultTerminalTabsAppliedByWorktreeId?.[worktreeId]
     ).toBe(true)
   })
+  it('round-trips pendingAgentLaunch and agentLaunchFailure through save and reload', async () => {
+    const store = await createStore()
+    const worktreeId = 'r1::/wt'
+    const failure = {
+      version: 1 as const,
+      code: 'spawn_failed' as const,
+      requestedAgent: 'custom-agent:codex:fedcba98-7654-4321-8fed-cba987654321' as TuiAgent,
+      failureId: 'failure-xyz',
+      intent: 'interactive' as const,
+      occurredAt: 42
+    }
+    store.setWorktreeMeta(worktreeId, {
+      pendingAgentLaunch: {
+        operationId: 'op-abc',
+        requestedAgent: 'claude',
+        priorFailureId: 'prior-1'
+      },
+      agentLaunchFailure: failure
+    })
+    store.flush()
+
+    const reloaded = await createStore()
+    const meta = reloaded.getWorktreeMeta(worktreeId)
+    expect(meta?.pendingAgentLaunch).toEqual({
+      operationId: 'op-abc',
+      requestedAgent: 'claude',
+      priorFailureId: 'prior-1'
+    })
+    // The durable failure survives intact; the private launch snapshot/token are
+    // never on this record, so nothing host-private crosses the disk boundary here.
+    expect(meta?.agentLaunchFailure).toEqual(failure)
+  }, 15_000)
 
   it('loads state from an explicit profile data file path', async () => {
     const profileDataDirectory = join(testState.dir, 'profiles', 'local-default')
@@ -1690,6 +1723,43 @@ describe('Store', () => {
     expect(persisted.automations[0].baseBranch).toBeNull()
   })
 
+  it('preserves a stored custom agent id when an update omits or cannot represent it', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const customAgentId = 'custom-agent:claude:11111111-1111-4111-8111-111111111111'
+    const automation = store.createAutomation({
+      name: 'Nightly',
+      prompt: 'Run checks',
+      agentId: customAgentId,
+      projectId: 'r1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2026-05-13T00:00:00Z').getTime()
+    })
+    expect(automation.agentId).toBe(customAgentId)
+
+    // A legacy client that cannot represent the custom id sends null / omits it /
+    // sends an unrepresentable value. None may clobber the stored custom id.
+    expect(
+      store.updateAutomation(automation.id, {
+        agentId: null as unknown as (typeof automation)['agentId']
+      }).agentId
+    ).toBe(customAgentId)
+    expect(store.updateAutomation(automation.id, { name: 'Renamed' }).agentId).toBe(customAgentId)
+    expect(
+      store.updateAutomation(automation.id, {
+        agentId: 'not-a-real-agent' as unknown as (typeof automation)['agentId']
+      }).agentId
+    ).toBe(customAgentId)
+
+    // An explicit built-in change applies without losing the rest of the record.
+    const switched = store.updateAutomation(automation.id, { agentId: 'codex' })
+    expect(switched.agentId).toBe('codex')
+    expect(switched.name).toBe('Renamed')
+    expect(switched.prompt).toBe('Run checks')
+  })
+
   it('persists session reuse only for existing-workspace automations', async () => {
     const store = await createStore()
     store.addRepo(makeRepo())
@@ -1865,6 +1935,71 @@ describe('Store', () => {
       runContext: automation.runContext,
       sourceContext: automation.sourceContext
     })
+  })
+
+  it('persists a structured launch failure additively while retaining the generic error', async () => {
+    const store = await createStore()
+    const automation = store.createAutomation({
+      name: 'Nightly',
+      prompt: 'Run checks',
+      agentId: 'custom-agent:codex:11111111-1111-4111-8111-111111111111',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2026-05-13T00:00:00Z').getTime()
+    })
+    const run = store.createAutomationRun(automation, new Date('2026-05-13T09:00:00Z').getTime())
+    const launchFailure = {
+      code: 'invalid_launch_snapshot' as const,
+      requestedAgent: 'custom-agent:codex:11111111-1111-4111-8111-111111111111' as const,
+      baseAgent: 'codex' as const,
+      version: 1 as const,
+      failureId: 'auto-fail-1',
+      intent: 'automation' as const,
+      occurredAt: 100
+    }
+    const failed = store.updateAutomationRun({
+      runId: run.id,
+      status: 'dispatch_failed',
+      workspaceId: 'wt1',
+      error: 'Unable to build an agent launch plan.',
+      agentLaunchFailure: launchFailure
+    })
+    // Both the generic string (old readers) and the structured failure coexist.
+    expect(failed.error).toBe('Unable to build an agent launch plan.')
+    expect(failed.agentLaunchFailure).toMatchObject({
+      code: 'invalid_launch_snapshot',
+      failureId: 'auto-fail-1'
+    })
+
+    // A later update that OMITS the field preserves it (no accidental drop).
+    const usageUpdate = store.updateAutomationRun({
+      runId: run.id,
+      status: 'dispatch_failed',
+      workspaceId: 'wt1',
+      error: 'Unable to build an agent launch plan.'
+    })
+    expect(usageUpdate.agentLaunchFailure?.failureId).toBe('auto-fail-1')
+
+    // Forget stamps agentLaunchForgottenAt and keeps the structured failure.
+    const forgotten = store.updateAutomationRun({
+      runId: run.id,
+      status: 'dispatch_failed',
+      workspaceId: 'wt1',
+      error: 'Unable to build an agent launch plan.',
+      agentLaunchForgottenAt: 4242
+    })
+    expect(forgotten.agentLaunchForgottenAt).toBe(4242)
+    expect(forgotten.agentLaunchFailure?.failureId).toBe('auto-fail-1')
+
+    // The pairing survives a reload (SQLite/JSON round trip).
+    const reloaded = await createStore()
+    const persisted = reloaded.listAutomationRuns(automation.id).find((r) => r.id === run.id)
+    expect(persisted?.agentLaunchFailure?.failureId).toBe('auto-fail-1')
+    expect(persisted?.agentLaunchForgottenAt).toBe(4242)
+    expect(persisted?.error).toBe('Unable to build an agent launch plan.')
   })
 
   it('backfills legacy automation contexts on load', async () => {

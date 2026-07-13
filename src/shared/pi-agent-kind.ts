@@ -24,7 +24,7 @@ export function isPiCompatibleAgentType(
   return agentType === 'pi' || agentType === 'omp'
 }
 
-const OMP_LAUNCH_CMD = TUI_AGENT_CONFIG.omp.launchCmd
+const OMP_LAUNCH_CMD = TUI_AGENT_CONFIG.omp.launchArgv[0]
 
 // Why: regex carved to avoid matching `pi` inside `pip`, `mpi`, `api`,
 // `python`, or `omp` inside `comp`, `omp.sh` (acceptable - that's literally

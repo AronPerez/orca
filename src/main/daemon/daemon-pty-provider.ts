@@ -14,6 +14,7 @@ export type DaemonSpawnOptions = {
   env?: Record<string, string>
   envToDelete?: string[]
   command?: string
+  launchToken?: string
 }
 
 export type DaemonSpawnResult = {
@@ -46,7 +47,8 @@ export class DaemonPtyProvider {
       cwd: opts.cwd,
       env: opts.env,
       envToDelete: opts.envToDelete,
-      command: opts.command
+      command: opts.command,
+      ...(opts.launchToken ? { launchToken: opts.launchToken } : {})
     })
 
     return {

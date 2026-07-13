@@ -9,7 +9,7 @@
 // not a sweep across renderer + main.
 
 import type { AgentKind } from './telemetry-events'
-import type { TuiAgent } from './types'
+import type { BuiltInTuiAgent } from './types'
 
 type ConcreteAgentKind = Exclude<AgentKind, 'other'>
 
@@ -48,24 +48,26 @@ const TUI_AGENT_KIND_BY_AGENT = {
   grok: 'grok',
   devin: 'devin',
   ante: 'ante'
-} satisfies Record<TuiAgent, ConcreteAgentKind>
+} satisfies Record<BuiltInTuiAgent, ConcreteAgentKind>
 
-// Why: `satisfies Record<TuiAgent, …>` makes the lookup exhaustive at compile
-// time, but stale persisted settings or unsafe IPC casts can carry a string
-// outside the union at runtime — fall back to `'other'` so the event still
-// emits instead of failing validation and dropping silently.
-export function tuiAgentToAgentKind(agent: TuiAgent): AgentKind {
-  return TUI_AGENT_KIND_BY_AGENT[agent] ?? 'other'
+// Why: `satisfies Record<BuiltInTuiAgent, …>` makes the lookup exhaustive at
+// compile time, but stale persisted settings or unsafe IPC casts can carry a
+// string outside the union at runtime — fall back to `'other'` so the event
+// still emits instead of failing validation and dropping silently. Custom ids
+// must be resolved to their catalog-proven base (resolveTuiAgentBaseAgent /
+// getAgentIdentity) before calling this; null means "no proven base".
+export function tuiAgentToAgentKind(agent: BuiltInTuiAgent | null | undefined): AgentKind {
+  return (agent && TUI_AGENT_KIND_BY_AGENT[agent]) || 'other'
 }
 
 // Why: the worktree-initial-terminal launch path only carries the telemetry
 // `agent_kind`, not the TuiAgent. Reverse the map so that path can stamp the
 // tab's launch agent without threading TuiAgent through every startup builder.
-const AGENT_BY_TUI_AGENT_KIND: Partial<Record<AgentKind, TuiAgent>> = Object.fromEntries(
-  Object.entries(TUI_AGENT_KIND_BY_AGENT).map(([agent, kind]) => [kind, agent as TuiAgent])
+const AGENT_BY_TUI_AGENT_KIND: Partial<Record<AgentKind, BuiltInTuiAgent>> = Object.fromEntries(
+  Object.entries(TUI_AGENT_KIND_BY_AGENT).map(([agent, kind]) => [kind, agent as BuiltInTuiAgent])
 )
 
-export function agentKindToTuiAgent(kind: AgentKind | null | undefined): TuiAgent | null {
+export function agentKindToTuiAgent(kind: AgentKind | null | undefined): BuiltInTuiAgent | null {
   if (!kind) {
     return null
   }

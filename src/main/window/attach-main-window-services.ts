@@ -5,7 +5,7 @@ import { app, ipcMain } from 'electron'
 import type { BrowserWindow } from 'electron'
 import type { Store } from '../persistence'
 import type {
-  CreateWorktreeResult,
+  CreatedWorktreeResult,
   UpdateCheckOptions,
   WorktreeStartupLaunch
 } from '../../shared/types'
@@ -253,9 +253,9 @@ function registerRuntimeWindowLifecycle(
     activateWorktree: (
       repoId,
       worktreeId,
-      setup?: CreateWorktreeResult['setup'],
+      setup?: CreatedWorktreeResult['setup'],
       startup?: WorktreeStartupLaunch,
-      defaultTabs?: CreateWorktreeResult['defaultTabs']
+      defaultTabs?: CreatedWorktreeResult['defaultTabs']
     ) => {
       send('ui:activateWorktree', {
         repoId,
@@ -308,6 +308,7 @@ function registerRuntimeWindowLifecycle(
           ...(opts.launchToken ? { launchToken: opts.launchToken } : {}),
           ...(opts.launchAgent ? { launchAgent: opts.launchAgent } : {}),
           ...(opts.viewMode ? { viewMode: opts.viewMode } : {}),
+          ...(opts.launchNotices ? { launchNotices: opts.launchNotices } : {}),
           activate: opts.activate !== false,
           ...(opts.presentation ? { presentation: opts.presentation } : {}),
           // Why: pre-minted tabId aligns the renderer tab id with the paneKey baked into the PTY env, so hook events route right.

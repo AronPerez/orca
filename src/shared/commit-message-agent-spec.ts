@@ -677,7 +677,7 @@ export const DEFAULT_COMMIT_MESSAGE_AGENT_ID: TuiAgent = 'claude'
 export const CUSTOM_AGENT_ID = 'custom' as const
 export type CustomAgentId = typeof CUSTOM_AGENT_ID
 export type CommitMessageAgentChoice = TuiAgent | CustomAgentId
-export type DefaultTuiAgentPreference = TuiAgent | 'blank' | null | undefined
+export type DefaultTuiAgentPreference = TuiAgent | 'auto' | 'blank' | null | undefined
 
 export function isCustomAgentId(id: string | null | undefined): id is CustomAgentId {
   return id === CUSTOM_AGENT_ID
@@ -697,6 +697,9 @@ export function resolveCommitMessageAgentChoice(
   }
   if (
     defaultTuiAgent &&
+    // Why: 'auto' is the migrated spelling of the legacy null Auto default; it must
+    // keep falling through to the commit-message default agent, not be read as an id.
+    defaultTuiAgent !== 'auto' &&
     defaultTuiAgent !== 'blank' &&
     isTuiAgentEnabled(defaultTuiAgent, disabledTuiAgents)
   ) {

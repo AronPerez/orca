@@ -56,7 +56,7 @@ describe('orchestration RPC methods', () => {
 
   it('registers all expected methods', () => {
     const registry = buildRegistry(ORCHESTRATION_METHODS)
-    expect(registry.size).toBe(16)
+    expect(registry.size).toBe(18)
     expect(registry.has('orchestration.send')).toBe(true)
     expect(registry.has('orchestration.check')).toBe(true)
     expect(registry.has('orchestration.reply')).toBe(true)
@@ -66,6 +66,8 @@ describe('orchestration RPC methods', () => {
     expect(registry.has('orchestration.taskUpdate')).toBe(true)
     expect(registry.has('orchestration.dispatch')).toBe(true)
     expect(registry.has('orchestration.dispatchShow')).toBe(true)
+    expect(registry.has('orchestration.dispatchForget')).toBe(true)
+    expect(registry.has('orchestration.dispatchShowRaw')).toBe(true)
     expect(registry.has('orchestration.ask')).toBe(true)
     expect(registry.has('orchestration.run')).toBe(true)
     expect(registry.has('orchestration.runStop')).toBe(true)
@@ -333,7 +335,9 @@ describe('orchestration RPC methods', () => {
         connected: opts.connected ?? true,
         writable: opts.writable ?? true,
         lastOutputAt: opts.lastOutputAt ?? null,
-        preview: opts.preview ?? ''
+        preview: opts.preview ?? '',
+        ...(opts.requestedAgent ? { requestedAgent: opts.requestedAgent } : {}),
+        ...(opts.baseAgent ? { baseAgent: opts.baseAgent } : {})
       }
     }
 
@@ -432,11 +436,15 @@ describe('orchestration RPC methods', () => {
       expect(result.messages[0].to_handle).toBe('term_b')
     })
 
-    it('fans out agent name group (@claude) by title match', async () => {
+    it('fans out @claude by validated base agent, ignoring title text (oracle 16)', async () => {
+      // W2: agent-name groups resolve from the terminal's validated base harness,
+      // never title text. term_d carries a matching title but NO baseAgent, so it
+      // is omitted rather than guessed into the group.
       setupWithTerminals([
-        makeSummary('term_a', { title: 'Claude Code' }),
-        makeSummary('term_b', { title: 'Claude Code' }),
-        makeSummary('term_c', { title: 'Codex' })
+        makeSummary('term_a', { baseAgent: 'claude', title: 'Claude Code' }),
+        makeSummary('term_b', { baseAgent: 'claude', title: 'worker' }),
+        makeSummary('term_c', { baseAgent: 'codex', title: 'Codex' }),
+        makeSummary('term_d', { title: 'Claude Code' })
       ])
 
       const result = (await call('orchestration.send', {
@@ -449,11 +457,13 @@ describe('orchestration RPC methods', () => {
       expect(result.messages[0].to_handle).toBe('term_b')
     })
 
-    it('fans out @droid by title match', async () => {
+    it('fans out @droid by validated base agent, ignoring title text (oracle 16)', async () => {
+      // term_c's title contains "Android" but its base is codex — a title-based
+      // matcher would wrongly include it; base-agent resolution does not.
       setupWithTerminals([
-        makeSummary('term_a', { title: 'Codex' }),
-        makeSummary('term_b', { title: 'Droid ready' }),
-        makeSummary('term_c', { title: 'Android build' })
+        makeSummary('term_a', { baseAgent: 'codex', title: 'Codex' }),
+        makeSummary('term_b', { baseAgent: 'droid', title: 'worker' }),
+        makeSummary('term_c', { baseAgent: 'codex', title: 'Android build' })
       ])
 
       const result = (await call('orchestration.send', {
@@ -466,11 +476,13 @@ describe('orchestration RPC methods', () => {
       expect(result.messages[0].to_handle).toBe('term_b')
     })
 
-    it('fans out @cursor by title match without claiming a cursor-mentioning title', async () => {
+    it('fans out @cursor by validated base without claiming a cursor-mentioning title', async () => {
+      // term_c's title mentions a text cursor but its base is claude — base-agent
+      // resolution never routes @cursor into another agent's prompt.
       setupWithTerminals([
-        makeSummary('term_a', { title: 'Codex' }),
-        makeSummary('term_b', { title: 'Cursor ready' }),
-        makeSummary('term_c', { title: '✳ Fix the text cursor blink' })
+        makeSummary('term_a', { baseAgent: 'codex', title: 'Codex' }),
+        makeSummary('term_b', { baseAgent: 'cursor', title: 'Cursor ready' }),
+        makeSummary('term_c', { baseAgent: 'claude', title: '✳ Fix the text cursor blink' })
       ])
 
       const result = (await call('orchestration.send', {
@@ -1538,6 +1550,150 @@ describe('orchestration RPC methods', () => {
       await expect(
         call('orchestration.dispatchShow', { task: 'task_fake', preamble: true })
       ).rejects.toThrow('Task not found')
+    })
+
+    it('projects a forgotten dispatch to failed for readers lacking the disposition (G6)', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.forgetDispatch(ctx.id)
+      // The DB row is genuinely forgotten...
+      expect(db.getDispatchContextById(ctx.id)?.status).toBe('forgotten')
+
+      const result = (await call('orchestration.dispatchShow', {
+        task: task.id
+      })) as { dispatch: { status: string } | null }
+
+      // ...but the read surface coalesces it to legacy `failed`.
+      expect(result.dispatch?.status).toBe('failed')
+    })
+  })
+
+  describe('orchestration.dispatchForget', () => {
+    const strandedFailure = {
+      code: 'launch_state_unknown' as const,
+      version: 1 as const,
+      failureId: 'fail-strand-1',
+      intent: 'orchestration' as const,
+      occurredAt: 1_700_000_000_000
+    }
+
+    it('forgets a stranded dispatch and returns the RAW forgotten status (not projected)', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(ctx.id, strandedFailure)
+
+      const result = (await call('orchestration.dispatchForget', {
+        task: task.id
+      })) as { dispatch: { status: string; task_id: string } | null }
+
+      // W-T2: the mutation result must carry RAW 'forgotten' so the renderer can
+      // render the forgotten state — unlike dispatchShow which projects to 'failed'.
+      expect(result.dispatch?.status).toBe('forgotten')
+      expect(result.dispatch?.task_id).toBe(task.id)
+      expect(db.getTask(task.id)?.status).toBe('blocked')
+    })
+
+    it('is idempotent — a repeat forget returns the already-forgotten dispatch', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(ctx.id, strandedFailure)
+      await call('orchestration.dispatchForget', { task: task.id })
+
+      const result = (await call('orchestration.dispatchForget', {
+        task: task.id
+      })) as { dispatch: { status: string } | null }
+
+      expect(result.dispatch?.status).toBe('forgotten')
+    })
+
+    it('honors the expectedFailureId anti-race guard', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(ctx.id, strandedFailure)
+
+      await expect(
+        call('orchestration.dispatchForget', { task: task.id, expectedFailureId: 'stale-id' })
+      ).rejects.toThrow('Stale forget')
+
+      const result = (await call('orchestration.dispatchForget', {
+        task: task.id,
+        expectedFailureId: 'fail-strand-1'
+      })) as { dispatch: { status: string } | null }
+      expect(result.dispatch?.status).toBe('forgotten')
+    })
+
+    it('throws for a task with no dispatch context', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      await expect(
+        call('orchestration.dispatchForget', { task: task.id })
+      ).rejects.toThrow('No dispatch context')
+    })
+
+    it('refuses to forget a dispatch that is not stranded (not dispatched)', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.completeDispatch(ctx.id)
+      await expect(
+        call('orchestration.dispatchForget', { task: task.id })
+      ).rejects.toThrow('not in a forgettable state')
+    })
+  })
+
+  describe('orchestration.dispatchShowRaw', () => {
+    const strandedFailure = {
+      code: 'launch_state_unknown' as const,
+      version: 1 as const,
+      failureId: 'fail-strand-raw',
+      intent: 'orchestration' as const,
+      occurredAt: 1_700_000_000_000
+    }
+
+    it('returns the RAW forgotten status where dispatchShow projects to failed', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.forgetDispatch(ctx.id)
+
+      const raw = (await call('orchestration.dispatchShowRaw', {
+        task: task.id
+      })) as { dispatch: { status: string } | null }
+      const projected = (await call('orchestration.dispatchShow', {
+        task: task.id
+      })) as { dispatch: { status: string } | null }
+
+      // The renderer ships with the host and must see the durable 'forgotten'
+      // disposition; the CLI's dispatchShow still coalesces it to legacy 'failed'.
+      expect(raw.dispatch?.status).toBe('forgotten')
+      expect(projected.dispatch?.status).toBe('failed')
+    })
+
+    it('carries the structured agent_launch_failure so the surface reads the failureId', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(ctx.id, strandedFailure)
+
+      const raw = (await call('orchestration.dispatchShowRaw', {
+        task: task.id
+      })) as { dispatch: { agent_launch_failure: string | null } | null }
+
+      expect(raw.dispatch?.agent_launch_failure).toContain('fail-strand-raw')
+    })
+
+    it('returns null for a task with no dispatch context', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const raw = (await call('orchestration.dispatchShowRaw', {
+        task: task.id
+      })) as { dispatch: null }
+
+      expect(raw.dispatch).toBeNull()
     })
   })
 

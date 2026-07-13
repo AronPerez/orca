@@ -68,6 +68,40 @@ import type {
   SleepingAgentLaunchConfig
 } from '../shared/agent-session-resume'
 import type {
+  AgentLaunchInput,
+  AgentLaunchSpawnOutcome,
+  AgentLaunchVaultResumeCopyResult,
+  AgentLaunchVaultResumeDetailsResult,
+  AgentLaunchVaultResumeEntry
+} from '../shared/agent-launch-spawn-request'
+import type {
+  AgentLaunchNoticeCode,
+  PersistedLaunchNoticeState
+} from '../shared/agent-launch-contract'
+import type {
+  RetryAgentLaunchAction,
+  WorktreeRetryAgentLaunchResult,
+  ForgetUnknownAgentLaunchResult
+} from '../shared/agent-launch-worktree-recovery'
+import type {
+  RetryBackgroundAgentLaunchRequest,
+  ForgetBackgroundAgentLaunchRequest
+} from '../shared/background-agent-launch'
+import type { PendingAgentLaunchSummary } from '../shared/agent-launch-pending-summary'
+import type {
+  AgentCatalogMutationRequest,
+  AgentCatalogMutationResult,
+  LocalAgentCatalogSnapshot,
+  LocalCustomAgentDraftResult
+} from '../shared/agent-catalog-snapshot'
+import type {
+  AgentReferenceMutationRequest,
+  AgentReferenceMutationResult,
+  AgentReferenceSummary,
+  BaseDisableImpact,
+  LocalAgentReferenceSnapshot
+} from '../shared/agent-reference-snapshot'
+import type {
   LocalhostWorktreeLabelResult,
   LocalhostWorktreeLabelRoute
 } from '../shared/localhost-worktree-labels'
@@ -97,6 +131,8 @@ import type {
   ForceDeleteWorktreeBranchResult,
   FsChangedPayload,
   GhosttyImportPreview,
+  BuiltInTuiAgent,
+  CustomTuiAgentId,
   GlobalSettings,
   GitBranchCompareResult,
   GitCommitCompareResult,
@@ -840,6 +876,13 @@ export type AiVaultApi = {
   ) => Promise<AiVaultPrepareSessionResumeResult>
   /** Lists the Task subagent transcripts of one session, on demand. */
   listSubagentSessions: (args: AiVaultSubagentListArgs) => Promise<AiVaultSubagentListResult>
+  /** Host-owned 'copy' vault-resume (U5): the client echoes a discovered entry's
+   *  identity and the host re-validates + assembles the copyable command string. */
+  resumeCommand: (entry: AgentLaunchVaultResumeEntry) => Promise<AgentLaunchVaultResumeCopyResult>
+  /** Fetches captured non-executable argv only when expanded details mount. */
+  resumeDetails: (
+    entry: AgentLaunchVaultResumeEntry
+  ) => Promise<AgentLaunchVaultResumeDetailsResult>
   /** Fires when any app window regains OS focus; returns an unsubscribe. */
   onWindowFocused: (callback: () => void) => () => void
 }
@@ -956,6 +999,90 @@ export type AppApi = {
   writeTerminalRenderDesyncEvidence: (
     args: WriteTerminalRenderDesyncEvidenceArgs
   ) => Promise<WriteTerminalRenderDesyncEvidenceResult>
+}
+
+/** pty:spawn arguments. `agentLaunch` opts into host-resolved agent launch:
+ *  when present the host resolves the launch itself and IGNORES any
+ *  command/launchConfig/launchAgent/env, returning an AgentLaunchSpawnOutcome.
+ *  Either a fresh identity+prompt selection or a provider-session resume/fork
+ *  by session key. */
+export type PtySpawnOptions = {
+  cols: number
+  rows: number
+  cwd?: string
+  cwdFallback?: 'worktree'
+  env?: Record<string, string>
+  envToDelete?: string[]
+  command?: string
+  launchConfig?: SleepingAgentLaunchConfig
+  resumeProviderSession?: AgentProviderSessionMetadata
+  launchToken?: string
+  launchAgent?: TuiAgent
+  agentLaunch?: AgentLaunchInput
+  // Why: one-release legacy handoff — a pre-U5 sleeping record surrenders its
+  // recorded execution owner alongside `launchConfig` so the host can prove the
+  // opaque legacy command still targets the same host before replay. Deleted
+  // with the client launchConfig read once every record carries a v1 snapshot.
+  legacyResumeRecordedConnectionId?: string | null
+  startupCommandDelivery?: StartupCommandDelivery
+  connectionId?: string | null
+  worktreeId?: string
+  sessionId?: string
+  // Why: lets a single tab open in a different shell than the user's default.
+  // Preserved from the deleted index.d.ts PtyApi duplicate during the
+  // single-source-of-truth collapse (see docs/preload-typecheck-hole.md §1).
+  shellOverride?: string
+  projectRuntime?: ProjectExecutionRuntimeResolution
+  terminalColorQueryReplies?: { foreground?: string; background?: string }
+  // Why: hidden-at-spawn declaration — main marks the PTY hidden before its
+  // first byte so the delivery gate + model responder own spawn-time queries
+  // (terminal-query-authority.md §races).
+  initiallyHidden?: boolean
+  // Why: closes the SIGKILL race documented in INVESTIGATION.md — main
+  // sync-flushes the (worktreeId, tabId, leafId → ptyId) binding before
+  // pty:spawn returns. Only the renderer's daemon-host path threads these.
+  tabId?: string
+  leafId?: string
+  // Why: telemetry-plan.md§Agent launch semantics — main emits `agent_started`
+  // only after the PTY/session is created successfully, so the renderer threads
+  // the launch metadata through this field.
+  telemetry?: { agent_kind?: AgentKind; launch_source: LaunchSource; request_kind: RequestKind }
+}
+
+/** Normal pty:spawn result. When the call carried `agentLaunch`, a successful
+ *  host-resolved launch also sets `agentLaunch` to a {status:'launched'}
+ *  outcome carrying the receipt (never argv/env/snapshot). */
+export type PtySpawnResult = {
+  id: string
+  launchAgent?: TuiAgent
+  launchConfig?: SleepingAgentLaunchConfig
+  snapshot?: string
+  snapshotCols?: number
+  snapshotRows?: number
+  isReattach?: boolean
+  isAlternateScreen?: boolean
+  replay?: string
+  sessionExpired?: boolean
+  coldRestore?: { scrollback: string; cwd: string; cols?: number; rows?: number }
+  startupCwdFallback?: { kind: 'worktree'; cwd: string }
+  /** Host-owned notices for a successful Vault current-settings bypass. */
+  launchNotices?: PersistedLaunchNoticeState
+  agentLaunch?: AgentLaunchSpawnOutcome
+  // Host-resolved stdin-after-start prompt for the renderer's readiness-gated
+  // paste writer to deliver. User-authored text this renderer supplied one hop
+  // ago; carried beside the receipt-only outcome, never inside it.
+  followupPrompt?: string
+  // Host-resolved draft prompt to paste UNSUBMITTED after readiness, present only
+  // for a promptDelivery:'draft' launch whose agent has no native flag/env
+  // affordance (or an oversized inline draft). Same desktop-only posture as
+  // followupPrompt; native-flag/env drafts deliver host-side and set nothing.
+  draftPrompt?: string
+}
+
+/** Pre-spawn typed failure/rejection for an `agentLaunch` call: the host created
+ *  no PTY, so no pty fields are present — only the outcome. */
+export type PtySpawnAgentLaunchFailure = {
+  agentLaunch: Extract<AgentLaunchSpawnOutcome, { status: 'failed' | 'rejected' }>
 }
 
 export type PreloadApi = {
@@ -1250,6 +1377,52 @@ export type PreloadApi = {
     /** Full CLI output of the last branch auto-rename generation failure, held
      *  in main memory only — null after a restart or once the failure clears. */
     getBranchRenameFailureOutput: (args: { worktreeId: string }) => Promise<string | null>
+    /** Retry a settled agent-launch failure on an existing worktree. The host
+     *  owns idempotency, the failure-id guard, and recovery-card gating; the
+     *  renderer supplies a fresh canonical-lowercase-UUID clientMutationId. */
+    retryAgentLaunch: (args: {
+      worktreeId: string
+      expectedFailureId: string
+      clientMutationId: string
+      action: RetryAgentLaunchAction
+    }) => Promise<WorktreeRetryAgentLaunchResult>
+    /** Forget a launch stranded in launch_state_unknown. Never kills or spawns;
+     *  releases Orca's local bookkeeping only. */
+    forgetAgentLaunch: (args: {
+      worktreeId: string
+      expectedOperationId: string
+      clientMutationId: string
+    }) => Promise<ForgetUnknownAgentLaunchResult>
+    /** Local-desktop-only override: forget a stranded launch whose owning remote
+     *  principal has been explicitly revoked (plan :498). The host proves the
+     *  revocation; never bulk, never remote — the paired-web preload rejects it. */
+    forgetRevokedRemoteAgentLaunch: (args: {
+      worktreeId: string
+      expectedOperationId: string
+      clientMutationId: string
+    }) => Promise<ForgetUnknownAgentLaunchResult>
+    /** Retry a generic background attempt's settled failure. The host owns
+     *  idempotency, the failure-id guard, and recovery-card gating. */
+    retryBackgroundAgentLaunch: (
+      args: RetryBackgroundAgentLaunchRequest
+    ) => Promise<WorktreeRetryAgentLaunchResult>
+    /** Forget a background attempt stranded in launch_state_unknown. Frees exactly
+     *  one reservation; never kills or spawns. */
+    forgetBackgroundAgentLaunch: (
+      args: ForgetBackgroundAgentLaunchRequest
+    ) => Promise<ForgetUnknownAgentLaunchResult>
+    /** Redacted pending-launch rows for the capacity-recovery sheet, scoped by the
+     *  host to the authenticated principal. Never carries a prompt, custom id/label,
+     *  argv, path, token, or env. */
+    pendingAgentLaunchSummary: () => Promise<PendingAgentLaunchSummary>
+    /** Lazy preflight count of same-principal stranded siblings on the anchor's
+     *  disconnected host (the ":498 Also forget N other stranded launches" copy). */
+    unknownAgentLaunchSiblingCount: (args: { worktreeId: string }) => Promise<{ count: number }>
+    /** Same-principal bulk forget on the anchor's disconnected host. Never kills or
+     *  spawns; frees only each sibling's own reservation. */
+    forgetUnknownAgentLaunchSiblings: (args: {
+      worktreeId: string
+    }) => Promise<{ forgottenCount: number }>
     onChanged: (callback: (data: { repoId: string }) => void) => () => void
     onGitStatusMetadataChanged: (callback: (data: { repoId: string }) => void) => () => void
     onHeadIdentitiesChanged: (
@@ -1284,49 +1457,23 @@ export type PreloadApi = {
     ) => () => void
   }
   pty: {
-    spawn: (opts: {
-      cols: number
-      rows: number
-      cwd?: string
-      cwdFallback?: 'worktree'
-      env?: Record<string, string>
-      envToDelete?: string[]
-      command?: string
-      launchConfig?: SleepingAgentLaunchConfig
-      resumeProviderSession?: AgentProviderSessionMetadata
-      launchToken?: string
-      launchAgent?: TuiAgent
-      startupCommandDelivery?: StartupCommandDelivery
-      connectionId?: string | null
-      worktreeId?: string
-      sessionId?: string
-      // Why: lets a single tab open in a different shell than the user's default.
-      shellOverride?: string
-      projectRuntime?: ProjectExecutionRuntimeResolution
-      terminalColorQueryReplies?: { foreground?: string; background?: string }
-      // Why: mark the PTY hidden before its first byte so the delivery gate owns spawn-time queries (terminal-query-authority.md §races).
-      initiallyHidden?: boolean
-      // Why: main sync-flushes the (worktreeId,tabId,leafId→ptyId) binding before pty:spawn returns to close a SIGKILL race (INVESTIGATION.md).
-      tabId?: string
-      leafId?: string
-      // Why: main fires `agent_started` only on spawn success, so launch metadata rides this field (telemetry-plan.md §Agent launch semantics).
-      telemetry?: { agent_kind: AgentKind; launch_source: LaunchSource; request_kind: RequestKind }
-    }) => Promise<{
-      id: string
-      launchAgent?: TuiAgent
-      launchConfig?: SleepingAgentLaunchConfig
-      snapshot?: string
-      snapshotCols?: number
-      snapshotRows?: number
-      isReattach?: boolean
-      isAlternateScreen?: boolean
-      replay?: string
-      sessionExpired?: boolean
-      coldRestore?: { scrollback: string; cwd: string; cols?: number; rows?: number }
-      startupCwdFallback?: { kind: 'worktree'; cwd: string }
-    }>
+    // Why overloaded: an `agentLaunch` call may return a pre-spawn typed
+    // failure/rejection with no PTY created; a call without it always resolves
+    // to a normal result, so existing callers keep the non-union result.
+    spawn: {
+      (
+        opts: PtySpawnOptions & { agentLaunch: AgentLaunchInput }
+      ): Promise<PtySpawnResult | PtySpawnAgentLaunchFailure>
+      (opts: PtySpawnOptions): Promise<PtySpawnResult>
+    }
     write: (id: string, data: string) => void
     writeAccepted: (id: string, data: string) => Promise<boolean>
+    dismissLaunchNotice: (args: {
+      worktreeId: string
+      tabId: string
+      launchToken: string
+      code: AgentLaunchNoticeCode
+    }) => Promise<{ ok: boolean; changed: boolean }>
     resize: (id: string, cols: number, rows: number) => void
     claimViewport: (id: string, cols: number, rows: number) => void
     reportGeometry: (id: string, cols: number, rows: number) => void
@@ -2139,6 +2286,28 @@ export type PreloadApi = {
     previewWarpThemeImport: (source: WarpThemeImportSource) => Promise<WarpThemeImportPreview>
     /** Subscribe to out-of-band settings updates (e.g. View > Appearance toggles) to stay in sync with main. */
     onChanged: (callback: (updates: Partial<GlobalSettings>) => void) => () => void
+    /** Agent-catalog authoring surface. Local preload IPC only — never runtime
+     *  RPC. Catalog/reference fields cannot be written through settings.set;
+     *  they go through these revision-checked mutations. */
+    agentCatalog: {
+      getLocal: () => Promise<LocalAgentCatalogSnapshot>
+      mutate: (request: AgentCatalogMutationRequest) => Promise<AgentCatalogMutationResult>
+      getLocalDraft: (args: {
+        locator: { id: CustomTuiAgentId } | { repairToken: string }
+        expectedRevision: number
+      }) => Promise<LocalCustomAgentDraftResult | { status: 'stale' }>
+      /** Owner kind + count only; no prompt/config/env. Desktop-only. */
+      referenceSummary: (args: { id: CustomTuiAgentId }) => Promise<AgentReferenceSummary[]>
+      /** §973 base-disable impact counts (saved references + resumable sessions);
+       *  counts only, no labels/config. Enabled derivatives stay client-side. */
+      baseDisableImpact: (args: { base: BuiltInTuiAgent }) => Promise<BaseDisableImpact>
+    }
+    agentReferences: {
+      getLocal: () => Promise<LocalAgentReferenceSnapshot>
+      mutate: (
+        request: AgentReferenceMutationRequest
+      ) => Promise<AgentReferenceMutationResult<LocalAgentReferenceSnapshot>>
+    }
   }
   localhostWorktreeLabels: {
     register: (args: LocalhostWorktreeLabelRoute) => Promise<LocalhostWorktreeLabelResult>
@@ -2886,6 +3055,7 @@ export type PreloadApi = {
         launchToken?: string
         launchAgent?: TuiAgent
         viewMode?: 'terminal' | 'chat'
+        launchNotices?: PersistedLaunchNoticeState
         title?: string
         ptyId?: string
         activate?: boolean
@@ -3181,6 +3351,7 @@ export type PreloadApi = {
       runId: string
     }) => Promise<AutomationPrecheckResult | null>
     markDispatchResult: (result: AutomationDispatchResult) => Promise<AutomationRun>
+    forgetRun: (args: { runId: string }) => Promise<AutomationRun>
     snapshotWorkspaceName: (args: { workspaceId: string; displayName: string }) => Promise<number>
     rendererReady: () => Promise<void>
     onDispatchRequested: (callback: (request: AutomationDispatchRequest) => void) => () => void

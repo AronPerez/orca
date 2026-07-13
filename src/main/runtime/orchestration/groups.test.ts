@@ -18,7 +18,9 @@ function makeSummary(
     connected: opts.connected ?? true,
     writable: opts.writable ?? true,
     lastOutputAt: opts.lastOutputAt ?? null,
-    preview: opts.preview ?? ''
+    preview: opts.preview ?? '',
+    ...(opts.requestedAgent !== undefined ? { requestedAgent: opts.requestedAgent } : {}),
+    ...(opts.baseAgent !== undefined ? { baseAgent: opts.baseAgent } : {})
   }
 }
 
@@ -97,90 +99,96 @@ describe('resolveGroupAddress', () => {
   })
 
   describe('agent name groups', () => {
-    it('matches @claude by terminal title', () => {
+    it('matches @claude by validated base attribution, not title', () => {
       const terminals = [
-        makeSummary('term_a', { title: 'Claude Code' }),
-        makeSummary('term_b', { title: 'Claude Code' }),
-        makeSummary('term_c', { title: 'Codex CLI' })
+        makeSummary('term_a', { baseAgent: 'claude' }),
+        makeSummary('term_b', { baseAgent: 'claude' }),
+        makeSummary('term_c', { baseAgent: 'codex' })
       ]
       const result = resolveGroupAddress('@claude', 'term_a', terminals, noStatus)
       expect(result).toEqual(['term_b'])
     })
 
-    it('matches @mimo by terminal title', () => {
+    it('maps the mimo-code base to the @mimo group', () => {
       const terminals = [
-        makeSummary('term_a', { title: 'mimo' }),
-        makeSummary('term_b', { title: 'MiMo Code session' }),
-        makeSummary('term_c', { title: 'OpenCode' })
+        makeSummary('term_a', { baseAgent: 'mimo-code' }),
+        makeSummary('term_b', { baseAgent: 'mimo-code' }),
+        makeSummary('term_c', { baseAgent: 'opencode' })
       ]
       const result = resolveGroupAddress('@mimo', 'term_a', terminals, noStatus)
       expect(result).toEqual(['term_b'])
     })
 
-    it('matches @openclaude by terminal title', () => {
+    it('a custom agent joins its base harness group', () => {
+      // The summary builder resolves a custom requestedAgent to its base; the
+      // custom terminal is addressable under the base group.
       const terminals = [
-        makeSummary('term_a', { title: 'OpenClaude' }),
-        makeSummary('term_b', { title: 'OpenClaude running' }),
-        makeSummary('term_c', { title: 'Claude Code' })
+        makeSummary('term_a', { baseAgent: 'claude' }),
+        makeSummary('term_b', {
+          requestedAgent: 'custom-agent:claude:01234567-89ab-4cde-8f01-23456789abcd',
+          baseAgent: 'claude'
+        })
       ]
-      const result = resolveGroupAddress('@openclaude', 'term_a', terminals, noStatus)
+      const result = resolveGroupAddress('@claude', 'term_a', terminals, noStatus)
       expect(result).toEqual(['term_b'])
     })
 
-    it('does not match OpenClaude titles through @claude', () => {
+    it('keeps openclaude and claude as distinct groups', () => {
       const terminals = [
-        makeSummary('term_a', { title: 'Claude Code' }),
-        makeSummary('term_b', { title: 'OpenClaude running' })
+        makeSummary('term_a', { baseAgent: 'claude' }),
+        makeSummary('term_b', { baseAgent: 'openclaude' })
+      ]
+      expect(resolveGroupAddress('@claude', 'term_a', terminals, noStatus)).toEqual([])
+      expect(resolveGroupAddress('@openclaude', 'term_a', terminals, noStatus)).toEqual(['term_b'])
+    })
+
+    it('omits an unattributed terminal rather than guessing from its title', () => {
+      // A title that reads like an agent name must NOT join the group without
+      // validated base attribution (U6 coordinator terminals rely on this).
+      const terminals = [
+        makeSummary('term_a', { baseAgent: 'claude' }),
+        makeSummary('term_b', { title: 'Claude Code' })
       ]
       const result = resolveGroupAddress('@claude', 'term_a', terminals, noStatus)
       expect(result).toEqual([])
     })
 
-    it('matches @codex by terminal title', () => {
+    it('matches @droid by base and excludes the sender', () => {
       const terminals = [
-        makeSummary('term_a', { title: 'Codex CLI' }),
-        makeSummary('term_b', { title: 'Codex CLI' })
-      ]
-      const result = resolveGroupAddress('@codex', 'term_a', terminals, noStatus)
-      expect(result).toEqual(['term_b'])
-    })
-
-    it('matches @droid by terminal title and excludes sender', () => {
-      const terminals = [
-        makeSummary('term_a', { title: 'Droid ready' }),
-        makeSummary('term_b', { title: 'Droid ready' }),
-        makeSummary('term_c', { title: 'Droid - action required' })
+        makeSummary('term_a', { baseAgent: 'droid' }),
+        makeSummary('term_b', { baseAgent: 'droid' }),
+        makeSummary('term_c', { baseAgent: 'droid' })
       ]
       const result = resolveGroupAddress('@droid', 'term_a', terminals, noStatus)
       expect(result).toEqual(['term_b', 'term_c'])
     })
 
-    it('does not match Android, path, or hyphenated tokens through @droid', () => {
+    it('does not map bases without an addressable group', () => {
+      // 'autohand' has no agent-name group; it is unreachable via base groups.
       const terminals = [
-        makeSummary('term_a', { title: 'Codex CLI' }),
-        makeSummary('term_b', { title: 'Android build' }),
-        makeSummary('term_c', { title: '/tmp/android' }),
-        makeSummary('term_d', { title: 'my-droid-worker' })
+        makeSummary('term_a', { baseAgent: 'claude' }),
+        makeSummary('term_b', { baseAgent: 'autohand' })
       ]
-      const result = resolveGroupAddress('@droid', 'term_a', terminals, noStatus)
-      expect(result).toEqual([])
+      expect(resolveGroupAddress('@claude', 'term_a', terminals, noStatus)).toEqual([])
     })
 
-    it('is case-insensitive for group address', () => {
-      const terminals = [makeSummary('term_a'), makeSummary('term_b', { title: 'Claude Code' })]
+    it('is case-insensitive for the group address', () => {
+      const terminals = [
+        makeSummary('term_a', { baseAgent: 'codex' }),
+        makeSummary('term_b', { baseAgent: 'claude' })
+      ]
       const result = resolveGroupAddress('@Claude', 'term_a', terminals, noStatus)
       expect(result).toEqual(['term_b'])
     })
 
-    it('matches @grok as a standalone title token and excludes sender', () => {
+    it('matches @grok by validated base, excludes sender, and ignores grok-like titles', () => {
       const terminals = [
-        makeSummary('term_a', { title: 'Grok' }),
-        makeSummary('term_b', { title: 'GROK CLI' }),
-        makeSummary('term_c', { title: '⠋ Grok' }),
+        makeSummary('term_a', { baseAgent: 'grok' }),
+        makeSummary('term_b', { baseAgent: 'grok' }),
+        makeSummary('term_c', { baseAgent: 'grok', title: '⠋ Grok' }),
         makeSummary('term_d', { title: 'ngrok' }),
-        makeSummary('term_e', { title: '/tmp/grok' }),
-        makeSummary('term_f', { title: 'my-grok-worker' }),
-        makeSummary('term_g', { title: 'Codex CLI' })
+        makeSummary('term_e', { title: 'GROK CLI' }),
+        makeSummary('term_g', { baseAgent: 'codex' })
       ]
 
       const result = resolveGroupAddress('@GrOk', 'term_a', terminals, noStatus)
@@ -188,58 +196,24 @@ describe('resolveGroupAddress', () => {
       expect(result).toEqual(['term_b', 'term_c'])
     })
 
-    // Why: the resolver sees the raw OSC title, and Grok CLI's real working/session
-    // titles carry a trailing " - grok" identity or a spinner-collapsed "⠋ grok"
-    // (see terminal-title-agent-type.ts). Prove those production shapes resolve.
-    it('matches real Grok OSC working and session titles', () => {
+    it('matches @cursor by validated base regardless of title shape', () => {
       const terminals = [
-        makeSummary('coordinator', { title: 'Coordinator' }),
-        makeSummary('term_rotating', { title: '⠋ - fix the flaky suite - grok' }),
-        makeSummary('term_collapsed', { title: '⠋ grok' }),
-        makeSummary('term_session', { title: 'Fix the auth bug - grok' })
-      ]
-
-      const result = resolveGroupAddress('@grok', 'coordinator', terminals, noStatus)
-
-      expect(result).toEqual(['term_rotating', 'term_collapsed', 'term_session'])
-    })
-
-    // Why: Windows agent titles can surface the launcher process name (`grok.exe`);
-    // the shared matcher accepts .exe/.cmd/.bat/.ps1 suffixes but still rejects
-    // arbitrary dotted fragments like `grok.py`.
-    it('matches Windows launcher-suffix titles but not arbitrary dotted tokens', () => {
-      const terminals = [
-        makeSummary('coordinator', { title: 'Coordinator' }),
-        makeSummary('term_exe', { title: 'grok.exe' }),
-        makeSummary('term_cmd', { title: 'grok.cmd running' }),
-        makeSummary('term_dotted', { title: 'grok.py' })
-      ]
-
-      const result = resolveGroupAddress('@grok', 'coordinator', terminals, noStatus)
-
-      expect(result).toEqual(['term_exe', 'term_cmd'])
-    })
-
-    // Why: these are the titles cursor-agent natively emits and the ones Orca synthesizes
-    // from Cursor hooks, so each must resolve.
-    it('matches native and Orca-synthesized Cursor titles', () => {
-      const terminals = [
-        makeSummary('coordinator', { title: 'Coordinator' }),
-        makeSummary('term_native', { title: 'Cursor Agent' }),
-        makeSummary('term_working', { title: '⠋ Cursor Agent' }),
-        makeSummary('term_idle', { title: 'Cursor ready' }),
-        makeSummary('term_permission', { title: 'Cursor - action required' })
+        makeSummary('coordinator', { baseAgent: 'claude' }),
+        makeSummary('term_native', { baseAgent: 'cursor', title: 'Cursor Agent' }),
+        makeSummary('term_working', { baseAgent: 'cursor', title: '⠋ Cursor Agent' }),
+        makeSummary('term_renamed', { baseAgent: 'cursor', title: 'reviewer pane' }),
+        makeSummary('term_title_only', { title: 'Cursor - action required' })
       ]
 
       const result = resolveGroupAddress('@cursor', 'coordinator', terminals, noStatus)
 
-      expect(result).toEqual(['term_native', 'term_working', 'term_idle', 'term_permission'])
+      expect(result).toEqual(['term_native', 'term_working', 'term_renamed'])
     })
 
     it('is case-insensitive for @cursor', () => {
       const terminals = [
-        makeSummary('coordinator', { title: 'Coordinator' }),
-        makeSummary('term_b', { title: 'CURSOR READY' })
+        makeSummary('coordinator', { baseAgent: 'claude' }),
+        makeSummary('term_b', { baseAgent: 'cursor' })
       ]
 
       const result = resolveGroupAddress('@CuRsOr', 'coordinator', terminals, noStatus)
@@ -247,11 +221,9 @@ describe('resolveGroupAddress', () => {
       expect(result).toEqual(['term_b'])
     })
 
-    // Why: this is the false positive that a whole-token matcher cannot catch. Claude
-    // and Codex put their task summary in the OSC title, and none of Claude's status
-    // prefixes carries its own name, so "cursor" as ordinary editor vocabulary is the
-    // only agent token such a title has. Routing @cursor there would write into a live
-    // non-Cursor agent's prompt.
+    // Why: "cursor" is ordinary editor vocabulary in other agents' task-summary
+    // titles. Base-only resolution must never route @cursor into a live
+    // non-Cursor agent's prompt no matter what the title says.
     it('does not match another agent whose task title mentions a text cursor', () => {
       const terminals = [
         makeSummary('coordinator', { title: 'Coordinator' }),
@@ -271,8 +243,8 @@ describe('resolveGroupAddress', () => {
       expect(result).toEqual([])
     })
 
-    // Why: pin the deliberate tradeoff. A renamed Cursor pane outranks its OSC title, so it
-    // is group-unaddressable and resolves to nothing instead of resolving loosely. A silent
+    // Why: pin the deliberate tradeoff. Cursor-looking titles without validated
+    // base attribution resolve to nothing instead of resolving loosely. A silent
     // miss (address it by handle) is preferred over delivering into another agent's prompt.
     it('does not match a renamed Cursor terminal or the bare process name', () => {
       const terminals = [

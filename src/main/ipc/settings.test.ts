@@ -325,6 +325,41 @@ describe('registerSettingsHandlers', () => {
     )
   })
 
+  it('strips catalog- and reference-owned keys from generic renderer settings writes', async () => {
+    store.getSettings.mockReturnValue({})
+    store.updateSettings.mockReturnValue({})
+    registerSettingsHandlers(store as never)
+
+    const handler = handleMock.mock.calls.find((call) => call[0] === 'settings:set')?.[1] as (
+      _event: unknown,
+      args: unknown
+    ) => Promise<unknown>
+
+    await handler(settingsInvokeEvent, {
+      defaultTuiAgent: 'codex',
+      disabledTuiAgents: ['codex'],
+      customTuiAgents: [{ id: 'custom-agent:codex:x', env: { LEAK: 'v' } }],
+      deletedCustomTuiAgents: [],
+      agentCatalogSchemaVersion: 99,
+      agentCatalogRevision: 99,
+      agentCmdOverrides: { codex: '/evil' },
+      agentDefaultArgs: { codex: '--evil' },
+      agentDefaultEnv: { codex: { EVIL: '1' } },
+      agentReferenceRevision: 99,
+      terminalQuickCommands: [],
+      commitMessageAi: { enabled: true },
+      sourceControlAi: { enabled: true },
+      tabAutoGenerateTitle: true
+    })
+
+    // Only the non-owned key survives; owned keys go through the atomic
+    // catalog/reference mutation APIs instead.
+    expect(store.updateSettings).toHaveBeenCalledWith(
+      { tabAutoGenerateTitle: true },
+      { notifyListeners: true, originWebContentsId: 1 }
+    )
+  })
+
   it('normalizes terminal scrollback row updates and drops legacy byte updates', async () => {
     store.getSettings.mockReturnValue({ terminalScrollbackRows: 5_000 })
     store.updateSettings.mockReturnValue({ terminalScrollbackRows: 50_000 })
