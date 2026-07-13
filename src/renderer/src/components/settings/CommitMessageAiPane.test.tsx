@@ -26,8 +26,7 @@ function renderPane(settings: GlobalSettings): string {
       TooltipProvider,
       null,
       React.createElement(CommitMessageAiPane, {
-        settings,
-        updateSettings: () => {}
+        settings
       })
     )
   )

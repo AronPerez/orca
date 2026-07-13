@@ -20,6 +20,7 @@ import {
   saveSourceControlActionRecipe,
   type SourceControlAiWriteTarget
 } from '../../../../shared/source-control-ai-recipe-save'
+import { saveSourceControlAiSettings } from '@/lib/agent-catalog-authoring'
 import type {
   SourceControlActionRecipe,
   SourceControlLaunchActionId
@@ -121,7 +122,6 @@ export function useCheckRunDetailsFixWithAI(args: {
 } {
   const [isFixing, setIsFixing] = useState(false)
   const settings = useAppStore((state) => state.settings)
-  const updateSettings = useAppStore((state) => state.updateSettings)
   const updateRepo = useAppStore((state) => state.updateRepo)
   const openSettingsTarget = useAppStore((state) => state.openSettingsTarget)
   const openSettingsPage = useAppStore((state) => state.openSettingsPage)
@@ -183,12 +183,12 @@ export function useCheckRunDetailsFixWithAI(args: {
         recipe
       })
       if ('sourceControlAi' in result) {
-        await updateSettings({ sourceControlAi: result.sourceControlAi })
+        await saveSourceControlAiSettings(result.sourceControlAi)
         return
       }
       await updateRepo(result.target.repoId, result.update)
     },
-    [updateRepo, updateSettings]
+    [updateRepo]
   )
   const openSourceControlAiSettings = useCallback((): void => {
     openSourceControlAiSettingsTarget({

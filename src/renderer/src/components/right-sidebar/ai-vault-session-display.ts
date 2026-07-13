@@ -8,3 +8,14 @@ export {
   sessionModelLabel,
   sessionPreviewSearchText
 } from '../../../../shared/ai-vault-session-display'
+
+export function sessionResumeArgsLabel(args: readonly string[]): string | null {
+  if (args.length === 0) {
+    return null
+  }
+  return args.map(formatResumeArgument).join(' ')
+}
+
+function formatResumeArgument(arg: string): string {
+  return arg.length > 0 && !/[\s"'\\]/.test(arg) ? arg : JSON.stringify(arg)
+}

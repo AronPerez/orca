@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,14 @@ type ConfirmationDialogOptions = {
   confirmLabel?: string
   cancelLabel?: string
   confirmVariant?: 'default' | 'destructive'
+  /** Optional opt-in checkbox shown above the footer. When present and the user
+   *  confirms, its checked state is reported through `onConfirm`; the promise
+   *  result stays a plain boolean so existing yes/no callers are unaffected. */
+  optIn?: {
+    label: string
+    defaultChecked?: boolean
+    onConfirm: (checked: boolean) => void
+  }
 }
 
 type ConfirmationDialogRequest = {
@@ -37,6 +46,10 @@ export function ConfirmationDialogProvider({
 }): React.JSX.Element {
   const nextIdRef = useRef(0)
   const [queue, setQueue] = useState<ConfirmationDialogRequest[]>([])
+  const [optInChecked, setOptInChecked] = useState(false)
+  // Why: the confirm handler runs from a stable callback, so mirror the checkbox
+  // state in a ref to read the latest value without re-creating settle.
+  const optInCheckedRef = useRef(false)
   const activeRequest = queue[0] ?? null
   const activeRequestRef = useRef<ConfirmationDialogRequest | null>(activeRequest)
   const setContextualToursBlockingSurfaceVisible = useAppStore(
@@ -57,6 +70,17 @@ export function ConfirmationDialogProvider({
     return () => setContextualToursBlockingSurfaceVisible(false)
   }, [activeRequest, setContextualToursBlockingSurfaceVisible])
 
+  useEffect(() => {
+    // Why: reset the opt-in to each new request's default when it becomes active;
+    // skip the close transition so the box does not visibly flip while fading out.
+    if (!activeRequest) {
+      return
+    }
+    const next = activeRequest.options.optIn?.defaultChecked ?? false
+    optInCheckedRef.current = next
+    setOptInChecked(next)
+  }, [activeRequest])
+
   const confirm = useCallback<ConfirmationDialogContextValue>((options) => {
     return new Promise((resolve) => {
       const request: ConfirmationDialogRequest = {
@@ -73,6 +97,9 @@ export function ConfirmationDialogProvider({
     const request = activeRequestRef.current
     if (!request) {
       return
+    }
+    if (confirmed && request.options.optIn) {
+      request.options.optIn.onConfirm(optInCheckedRef.current)
     }
     request.resolve(confirmed)
     setQueue((currentQueue) => {
@@ -97,6 +124,20 @@ export function ConfirmationDialogProvider({
               <DialogDescription>{displayedRequest.options.description}</DialogDescription>
             ) : null}
           </DialogHeader>
+          {displayedRequest?.options.optIn ? (
+            <label className="flex cursor-pointer items-start gap-2 text-sm text-foreground">
+              <Checkbox
+                className="mt-0.5"
+                checked={optInChecked}
+                onCheckedChange={(checked) => {
+                  const next = checked === true
+                  optInCheckedRef.current = next
+                  setOptInChecked(next)
+                }}
+              />
+              <span>{displayedRequest.options.optIn.label}</span>
+            </label>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => settleActiveRequest(false)}>
               {displayedRequest?.options.cancelLabel ??
@@ -123,4 +164,12 @@ export function useConfirmationDialog(): ConfirmationDialogContextValue {
     throw new Error('useConfirmationDialog must be used inside ConfirmationDialogProvider')
   }
   return confirm
+}
+
+/** Non-throwing variant returning null when no provider is mounted. Lets a card
+ *  that renders inside another component's isolation tests (which omit the
+ *  provider) degrade its confirm-gated affordance instead of crashing the whole
+ *  host test family. */
+export function useOptionalConfirmationDialog(): ConfirmationDialogContextValue | null {
+  return useContext(ConfirmationDialogContext)
 }

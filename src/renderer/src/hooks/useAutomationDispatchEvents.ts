@@ -12,6 +12,7 @@ import type {
   AutomationDispatchResult,
   AutomationPrecheckResult
 } from '../../../shared/automations-types'
+import { spawnOutcomeLaunchFailure } from '@/lib/agent-launch-spawn-outcome-error'
 import { getAutomationRunRepoId } from '../../../shared/automation-run-identity'
 import {
   didAutomationPrecheckPass,
@@ -226,8 +227,12 @@ export function useAutomationDispatchEvents(): void {
                     }
                   )
               : null
-          const worktree = createResult
-            ? createResult.worktree
+          // Automation dispatch does not request a host agent launch (U6 owns
+          // automation records), so the pre-create rejection arm is unreachable;
+          // narrow defensively to the created arm before reading worktree/setup.
+          const createdResult = createResult && createResult.created !== false ? createResult : null
+          const worktree = createdResult
+            ? createdResult.worktree
             : automation.workspaceId
               ? automationWorktree
               : null
@@ -247,11 +252,11 @@ export function useAutomationDispatchEvents(): void {
           }
           dispatchWorkspaceId = worktree.id
           dispatchWorkspaceDisplayName = worktree.displayName
-          if (createResult?.setup || createResult?.defaultTabs) {
+          if (createdResult?.setup || createdResult?.defaultTabs) {
             void launchWorktreeBackgroundTerminals({
               worktreeId: worktree.id,
-              setup: createResult.setup,
-              defaultTabs: createResult.defaultTabs
+              setup: createdResult.setup,
+              defaultTabs: createdResult.defaultTabs
             }).catch((error) => {
               // Why: setup/defaultTabs match normal worktree creation: they are
               // best-effort terminal work and must not block the automation agent.
@@ -561,13 +566,24 @@ export function useAutomationDispatchEvents(): void {
           }
         } catch (error) {
           releaseTerminalOwnership()
+          // Why (U6-D): a spawn-time failure on the renderer-assisted path carries
+          // the host's typed outcome. Persist its structured (plain) failure so
+          // the run shows a recovery card; the generic string stays for old
+          // readers. An untyped throw or control-plane rejection writes the string
+          // only. The durable wrapper (version/failureId/intent/occurredAt) is
+          // minted host-side at the single markDispatchResult persist authority,
+          // so the failureId can't drift — the renderer passes the plain failure.
+          // (Known pre-dispatch failures never reach here — the host's resolve-only
+          // gate classifies them before this branch, no pty involved.)
+          const agentLaunchFailure = spawnOutcomeLaunchFailure(error)
           await markDispatchResult({
             runId: run.id,
             status: 'dispatch_failed',
             workspaceId: dispatchWorkspaceId,
             workspaceDisplayName: dispatchWorkspaceDisplayName,
             precheckResult,
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
+            ...(agentLaunchFailure ? { agentLaunchFailure } : {})
           })
         }
       }

@@ -37,6 +37,7 @@ import { isIntentionalAppRestartInProgress } from '@/lib/updater-beforeunload'
 import { preventUnloadAndScheduleShutdownCheckpointReset } from '@/lib/shutdown-checkpoint-guard'
 import EditorAutosaveController from './editor/EditorAutosaveController'
 import type { Tab, TabContentType, TabGroupLayoutNode, TuiAgent } from '../../../shared/types'
+import { toLegacyAutoPreference } from '../../../shared/tui-agent-selection'
 import { hasFeatureInteraction } from '../../../shared/feature-interactions'
 import BrowserPane from './browser-pane/BrowserPane'
 import BrowserPaneOverlayLayer from './browser-pane/BrowserPaneOverlayLayer'
@@ -95,6 +96,8 @@ import { isMainTerminalSideEffectAuthorityForPty } from './terminal-pane/termina
 import { appendUniqueOpenFileIds } from './terminal/unsaved-close-queue'
 import { setWindowCloseRequestHandler } from './window-close-request-coordinator'
 import CodexRestartChip from './CodexRestartChip'
+import { AgentLaunchNotices } from './terminal-pane/AgentLaunchNotices'
+import { AgentLaunchRecoveryCardContainer } from './terminal-pane/AgentLaunchRecoveryCardContainer'
 import {
   findActivityTerminalPortal,
   useActivityTerminalPortals,
@@ -1222,21 +1225,12 @@ function Terminal(): React.JSX.Element | null {
       const targetGroupId =
         state.activeGroupIdByWorktree[activeWorktreeId] ??
         state.groupsByWorktree[activeWorktreeId]?.[0]?.id
-      const result = launchAgentInNewTab({
+      launchAgentInNewTab({
         agent,
         worktreeId: activeWorktreeId,
         groupId: targetGroupId,
         launchSource: 'shortcut'
       })
-      if (!result) {
-        toast.error(
-          translate(
-            'auto.components.Terminal.e57db40c11',
-            'Could not build launch command for {{value0}}.',
-            { value0: agent }
-          )
-        )
-      }
     },
     [activeWorktreeId]
   )
@@ -1662,7 +1656,7 @@ function Terminal(): React.JSX.Element | null {
           const connectionId = getConnectionId(activeWorktreeId)
           agentActionId = 'tab.newAgent'
           agentToLaunch = resolveDefaultAgentForNewTab({
-            defaultTuiAgent: state.settings?.defaultTuiAgent,
+            defaultTuiAgent: toLegacyAutoPreference(state.settings?.defaultTuiAgent),
             detectedAgentIds:
               typeof connectionId === 'string'
                 ? state.remoteDetectedAgentIds[connectionId]
@@ -2132,63 +2126,80 @@ function Terminal(): React.JSX.Element | null {
                 return (
                   <div
                     key={workspace.id}
-                    className={
+                    className={`flex flex-col ${
                       isVisible
                         ? 'absolute inset-0'
                         : shouldMeasureHiddenWorktree
                           ? 'absolute inset-0 opacity-0 pointer-events-none'
                           : 'absolute inset-0 hidden'
-                    }
+                    }`}
                     aria-hidden={!isVisible}
                   >
-                    <CodexRestartChip isVisible={isVisible} worktreeId={workspace.id} />
-                    {(tabsByWorktree[workspace.id] ?? [])
-                      .filter((tab) =>
-                        shouldMountBackgroundWorktreeTab(
-                          backgroundMountTabIdsByWorktreeRef.current.get(workspace.id) ?? null,
-                          tab.id
-                        )
-                      )
-                      .map((tab) => {
-                        const activityTerminalPortal = findActivityTerminalPortal(
-                          activityTerminalPortals,
-                          { worktreeId: workspace.id, tabId: tab.id }
-                        )
-                        const isActivityPortalTab = activityTerminalPortal !== null
-                        const isActiveTerminalTab =
-                          isVisible && tab.id === activeTabId && activeTabType === 'terminal'
-                        // Why: parking unmounts the view but keeps the PTY; an Activity portal stays mounted as a visible consumer.
-                        if (shouldColdParkTerminalPanes && !isActivityPortalTab) {
-                          return null
-                        }
-                        const terminalPane = (
-                          <TerminalPane
-                            key={`${tab.id}-${tab.generation ?? 0}`}
-                            tabId={tab.id}
-                            worktreeId={workspace.id}
-                            cwd={tab.startupCwd ?? workspace.path}
-                            isActive={
-                              isActiveTerminalTab || activityTerminalPortal?.active === true
-                            }
-                            // Why: keep isVisible true for the portaled tab so xterm fits/streams while the workspace surface stays hidden.
-                            isVisible={isActiveTerminalTab || isActivityPortalTab}
-                            // Why: inactive tabs here are tab-hidden (not worktree-hidden), so they need the same light resume path as split-group overlays.
-                            isWorktreeActive={isVisible || isActivityPortalTab}
-                            // Why: isolate the portaled Activity leaf so split siblings stay hidden; workspace renders pass null.
-                            isolatedPaneKey={activityTerminalPortal?.paneKey ?? null}
-                            onPtyExit={(ptyId) => handlePtyExit(tab.id, ptyId)}
-                            onCloseTab={() => handleCloseTab(tab.id)}
-                          />
-                        )
-                        if (activityTerminalPortal) {
-                          return createPortal(
-                            terminalPane,
-                            activityTerminalPortal.target,
-                            `activity-terminal-${tab.id}`
+                    {/* Why: the banner sits in normal flow above the terminal so
+                        the existing pane ResizeObserver refits rows on mount and
+                        dismiss — no overlay, no second resize listener. */}
+                    {isVisible && (
+                      <AgentLaunchNotices worktreeId={workspace.id} tabId={activeTabId} />
+                    )}
+                    {isVisible && <AgentLaunchRecoveryCardContainer worktreeId={workspace.id} />}
+                    <div className="relative min-h-0 min-w-0 flex-1">
+                      <CodexRestartChip isVisible={isVisible} worktreeId={workspace.id} />
+                      {(tabsByWorktree[workspace.id] ?? [])
+                        .filter((tab) =>
+                          shouldMountBackgroundWorktreeTab(
+                            backgroundMountTabIdsByWorktreeRef.current.get(workspace.id) ?? null,
+                            tab.id
                           )
-                        }
-                        return terminalPane
-                      })}
+                        )
+                        .map((tab) => {
+                          const activityTerminalPortal = findActivityTerminalPortal(
+                            activityTerminalPortals,
+                            { worktreeId: workspace.id, tabId: tab.id }
+                          )
+                          const isActivityPortalTab = activityTerminalPortal !== null
+                          const isActiveTerminalTab =
+                            isVisible && tab.id === activeTabId && activeTabType === 'terminal'
+                          // Why: parking unmounts the view while preserving the PTY;
+                          // an Activity portal remains mounted as a visible consumer.
+                          if (shouldColdParkTerminalPanes && !isActivityPortalTab) {
+                            return null
+                          }
+                          const terminalPane = (
+                            <TerminalPane
+                              key={`${tab.id}-${tab.generation ?? 0}`}
+                              tabId={tab.id}
+                              worktreeId={workspace.id}
+                              cwd={tab.startupCwd ?? workspace.path}
+                              isActive={
+                                isActiveTerminalTab || activityTerminalPortal?.active === true
+                              }
+                              // Why: the activity page hosts this existing pane via
+                              // portal while the workspace surface remains hidden.
+                              // Keeping `isVisible` true for the portaled tab lets
+                              // xterm fit and stream foreground output in-place.
+                              isVisible={isActiveTerminalTab || isActivityPortalTab}
+                              // Why: inactive tabs in the visible legacy surface
+                              // are tab-hidden, not worktree-hidden, so they need
+                              // the same light resume path as split-group overlays.
+                              isWorktreeActive={isVisible || isActivityPortalTab}
+                              // Why: when portaled to Activity for a specific agent
+                              // pane, isolate that leaf so split siblings stay
+                              // hidden. Workspace renders pass null → no override.
+                              isolatedPaneKey={activityTerminalPortal?.paneKey ?? null}
+                              onPtyExit={(ptyId) => handlePtyExit(tab.id, ptyId)}
+                              onCloseTab={() => handleCloseTab(tab.id)}
+                            />
+                          )
+                          if (activityTerminalPortal) {
+                            return createPortal(
+                              terminalPane,
+                              activityTerminalPortal.target,
+                              `activity-terminal-${tab.id}`
+                            )
+                          }
+                          return terminalPane
+                        })}
+                    </div>
                   </div>
                 )
               })}

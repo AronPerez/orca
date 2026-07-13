@@ -2951,6 +2951,69 @@ describe('createWorktree base status merge', () => {
     })
   })
 
+  it('threads a host agentLaunch request into the create IPC payload', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })
+    mockApi.worktrees.create.mockResolvedValue({ worktree: wt })
+
+    await store
+      .getState()
+      .createWorktree(
+        'repo1',
+        'feature',
+        'origin/main',
+        'inherit',
+        undefined,
+        'sidebar',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { agentLaunch: { selection: { kind: 'default' }, allowEmptyPromptLaunch: true } }
+      )
+
+    expect(mockApi.worktrees.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoId: 'repo1',
+        name: 'feature',
+        agentLaunch: { selection: { kind: 'default' }, allowEmptyPromptLaunch: true }
+      })
+    )
+  })
+
+  it('returns a pre-create agent-launch rejection without inserting a worktree', async () => {
+    const store = createTestStore()
+    // The host validated the launch before any git side effect, so no worktree
+    // exists — the store must hand the union back untouched and never insert.
+    mockApi.worktrees.create.mockResolvedValue({
+      created: false,
+      agentLaunchResult: { status: 'failed', failure: { code: 'base_agent_disabled' } }
+    })
+
+    const result = await store.getState().createWorktree('repo1', 'feature', 'origin/main')
+
+    expect(result).toEqual({
+      created: false,
+      agentLaunchResult: { status: 'failed', failure: { code: 'base_agent_disabled' } }
+    })
+    expect(store.getState().worktreesByRepo.repo1 ?? []).toHaveLength(0)
+  })
+
   it('stamps the owning runtime host onto worktrees created on a remote runtime', async () => {
     const store = createTestStore()
     const created = makeWorktree({
@@ -7219,8 +7282,6 @@ function makePendingCreation(
       agent: null,
       pendingFirstAgentMessageRename: false,
       note: '',
-      startupPlan: null,
-      quickPrompt: '',
       quickTelemetry: null
     },
     ...overrides
@@ -7268,8 +7329,6 @@ describe('pending worktree creation state', () => {
         agent: null,
         pendingFirstAgentMessageRename: false,
         note: '',
-        startupPlan: null,
-        quickPrompt: '',
         quickTelemetry: null
       }
     })

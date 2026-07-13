@@ -3,7 +3,9 @@ import {
   agentProviderSessionsEqual,
   type SleepingAgentSessionRecord
 } from '../../../shared/agent-session-resume'
-import { AGENT_STATUS_STALE_AFTER_MS } from '../../../shared/agent-status-types'
+import { resolveTuiAgentBaseAgent } from '../../../shared/custom-tui-agents'
+import type { TuiAgent } from '../../../shared/types'
+import { AGENT_STATUS_STALE_AFTER_MS, type AgentType } from '../../../shared/agent-status-types'
 import {
   getProviderSessionClaimKey,
   isPassiveCompletedHibernationEvidence,
@@ -86,13 +88,28 @@ function activeOrQueuedResumeClaimsProviderSession(
   const worktreeTabIds = new Set(
     (state.tabsByWorktree[record.worktreeId] ?? []).map((tab) => tab.id)
   )
+  // Match ownership on the resumable base, not the requested identity: a live or
+  // queued custom-id launch owns the same session as its base (two custom ids on
+  // one base collapse to one owner). `record.agent` is the base on legacy records.
+  const recordBaseAgent = record.baseAgent ?? record.agent
+  // Accepts the hook `agentType` (which may be a non-catalog string such as
+  // 'unknown') as well as a launch `TuiAgent`; resolveTuiAgentBaseAgent returns
+  // null for anything not in the catalog, so an unresolvable live agent never
+  // claims the record's base.
+  const ownsRecordBase = (liveAgent: AgentType | TuiAgent | undefined): boolean =>
+    liveAgent !== undefined &&
+    resolveTuiAgentBaseAgent(
+      liveAgent as TuiAgent,
+      state.settings?.customTuiAgents,
+      state.settings?.deletedCustomTuiAgents
+    ) === recordBaseAgent
   for (const entry of Object.values(state.agentStatusByPaneKey)) {
     if (
       worktreeTabIds.has(getAgentStatusTabId(entry) ?? '') &&
       entry.worktreeId === record.worktreeId &&
-      entry.agentType === record.agent &&
+      ownsRecordBase(entry.agentType) &&
       entry.state !== 'done' &&
-      agentProviderSessionsEqual(record.agent, entry.providerSession, record.providerSession)
+      agentProviderSessionsEqual(recordBaseAgent, entry.providerSession, record.providerSession)
     ) {
       return true
     }
@@ -101,9 +118,9 @@ function activeOrQueuedResumeClaimsProviderSession(
   for (const [tabId, startup] of Object.entries(state.pendingStartupByTabId)) {
     if (
       worktreeTabIds.has(tabId) &&
-      startup.launchAgent === record.agent &&
+      ownsRecordBase(startup.launchAgent) &&
       agentProviderSessionsEqual(
-        record.agent,
+        recordBaseAgent,
         startup.resumeProviderSession,
         record.providerSession
       )
@@ -116,8 +133,8 @@ function activeOrQueuedResumeClaimsProviderSession(
     if (
       worktreeTabIds.has(tabId) &&
       claim.worktreeId === record.worktreeId &&
-      claim.launchAgent === record.agent &&
-      agentProviderSessionsEqual(record.agent, claim.providerSession, record.providerSession)
+      ownsRecordBase(claim.launchAgent) &&
+      agentProviderSessionsEqual(recordBaseAgent, claim.providerSession, record.providerSession)
     ) {
       return true
     }

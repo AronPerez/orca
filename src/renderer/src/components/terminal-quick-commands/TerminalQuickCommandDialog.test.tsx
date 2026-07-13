@@ -6,6 +6,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TerminalQuickCommand } from '../../../../shared/types'
 import { TerminalQuickCommandDialog } from './TerminalQuickCommandDialog'
 
+// The dialog reads the local agent-catalog snapshot (custom agents) and disabled
+// agents; a null snapshot keeps these tests on the built-in picker behavior.
+vi.mock('@/hooks/useLocalAgentCatalog', () => ({
+  useLocalAgentCatalog: () => ({
+    snapshot: null,
+    loading: false,
+    refetch: vi.fn(),
+    applySnapshot: vi.fn()
+  })
+}))
+
+vi.mock('@/store', () => ({
+  useAppStore: (selector: (state: unknown) => unknown) =>
+    selector({ settings: { disabledTuiAgents: [] } })
+}))
+
 const mountedRoots: Root[] = []
 
 async function renderDialog(command: TerminalQuickCommand): Promise<void> {

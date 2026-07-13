@@ -85,22 +85,24 @@ describe('launchSourceControlRecoveryAgentWithDefault', () => {
     mocks.launchAgentInNewTab.mockReturnValue({ tabId: 'tab-1' })
   })
 
-  it('rejects invalid saved CLI arguments before detecting agents', async () => {
+  it('names the recipe owner so the host resolves its saved agentArgs', async () => {
     await expect(
       launchRecovery({
         getLaunchActionRecipe: () => ({
           commandInputTemplate: '{basePrompt}',
-          agentArgs: '--model "unterminated'
+          agentArgs: '--model gpt-5'
         })
       })
-    ).resolves.toBe(false)
+    ).resolves.toBe(true)
 
-    expect(mocks.ensureDetectedAgents).not.toHaveBeenCalled()
-    expect(mocks.ensureRemoteDetectedAgents).not.toHaveBeenCalled()
-    expect(mocks.launchAgentInNewTab).not.toHaveBeenCalled()
-    expect(mocks.toastError).toHaveBeenCalledWith(
-      'CLI arguments are invalid: Unclosed quote in command template.'
+    expect(mocks.launchAgentInNewTab).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRecord: { owner: 'source-control-recipe', id: 'fixCommitFailure' }
+      })
     )
+    // The client no longer sends assembled args on the launch path; the host
+    // resolves and validates them from the owner locator above.
+    expect(mocks.launchAgentInNewTab.mock.calls[0]?.[0]).not.toHaveProperty('agentArgs')
   })
 
   it('treats a null worktree connection as proven local and does not fall back to SSH', async () => {

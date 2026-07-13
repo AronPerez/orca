@@ -1,5 +1,5 @@
 import type { DiscoveredSkill } from '../../../shared/skills'
-import type { TuiAgent } from '../../../shared/types'
+import type { BuiltInTuiAgent, TuiAgent } from '../../../shared/types'
 import { ORCHESTRATION_SKILL_NAME } from '@/lib/agent-feature-install-commands'
 import { getAgentLabel } from '@/lib/agent-catalog'
 import { TUI_AGENT_AUTO_PICK_ORDER } from '../../../shared/tui-agent-selection'
@@ -92,7 +92,7 @@ const ORCHESTRATION_SKILL_LOCATIONS: readonly OrchestrationSkillLocationDefiniti
 ]
 
 const ORCHESTRATION_SKILL_LOCATION_IDS_BY_AGENT: Partial<
-  Record<TuiAgent, readonly OrchestrationSkillLocationId[]>
+  Record<BuiltInTuiAgent, readonly OrchestrationSkillLocationId[]>
 > = {
   claude: ['claude-home', 'agents-home'],
   // Why: Agent Teams runs Claude Code, so it reads the same ~/.claude skills.

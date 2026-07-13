@@ -12,6 +12,11 @@ import type {
   AiVaultPrepareSessionResumeArgs,
   AiVaultPrepareSessionResumeResult
 } from '../../../shared/ai-vault-resume-preparation'
+import type {
+  AgentLaunchVaultResumeCopyResult,
+  AgentLaunchVaultResumeDetailsResult,
+  AgentLaunchVaultResumeEntry
+} from '../../../shared/agent-launch-spawn-request'
 import { buildNativeChatUnsubscribe } from '../../../shared/native-chat-stream-unsubscribe'
 import type {
   ComputerUsePermissionSetupResult,
@@ -69,6 +74,11 @@ import {
 } from '../../../shared/execution-host'
 import { toRuntimeWorktreeSelector } from '../runtime/runtime-worktree-selector'
 import { callAbortableRuntimeEnvironment } from '../runtime/abortable-runtime-environment-call'
+import type {
+  WorktreeRetryAgentLaunchResult,
+  ForgetUnknownAgentLaunchResult
+} from '../../../shared/agent-launch-worktree-recovery'
+import type { PendingAgentLaunchSummary } from '../../../shared/agent-launch-pending-summary'
 import { normalizeDisabledTuiAgents } from '../../../shared/tui-agent-selection'
 import {
   normalizeTuiAgentArgsRecord,
@@ -631,7 +641,22 @@ function createWebPreloadApi(): Partial<PreloadApi> {
       },
       updatePRBotAuthorOverride: (args) => updateRuntimePRBotAuthorOverride(args),
       listFonts: () => Promise.resolve([]),
-      onChanged: () => noopUnsubscribe
+      onChanged: () => noopUnsubscribe,
+      // Why: agent catalog/reference authoring is desktop-only. Paired web renders
+      // the synced snapshots read-only (from settings.get / the future reference
+      // refetch) and never invokes these local authoring endpoints, so they reject
+      // like the other desktop-only IPC surfaces stubbed in this file.
+      agentCatalog: {
+        getLocal: () => Promise.reject(new Error('not_available_on_paired_web')),
+        mutate: () => Promise.reject(new Error('not_available_on_paired_web')),
+        getLocalDraft: () => Promise.reject(new Error('not_available_on_paired_web')),
+        referenceSummary: () => Promise.reject(new Error('not_available_on_paired_web')),
+        baseDisableImpact: () => Promise.reject(new Error('not_available_on_paired_web'))
+      },
+      agentReferences: {
+        getLocal: () => Promise.reject(new Error('not_available_on_paired_web')),
+        mutate: () => Promise.reject(new Error('not_available_on_paired_web'))
+      }
     } satisfies Partial<WebSettingsApi> as unknown as WebSettingsApi,
     keybindings: createWebKeybindingsApi(),
     ui: createWebUiApi(),
@@ -1342,6 +1367,27 @@ function createAiVaultApi(): NonNullable<Partial<PreloadApi>['aiVault']> {
       callRuntimeResult<AiVaultPrepareSessionResumeResult>('aiVault.prepareSessionResume', args),
     // Why: no server-side RPC for subagent transcript listing yet, so report an empty (not erroring) result.
     listSubagentSessions: () => Promise.resolve({ sessions: [], issues: [] }),
+    // Why: the browser client echoes only the entry's identity — never its
+    // filePath (trusted desktop IPC only). The paired server re-validates against
+    // its own scan and re-derives the transcript path before assembling.
+    resumeCommand: (entry: AgentLaunchVaultResumeEntry) =>
+      callRuntimeResult<AgentLaunchVaultResumeCopyResult>('aiVault.resumeCommand', {
+        entry: {
+          executionHostId: entry.executionHostId,
+          agent: entry.agent,
+          sessionId: entry.sessionId,
+          ...(entry.resumeLocator ? { resumeLocator: entry.resumeLocator } : {})
+        }
+      }),
+    resumeDetails: (entry: AgentLaunchVaultResumeEntry) =>
+      callRuntimeResult<AgentLaunchVaultResumeDetailsResult>('aiVault.resumeDetails', {
+        entry: {
+          executionHostId: entry.executionHostId,
+          agent: entry.agent,
+          sessionId: entry.sessionId,
+          ...(entry.resumeLocator ? { resumeLocator: entry.resumeLocator } : {})
+        }
+      }),
     onWindowFocused: () => noopUnsubscribe
   }
 }
@@ -1535,7 +1581,8 @@ function createWorktreesApi(): NonNullable<Partial<PreloadApi>['worktrees']> {
         parentWorkspace: args.parentWorkspace,
         workspaceStatus: args.workspaceStatus,
         manualOrder: args.manualOrder,
-        automationProvenanceRequest: args.automationProvenanceRequest
+        automationProvenanceRequest: args.automationProvenanceRequest,
+        ...(args.agentLaunch ? { agentLaunch: args.agentLaunch } : {})
       })
       return {
         ...owned.result,
@@ -1615,7 +1662,56 @@ function createWorktreesApi(): NonNullable<Partial<PreloadApi>['worktrees']> {
     persistSortOrder: async ({ orderedIds }) => {
       await callRuntimeResult('worktree.persistSortOrder', { orderedIds })
     },
-    // Why: the capture lives in desktop main memory, unexposed over pairing; the dialog falls back to the persisted excerpt.
+    retryAgentLaunch: async ({ worktreeId, expectedFailureId, clientMutationId, action }) =>
+      callRuntimeResult<WorktreeRetryAgentLaunchResult>('worktree.retryAgentLaunch', {
+        worktree: toRuntimeWorktreeSelector(worktreeId),
+        expectedFailureId,
+        clientMutationId,
+        action
+      }),
+    forgetAgentLaunch: async ({ worktreeId, expectedOperationId, clientMutationId }) =>
+      callRuntimeResult<ForgetUnknownAgentLaunchResult>('worktree.forgetAgentLaunch', {
+        worktree: toRuntimeWorktreeSelector(worktreeId),
+        expectedOperationId,
+        clientMutationId
+      }),
+    // Why: the revoked-principal forget is a local-desktop-owner-only override with
+    // no runtime RPC (plan :498 "no remote caller gets this override"). A paired web
+    // client rejects clean rather than routing it.
+    forgetRevokedRemoteAgentLaunch: () =>
+      Promise.reject(
+        new Error('Forgetting a revoked device’s launch is unavailable in paired web clients.')
+      ),
+    retryBackgroundAgentLaunch: async ({
+      attemptId,
+      expectedFailureId,
+      clientMutationId,
+      action
+    }) =>
+      callRuntimeResult<WorktreeRetryAgentLaunchResult>('worktree.retryBackgroundAgentLaunch', {
+        attemptId,
+        expectedFailureId,
+        clientMutationId,
+        action
+      }),
+    forgetBackgroundAgentLaunch: async ({ attemptId, expectedOperationId, clientMutationId }) =>
+      callRuntimeResult<ForgetUnknownAgentLaunchResult>('worktree.forgetBackgroundAgentLaunch', {
+        attemptId,
+        expectedOperationId,
+        clientMutationId
+      }),
+    pendingAgentLaunchSummary: async () =>
+      callRuntimeResult<PendingAgentLaunchSummary>('worktree.pendingAgentLaunchSummary', {}),
+    unknownAgentLaunchSiblingCount: async ({ worktreeId }) =>
+      callRuntimeResult<{ count: number }>('worktree.unknownAgentLaunchSiblingCount', {
+        worktree: toRuntimeWorktreeSelector(worktreeId)
+      }),
+    forgetUnknownAgentLaunchSiblings: async ({ worktreeId }) =>
+      callRuntimeResult<{ forgottenCount: number }>('worktree.forgetUnknownAgentLaunchSiblings', {
+        worktree: toRuntimeWorktreeSelector(worktreeId)
+      }),
+    // Why: the capture lives in desktop main memory and is not exposed over
+    // pairing; the dialog falls back to the persisted excerpt on web clients.
     getBranchRenameFailureOutput: async () => null,
     onChanged: () => noopUnsubscribe,
     onGitStatusMetadataChanged: () => noopUnsubscribe,
@@ -2931,6 +3027,9 @@ function createPtyApi(): NonNullable<Partial<PreloadApi>['pty']> {
     spawn: () => Promise.reject(new Error('Local PTYs are unavailable in the web client.')),
     write: () => {},
     writeAccepted: () => Promise.resolve(false),
+    // Web panes dismiss via the session.tabs.dismissLaunchNotice runtime RPC;
+    // this local-IPC stub is never the real path, so it fails closed.
+    dismissLaunchNotice: () => Promise.resolve({ ok: false, changed: false }),
     resize: () => {},
     claimViewport: () => {},
     reportGeometry: () => {},

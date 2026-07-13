@@ -1,5 +1,6 @@
 import type { LinkedWorkItemContext } from '@/lib/linked-work-item-context'
 import type { TaskProvider, TuiAgent, WorkspaceCreateTelemetrySource } from '../../../shared/types'
+import type { SourceControlLaunchActionId } from '../../../shared/source-control-ai-actions'
 import type { LaunchSource } from '../../../shared/telemetry-events'
 
 export type LaunchableWorkItem = {
@@ -27,7 +28,10 @@ export type LaunchWorkItemDirectArgs = {
   launchSource: LaunchSource
   telemetrySource?: WorkspaceCreateTelemetrySource
   agentOverride?: TuiAgent
-  agentArgs?: string | null
+  /** Source-control recipe owner locator. When set, the host resolves this
+   *  action's stored agentArgs and applies them to the launch (clients never
+   *  send assembled args). Only `fixChecks` reaches here today, from the
+   *  fix-checks launch surfaces. */
+  sourceControlActionId?: SourceControlLaunchActionId
   promptDelivery?: 'draft' | 'submit-after-ready'
-  launchPlatform?: NodeJS.Platform
 }

@@ -1934,7 +1934,6 @@ function SourceControlInner(): React.JSX.Element {
     commitMessage,
     commitError,
     pushRecoveryPrompt: pushRecovery?.prompt ?? null,
-    updateSettings,
     updateRepo,
     openSettingsTarget,
     openSettingsPage

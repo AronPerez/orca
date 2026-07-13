@@ -1,7 +1,7 @@
 import React from 'react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
-import { getAgentCatalog } from '@/lib/agent-catalog'
-import { filterEnabledTuiAgents } from '../../../../shared/tui-agent-selection'
+import { useLocalAgentCatalog } from '@/hooks/useLocalAgentCatalog'
+import { buildAutomationAgentOptions } from './automation-agent-options'
 import type {
   AutomationSchedulePreset,
   AutomationWorkspaceMode
@@ -107,17 +107,14 @@ export function AutomationEditorDialog({
   const isHermesTarget = createTarget === 'hermes'
   const isCreateMode = !isEditing && !isEditingExternal
   const isHermesCreate = isCreateMode && isHermesTarget
-  const visibleAgents = React.useMemo(() => {
-    const enabledIds = new Set(
-      filterEnabledTuiAgents(
-        getAgentCatalog().map((agent) => agent.id),
-        settings?.disabledTuiAgents
-      )
-    )
-    return getAgentCatalog().filter(
-      (agent) => enabledIds.has(agent.id) || agent.id === draft.agentId
-    )
-  }, [draft.agentId, settings?.disabledTuiAgents])
+  // Custom agents live in the local catalog snapshot, not GlobalSettings, so the
+  // agent picker needs its own read to offer them alongside built-ins.
+  const { snapshot: localAgentCatalog } = useLocalAgentCatalog()
+  const visibleAgents = React.useMemo(
+    () =>
+      buildAutomationAgentOptions(draft.agentId, settings?.disabledTuiAgents, localAgentCatalog),
+    [draft.agentId, settings?.disabledTuiAgents, localAgentCatalog]
+  )
   const scheduleField = (
     <Field
       label={translate('auto.components.automations.AutomationEditorDialog.c4b19094c2', 'Schedule')}

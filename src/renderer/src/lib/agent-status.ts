@@ -1,8 +1,9 @@
-import type { TerminalTab, TuiAgent, Worktree } from '../../../shared/types'
+import type { BuiltInTuiAgent, TerminalTab, TuiAgent, Worktree } from '../../../shared/types'
 import type { AgentStatusState, AgentType } from '../../../shared/agent-status-types'
 import { tabHasLivePty } from './tab-has-live-pty'
 import type { WorktreeStatus } from './worktree-status'
 import { tuiAgentToAgentKind } from '../../../shared/agent-kind'
+import { resolveTuiAgentBaseAgent } from '../../../shared/custom-tui-agents'
 import type { AgentKind } from '../../../shared/telemetry-events'
 
 // Re-export from shared so existing renderer imports work; main process now shares the detection logic.
@@ -94,8 +95,8 @@ export function getWorkingAgentsPerWorktree({
 // Re-export: shared so mobile shows the same agent labels; kept here for existing importers.
 export { formatAgentTypeLabel } from '../../../shared/agent-type-label'
 
-// Why: Record<TuiAgent, true> (not a Set) forces a build error if a TuiAgent member is added without being listed here.
-const ICONABLE_AGENT_TYPES: Record<TuiAgent, true> = {
+// Why: the icon registry is built-in-only; a custom id resolves through its base before rendering.
+const ICONABLE_AGENT_TYPES: Record<BuiltInTuiAgent, true> = {
   claude: true,
   'claude-agent-teams': true,
   openclaude: true,
@@ -145,7 +146,9 @@ export function agentTypeToIconAgent(agentType: AgentType | null | undefined): T
 // Why: shared resolver so all send paths stamp identical agent_kind on agent_prompt_sent telemetry.
 export function agentKindForAgentType(agentType: AgentType | null | undefined): AgentKind {
   const tuiAgent = agentTypeToIconAgent(agentType)
-  return tuiAgent ? tuiAgentToAgentKind(tuiAgent) : 'other'
+  // agentTypeToIconAgent only yields built-ins, so the catalog-free base lookup
+  // is exact here.
+  return tuiAgent ? tuiAgentToAgentKind(resolveTuiAgentBaseAgent(tuiAgent)) : 'other'
 }
 
 // Re-export: freshness gate moved into pane-agent-evidence; keeps existing importers unchanged.

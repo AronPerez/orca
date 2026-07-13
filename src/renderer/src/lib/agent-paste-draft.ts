@@ -1,5 +1,5 @@
 import type { TuiAgent } from '../../../shared/types'
-import { TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
+import { resolveTuiAgentConfig } from '../../../shared/custom-tui-agents'
 import { useAppStore } from '@/store'
 import {
   inspectRuntimeTerminalProcess,
@@ -85,14 +85,22 @@ export async function pasteDraftWhenAgentReady(args: {
 }): Promise<boolean> {
   const { tabId, content, agent, submit, forcePaste, timeoutMs, onTimeout } = args
 
-  const agentConfig = agent ? TUI_AGENT_CONFIG[agent] : null
+  // Why: resolve a custom id to its base harness's config; a raw index of the
+  // built-in-only registry yields undefined for custom ids, silently losing the
+  // base's draft-paste/prefill behavior.
+  const globalSettings = useAppStore.getState().settings
+  const agentConfig = resolveTuiAgentConfig(
+    agent,
+    globalSettings?.customTuiAgents,
+    globalSettings?.deletedCustomTuiAgents
+  )
 
   // Why: agents with a native draft prefill mechanism (flag or env var)
   // launch with the URL already in their input box. Pasting again would
   // duplicate it. Callers should not invoke this helper for those agents;
   // the early return guards against accidental double-injection if a stale
   // call slips through.
-  if (agentDeliversDraftViaNativePrefill(agent, forcePaste)) {
+  if (agentDeliversDraftViaNativePrefill(agentConfig, forcePaste)) {
     return false
   }
 
@@ -139,9 +147,16 @@ export async function pasteDraftToAgentPtyWhenReady(args: {
   onTimeout?: () => void
 }): Promise<boolean> {
   const { tabId, ptyId, content, agent, submit, forcePaste, timeoutMs, onTimeout } = args
-  const agentConfig = agent ? TUI_AGENT_CONFIG[agent] : null
+  // Why: resolve a custom id to its base config before reading draft-paste
+  // signals; a raw registry index would drop the base's behavior for custom ids.
+  const globalSettings = useAppStore.getState().settings
+  const agentConfig = resolveTuiAgentConfig(
+    agent,
+    globalSettings?.customTuiAgents,
+    globalSettings?.deletedCustomTuiAgents
+  )
 
-  if (agentDeliversDraftViaNativePrefill(agent, forcePaste)) {
+  if (agentDeliversDraftViaNativePrefill(agentConfig, forcePaste)) {
     return false
   }
 

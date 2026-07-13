@@ -7,6 +7,7 @@ import {
   resolveCommitMessageAgentChoice
 } from '../../../../shared/commit-message-agent-spec'
 import { getAgentCatalog } from '@/lib/agent-catalog'
+import { saveCommitMessageAiSettings } from '@/lib/agent-catalog-authoring'
 import { useAppStore } from '@/store'
 import {
   EMPTY_COMMIT_MESSAGE_AI_SETTINGS,
@@ -35,7 +36,6 @@ export type AiCommitPrSettingsViewModel = {
 
 export function useAiCommitPrSettings(): AiCommitPrSettingsViewModel {
   const settings = useAppStore((s) => s.settings)
-  const updateSettings = useAppStore((s) => s.updateSettings)
   const [selectPortalRoot, setSelectPortalRoot] = useState<HTMLElement | null>(null)
   const setSelectPortalHost = useCallback((node: HTMLDivElement | null) => {
     setSelectPortalRoot(
@@ -88,7 +88,7 @@ export function useAiCommitPrSettings(): AiCommitPrSettingsViewModel {
     if (!settings) {
       return
     }
-    updateSettings({ commitMessageAi: { ...config, ...patch } })
+    void saveCommitMessageAiSettings({ ...config, ...patch })
   }
 
   const toggleAi = (): void => {

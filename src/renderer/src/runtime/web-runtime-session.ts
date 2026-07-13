@@ -2,6 +2,7 @@
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
 import type {
   BrowserTabCreateResult,
+  RuntimeMobileSessionCreateTerminalAgentLaunchFailure,
   RuntimeMobileSessionCreateTerminalResult,
   RuntimeMobileSessionTabMove,
   RuntimeMobileSessionTabMoveResult,
@@ -12,7 +13,9 @@ import type {
 import type { TerminalPaneSplitSource } from '../../../shared/feature-education-telemetry'
 import type { StartupCommandDelivery } from '../../../shared/codex-startup-delivery'
 import type { SleepingAgentLaunchConfig } from '../../../shared/agent-session-resume'
+import type { AgentLaunchInput } from '../../../shared/agent-launch-spawn-request'
 import type { TerminalPaneLayoutNode, TuiAgent } from '../../../shared/types'
+import type { AgentLaunchNoticeCode } from '../../../shared/agent-launch-contract'
 import type { AppState } from '../store/types'
 import { getRuntimeEnvironmentIdForWorktree } from '../lib/worktree-runtime-owner'
 import { useAppStore } from '../store'
@@ -62,6 +65,11 @@ type CreateWebRuntimeSessionTerminalArgs = {
   agent?: TuiAgent
   launchAgent?: TuiAgent
   viewMode?: 'terminal' | 'chat'
+  /** Sanctioned host-resolved launch path; the host owns command/config/token
+   *  assembly and this is the only field that admits a custom agent id. Accepts
+   *  the full input union (spawn/resume/vaultResume) — the runtime intercepts a
+   *  vaultResume arm on this same `session.tabs.createTerminal` handler. */
+  agentLaunch?: AgentLaunchInput
   activate?: boolean
   selectWorktree?: boolean
 }
@@ -130,6 +138,7 @@ async function createWebRuntimeSessionTerminalResult(
         agent: args.agent,
         ...(args.launchAgent ? { launchAgent: args.launchAgent } : {}),
         ...(args.viewMode ? { viewMode: args.viewMode } : {}),
+        ...(args.agentLaunch ? { agentLaunch: args.agentLaunch } : {}),
         // Why: old hosts understand activate:false; new hosts use select/navigation for caller-local focus.
         activate: false,
         select: args.activate !== false,
@@ -137,9 +146,18 @@ async function createWebRuntimeSessionTerminalResult(
       },
       timeoutMs: 15_000
     })
-    const createdTerminal = unwrapRuntimeRpcResult(
-      response as RuntimeRpcResponse<RuntimeMobileSessionCreateTerminalResult>
+    const created = unwrapRuntimeRpcResult(
+      response as RuntimeRpcResponse<
+        | RuntimeMobileSessionCreateTerminalResult
+        | RuntimeMobileSessionCreateTerminalAgentLaunchFailure
+      >
     )
+    // Why: a pre-spawn host-resolved agentLaunch failure is an RPC success that
+    // created NO tab; treat it as a launch failure for the web-host surface.
+    if (!('tab' in created)) {
+      return null
+    }
+    const createdTerminal = created
     if (args.activate !== false) {
       // Why: record focus intent so the reconcile follows to this new terminal instead of sticky-keeping the prior tab.
       recordWebSessionFocusIntent(args.worktreeId, createdTerminal.tab.id)
@@ -768,7 +786,54 @@ export function setWebRuntimeTabProps(args: {
   return true
 }
 
-// Why: local pane.terminal.clear() is undone by the next host snapshot replay; clear the host buffer so it sticks.
+/** Ask the remote host (owner) to dismiss a launch notice for this terminal. */
+export function dismissWebRuntimeLaunchNotice(args: {
+  worktreeId: string
+  tabId: string
+  launchToken: string
+  code: AgentLaunchNoticeCode
+}): boolean {
+  const environmentId =
+    getRuntimeEnvironmentIdForWorktree(useAppStore.getState(), args.worktreeId) ?? null
+  if (!environmentId || !isWebRuntimeSessionActive(environmentId)) {
+    return false
+  }
+  const state = useAppStore.getState()
+  void import('./web-session-tabs-sync')
+    .then(({ resolveHostSessionTabIdForWebSessionTab }) => {
+      const hostTabId =
+        resolveHostSessionTabIdForWebSessionTab(state, {
+          environmentId,
+          worktreeId: args.worktreeId,
+          tabId: args.tabId
+        }) ?? (isWebTerminalSurfaceTabId(args.tabId) ? toHostSessionTabId(args.tabId) : args.tabId)
+      return window.api.runtimeEnvironments.call({
+        selector: environmentId,
+        method: 'session.tabs.dismissLaunchNotice',
+        params: {
+          worktree: toRuntimeWorktreeSelector(args.worktreeId),
+          tabId: hostTabId,
+          launchToken: args.launchToken,
+          code: args.code
+        },
+        timeoutMs: 15_000
+      })
+    })
+    .then((response) => {
+      unwrapRuntimeRpcResult(response as RuntimeRpcResponse<{ ok: boolean; changed: boolean }>)
+    })
+    .catch((error) => {
+      console.warn(
+        '[web-runtime-session] failed to dismiss launch notice:',
+        error instanceof Error ? error.message : String(error)
+      )
+    })
+  return true
+}
+
+// Why: clearing scrollback locally (pane.terminal.clear()) is undone by the next
+// host snapshot/re-subscribe, which replays the host buffer. Clear the host
+// buffer too so the clear actually sticks on a remote-server pane.
 export function clearWebRuntimeTerminalBuffer(ptyId: string | null | undefined): boolean {
   if (!ptyId) {
     return false

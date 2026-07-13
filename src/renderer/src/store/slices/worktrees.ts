@@ -19,6 +19,11 @@ import type {
   WorktreeMeta
 } from '../../../../shared/types'
 import type { RuntimeWorktreeListResult } from '../../../../shared/runtime-types'
+import type {
+  WorktreeRetryAgentLaunchResult,
+  ForgetUnknownAgentLaunchResult
+} from '../../../../shared/agent-launch-worktree-recovery'
+import type { PendingAgentLaunchSummary } from '../../../../shared/agent-launch-pending-summary'
 import {
   findWorktreeById,
   applyWorktreeUpdates,
@@ -43,7 +48,8 @@ import {
   callRuntimeRpc,
   getActiveRuntimeTarget,
   isRuntimeScopeForbiddenError,
-  RuntimeRpcCallError
+  RuntimeRpcCallError,
+  type RuntimeClientTarget
 } from '../../runtime/runtime-rpc-client'
 import { toRuntimeWorktreeSelector } from '../../runtime/runtime-worktree-selector'
 import { getHostedReviewCacheKey, refreshHostedReviewCard } from './hosted-review'
@@ -2920,6 +2926,8 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     options
   ) => {
     const automationProvenanceRequest = options?.automationProvenanceRequest
+    const agentLaunch = options?.agentLaunch
+    const agentLaunchTelemetry = options?.agentLaunchTelemetry
     try {
       for (let attempt = 0; attempt < CLIENT_WORKTREE_CREATE_MAX_ATTEMPTS; attempt += 1) {
         const candidateName = getClientWorktreeCreateCandidate(name, attempt)
@@ -2969,7 +2977,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
             ...(linkedGiteaPR !== undefined ? { linkedGiteaPR } : {}),
             ...(startup ? { startup } : {}),
             ...(creationId ? { creationId } : {}),
-            ...(automationProvenanceRequest ? { automationProvenanceRequest } : {})
+            ...(automationProvenanceRequest ? { automationProvenanceRequest } : {}),
+            ...(agentLaunch ? { agentLaunch } : {}),
+            ...(agentLaunchTelemetry ? { agentLaunchTelemetry } : {})
           }
           const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
           const result =
@@ -3025,11 +3035,23 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
                             : {}),
                           activate: true
                         }
-                      : {})
+                      : {}),
+                    ...(agentLaunch ? { agentLaunch } : {}),
+                    ...(agentLaunchTelemetry ? { agentLaunchTelemetry } : {})
                   },
                   { timeoutMs: 10 * 60_000 }
                 )
-          // Why: worktrees.onChanged can add this worktree before this callback runs; appending blindly would duplicate it (React key clash).
+          // A pre-create agent-launch rejection created no worktree, so there is
+          // nothing to insert — hand the union back so the initiating composer can
+          // stay open with its draft and the client-safe recovery hints.
+          if (result.created === false) {
+            return result
+          }
+          // Why: a file watcher (worktrees.onChanged) can fire between the
+          // backend creating the worktree and this callback running, causing
+          // fetchWorktrees to add the worktree first. Appending unconditionally
+          // then produces a duplicate entry in worktreesByRepo, which gives
+          // React duplicate keys and can corrupt terminal DOM containers.
           set((s) => {
             const hostId = repoHostId(s, repoId)
             const createdWorktree = withRepoHostOwnership(
@@ -3093,6 +3115,147 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       console.error('Failed to create worktree:', err)
       throw err
     }
+  },
+
+  retryWorktreeAgentLaunch: async ({ worktreeId, expectedFailureId, action }) => {
+    const repoId = getRepoIdFromWorktreeId(worktreeId)
+    // A fresh canonical-lowercase-UUID per click; crypto.randomUUID() already
+    // emits that form, which the host idempotency schema requires.
+    const clientMutationId = globalThis.crypto.randomUUID()
+    const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
+    // launched/failed reconcile into WorktreeMeta via the host's worktrees:changed
+    // notification; the card just needs the tri-state result to render blocked/
+    // rejected reasons, so no local set() here.
+    if (target.kind === 'local') {
+      return window.api.worktrees.retryAgentLaunch({
+        worktreeId,
+        expectedFailureId,
+        clientMutationId,
+        action
+      })
+    }
+    return callRuntimeRpc<WorktreeRetryAgentLaunchResult>(
+      target,
+      'worktree.retryAgentLaunch',
+      {
+        worktree: toRuntimeWorktreeSelector(worktreeId),
+        expectedFailureId,
+        clientMutationId,
+        action
+      },
+      { timeoutMs: 10 * 60_000 }
+    )
+  },
+
+  forgetWorktreeAgentLaunch: async ({ worktreeId, expectedOperationId }) => {
+    const repoId = getRepoIdFromWorktreeId(worktreeId)
+    const clientMutationId = globalThis.crypto.randomUUID()
+    const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
+    if (target.kind === 'local') {
+      return window.api.worktrees.forgetAgentLaunch({
+        worktreeId,
+        expectedOperationId,
+        clientMutationId
+      })
+    }
+    return callRuntimeRpc<ForgetUnknownAgentLaunchResult>(
+      target,
+      'worktree.forgetAgentLaunch',
+      {
+        worktree: toRuntimeWorktreeSelector(worktreeId),
+        expectedOperationId,
+        clientMutationId
+      },
+      { timeoutMs: 30_000 }
+    )
+  },
+
+  retryBackgroundAgentLaunch: async ({ attemptId, worktreeId, expectedFailureId, action }) => {
+    const repoId = getRepoIdFromWorktreeId(worktreeId)
+    const clientMutationId = globalThis.crypto.randomUUID()
+    const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
+    if (target.kind === 'local') {
+      return window.api.worktrees.retryBackgroundAgentLaunch({
+        attemptId,
+        expectedFailureId,
+        clientMutationId,
+        action
+      })
+    }
+    return callRuntimeRpc<WorktreeRetryAgentLaunchResult>(
+      target,
+      'worktree.retryBackgroundAgentLaunch',
+      { attemptId, expectedFailureId, clientMutationId, action },
+      { timeoutMs: 10 * 60_000 }
+    )
+  },
+
+  forgetBackgroundAgentLaunch: async ({ attemptId, worktreeId, expectedOperationId }) => {
+    const repoId = getRepoIdFromWorktreeId(worktreeId)
+    const clientMutationId = globalThis.crypto.randomUUID()
+    const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
+    if (target.kind === 'local') {
+      return window.api.worktrees.forgetBackgroundAgentLaunch({
+        attemptId,
+        expectedOperationId,
+        clientMutationId
+      })
+    }
+    return callRuntimeRpc<ForgetUnknownAgentLaunchResult>(
+      target,
+      'worktree.forgetBackgroundAgentLaunch',
+      { attemptId, expectedOperationId, clientMutationId },
+      { timeoutMs: 30_000 }
+    )
+  },
+
+  unknownAgentLaunchSiblingPreflight: async ({ worktreeId }) => {
+    const repoId = getRepoIdFromWorktreeId(worktreeId)
+    const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
+    // A local anchor never has bulk-eligible siblings (:498 only clears a
+    // disconnected remote provider), so the host returns 0 and the opt-in stays
+    // hidden; the host name is moot there.
+    if (target.kind === 'local') {
+      const { count } = await window.api.worktrees.unknownAgentLaunchSiblingCount({ worktreeId })
+      return { count, hostName: '' }
+    }
+    const { count } = await callRuntimeRpc<{ count: number }>(
+      target,
+      'worktree.unknownAgentLaunchSiblingCount',
+      { worktree: toRuntimeWorktreeSelector(worktreeId) },
+      { timeoutMs: 30_000 }
+    )
+    const environment = get().runtimeEnvironments.find((entry) => entry.id === target.environmentId)
+    return { count, hostName: environment?.name || target.environmentId }
+  },
+
+  forgetUnknownAgentLaunchSiblings: async ({ worktreeId }) => {
+    const repoId = getRepoIdFromWorktreeId(worktreeId)
+    const target = getActiveRuntimeTarget(settingsForRepoOwner(get(), repoId))
+    if (target.kind === 'local') {
+      return window.api.worktrees.forgetUnknownAgentLaunchSiblings({ worktreeId })
+    }
+    return callRuntimeRpc<{ forgottenCount: number }>(
+      target,
+      'worktree.forgetUnknownAgentLaunchSiblings',
+      { worktree: toRuntimeWorktreeSelector(worktreeId) },
+      { timeoutMs: 30_000 }
+    )
+  },
+
+  fetchPendingAgentLaunchSummary: async (target?: RuntimeClientTarget) => {
+    // The summary is principal-scoped host-side, so it takes the rejection's
+    // runtime target rather than a worktree id; local (or omitted) hits the local
+    // IPC mirror, which in the paired-web bundle already routes over RPC.
+    if (!target || target.kind === 'local') {
+      return window.api.worktrees.pendingAgentLaunchSummary()
+    }
+    return callRuntimeRpc<PendingAgentLaunchSummary>(
+      target,
+      'worktree.pendingAgentLaunchSummary',
+      {},
+      { timeoutMs: 30_000 }
+    )
   },
 
   beginPendingWorktreeCreation: (entry) => {

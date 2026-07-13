@@ -12,18 +12,16 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { AgentIcon } from '@/lib/agent-catalog'
+import { AgentIcon, type AgentCatalogEntry } from '@/lib/agent-catalog'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
-import { getTerminalQuickCommandAgentOptions } from './terminal-quick-command-agent-options'
 import type { TerminalQuickCommandDialogDraftMemory } from './terminal-quick-command-dialog-draft'
-
-const QUICK_COMMAND_AGENT_OPTIONS = getTerminalQuickCommandAgentOptions()
 
 type TerminalQuickCommandContentSectionProps = {
   draft: TerminalQuickCommand
   isAgentAction: boolean
   selectedAgent: TuiAgent
+  agentOptions: readonly AgentCatalogEntry[]
   draftMemoryRef: MutableRefObject<TerminalQuickCommandDialogDraftMemory>
   setDraft: Dispatch<SetStateAction<TerminalQuickCommand>>
 }
@@ -32,6 +30,7 @@ export function TerminalQuickCommandContentSection({
   draft,
   isAgentAction,
   selectedAgent,
+  agentOptions,
   draftMemoryRef,
   setDraft
 }: TerminalQuickCommandContentSectionProps): React.JSX.Element {
@@ -90,12 +89,12 @@ export function TerminalQuickCommandContentSection({
                 sideOffset={4}
                 className="max-h-[min(20rem,var(--radix-select-content-available-height))] w-[--radix-select-trigger-width]"
               >
-                {QUICK_COMMAND_AGENT_OPTIONS.map((entry) => {
+                {agentOptions.map((entry) => {
                   const supported = supportsTerminalAgentQuickCommand(entry.id)
                   return (
                     <SelectItem key={entry.id} value={entry.id} disabled={!supported}>
                       <span className="flex min-w-0 items-center gap-2">
-                        <AgentIcon agent={entry.id} size={16} />
+                        <AgentIcon agent={entry.baseAgent ?? entry.id} size={16} />
                         <span className="flex min-w-0 flex-col">
                           <span className="truncate">{entry.label}</span>
                           {!supported ? (

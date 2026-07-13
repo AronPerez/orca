@@ -95,19 +95,18 @@ describe('activateAndRevealWorktree created agent reopen', () => {
 
     expect(result).toEqual({ primaryTabId: reopenedTab?.id })
     expect(reopenedTab).toBeDefined()
+    // Reopen threads only the requested agent identity; the host resolves the
+    // command/args/env/token via the pty:spawn agentLaunch boundary.
     expect(state.pendingStartupByTabId[reopenedTab!.id]).toEqual({
-      command: "codex '--dangerously-bypass-approvals-and-sandbox'",
-      env: {},
+      command: '',
       launchAgent: 'codex',
-      launchConfig: {
-        agentCommand: "codex '--dangerously-bypass-approvals-and-sandbox'",
-        agentArgs: '--dangerously-bypass-approvals-and-sandbox',
-        agentEnv: {}
+      agentLaunch: {
+        selection: { kind: 'agent', agent: 'codex' },
+        allowEmptyPromptLaunch: true
       },
-      launchToken: expect.any(String),
-      sessionOptions: undefined,
+      // agent_kind is host-authoritative (overwritten from the resolved receipt
+      // before the emit), so the reopen payload threads only surface fields.
       telemetry: {
-        agent_kind: 'codex',
         launch_source: 'sidebar',
         request_kind: 'resume'
       }
@@ -115,7 +114,7 @@ describe('activateAndRevealWorktree created agent reopen', () => {
     expect(revealWorktreeInSidebar).toHaveBeenCalledWith(worktree.id)
   })
 
-  it('uses WSL launch quoting when reopening a Windows-path WSL project agent', () => {
+  it('threads identity-only agentLaunch when reopening a Windows-path WSL project agent', () => {
     const worktree = {
       ...makeWorktree(),
       path: 'C:\\Users\\jinwo\\repo\\feature'
@@ -174,8 +173,13 @@ describe('activateAndRevealWorktree created agent reopen', () => {
     const reopenedTab = state.tabsByWorktree[worktree.id]?.[0]
 
     expect(result).toEqual({ primaryTabId: reopenedTab?.id })
-    expect(state.pendingStartupByTabId[reopenedTab!.id]?.command).toContain("'don'\\''t'")
-    expect(state.pendingStartupByTabId[reopenedTab!.id]?.command).not.toContain("'don''t'")
+    // Platform-correct (WSL) quoting is now the host's job on the agentLaunch
+    // boundary; the renderer emits no command and never quotes args itself.
+    expect(state.pendingStartupByTabId[reopenedTab!.id]?.command).toBe('')
+    expect(state.pendingStartupByTabId[reopenedTab!.id]?.agentLaunch).toEqual({
+      selection: { kind: 'agent', agent: 'codex' },
+      allowEmptyPromptLaunch: true
+    })
   })
 
   it('does not duplicate a sleeping agent session owned by a preserved slept pane', () => {

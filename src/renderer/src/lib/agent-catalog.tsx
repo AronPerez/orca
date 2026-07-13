@@ -1,7 +1,7 @@
 import type React from 'react'
 import { ClaudeIcon, DroidIcon, OpenAIIcon } from '@/components/status-bar/icons'
 import openClaudeLogoUrl from '../../../../resources/openclaude-logo.png?url'
-import type { TuiAgent } from '../../../shared/types'
+import type { BuiltInTuiAgent, TuiAgent } from '../../../shared/types'
 import { getTuiAgentLaunchCommand, TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
 import {
   AgentLetterIcon,
@@ -27,6 +27,9 @@ export type AgentCatalogEntry = {
   faviconDomain?: string
   /** Homepage/install docs URL, sourced from the README agent badge list. */
   homepageUrl: string
+  /** Set for custom-agent rows so pickers render the base harness icon instead
+   *  of the letter fallback (the custom id is not a recognized catalog id). */
+  baseAgent?: BuiltInTuiAgent
 }
 
 function getCatalogPlatform(): NodeJS.Platform {

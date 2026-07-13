@@ -1,38 +1,16 @@
-import { buildAgentStartupPlan } from '@/lib/tui-agent-startup'
-import { tuiAgentToAgentKind } from '@/lib/telemetry'
-import { isTuiAgentEnabled } from '../../../shared/tui-agent-selection'
-import {
-  resolveTuiAgentLaunchArgs,
-  resolveTuiAgentLaunchEnv
-} from '../../../shared/tui-agent-launch-defaults'
-import type { AgentStartedTelemetry } from '@/lib/worktree-activation'
-import type { StartupCommandDelivery } from '../../../shared/codex-startup-delivery'
-import type { SleepingAgentLaunchConfig } from '../../../shared/agent-session-resume'
-import type { GlobalSettings, OnboardingState, TuiAgent } from '../../../shared/types'
-import { resolveNativeChatSessionOptionDefaults } from '../../../shared/native-chat-session-option-defaults'
-import type { SessionOptionValue } from '../../../shared/native-chat-session-options'
-
-export type OnboardingFolderAgentStartup = {
-  command: string
-  env?: Record<string, string>
-  launchConfig?: SleepingAgentLaunchConfig
-  launchAgent?: TuiAgent
-  startupCommandDelivery?: StartupCommandDelivery
-  sessionOptions?: Record<string, SessionOptionValue>
-  telemetry: AgentStartedTelemetry
-}
-
-function getClientPlatform(): NodeJS.Platform {
-  if (navigator.userAgent.includes('Windows')) {
-    return 'win32'
-  }
-  return navigator.userAgent.includes('Mac') ? 'darwin' : 'linux'
-}
+import { isTuiAgentEnabled, toLegacyAutoPreference } from '../../../shared/tui-agent-selection'
+import type { WorktreeStartupPayload } from '@/lib/worktree-activation'
+import type { GlobalSettings, OnboardingState } from '../../../shared/types'
 
 export function buildOnboardingFolderAgentStartup(
   settings: GlobalSettings | null
-): OnboardingFolderAgentStartup | undefined {
-  const agent = settings?.defaultTuiAgent
+): WorktreeStartupPayload | undefined {
+  // Why: onboarding/non-git-folder seeds an agent tab ONLY when the user picked a
+  // concrete, enabled default agent. Auto ('auto'/legacy null) and Blank must seed
+  // no agent (a plain terminal), so the gate stays client-side — a `{kind:'default'}`
+  // request would let the host auto-pick a detected agent on Auto, which this
+  // surface must not do.
+  const agent = toLegacyAutoPreference(settings?.defaultTuiAgent)
   if (
     !settings ||
     !agent ||
@@ -42,34 +20,16 @@ export function buildOnboardingFolderAgentStartup(
     return undefined
   }
 
-  const startupPlan = buildAgentStartupPlan({
-    agent,
-    prompt: '',
-    cmdOverrides: settings.agentCmdOverrides ?? {},
-    agentArgs: resolveTuiAgentLaunchArgs(agent, settings.agentDefaultArgs),
-    agentEnv: resolveTuiAgentLaunchEnv(agent, settings.agentDefaultEnv),
-    sessionOptions: resolveNativeChatSessionOptionDefaults(
-      settings.nativeChatSessionOptions,
-      agent
-    ),
-    platform: getClientPlatform(),
-    allowEmptyPromptLaunch: true
-  })
-  if (!startupPlan) {
-    return undefined
-  }
-
+  // Identity-only launch: the host resolves the command, config, and token from
+  // the current default; the client never assembles argv/env. `launchAgent` is
+  // the tab's identity hint until the host resolves.
   return {
-    command: startupPlan.launchCommand,
-    ...(startupPlan.env ? { env: startupPlan.env } : {}),
-    launchConfig: startupPlan.launchConfig,
+    command: '',
     launchAgent: agent,
-    ...(startupPlan.sessionOptions ? { sessionOptions: startupPlan.sessionOptions } : {}),
-    ...(startupPlan.startupCommandDelivery
-      ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
-      : {}),
+    agentLaunch: { selection: { kind: 'default' }, allowEmptyPromptLaunch: true },
+    // Host overwrites agent_kind from the resolved receipt before the emit, so
+    // this host-resolved launch threads only the surface-owned fields.
     telemetry: {
-      agent_kind: tuiAgentToAgentKind(agent),
       launch_source: 'onboarding',
       request_kind: 'new'
     }
@@ -92,7 +52,7 @@ export function buildDismissedOnboardingFolderAgentStartup(
   settings: GlobalSettings | null,
   onboarding: OnboardingState | null,
   hasExistingProject: boolean
-): OnboardingFolderAgentStartup | undefined {
+): WorktreeStartupPayload | undefined {
   if (!shouldSeedFolderAgentAfterDismissedOnboarding(onboarding, hasExistingProject)) {
     return undefined
   }

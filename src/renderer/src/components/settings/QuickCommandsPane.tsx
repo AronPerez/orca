@@ -10,6 +10,7 @@ import { useAppStore } from '../../store'
 import { Button } from '../ui/button'
 import { Label } from '../ui/label'
 import { useConfirmationDialog } from '@/components/confirmation-dialog'
+import { deleteTerminalQuickCommand, saveTerminalQuickCommand } from '@/lib/agent-catalog-authoring'
 import { getSettingOwnershipSummary } from './setting-ownership'
 import { translate } from '@/i18n/i18n'
 import { QuickCommandsList } from './QuickCommandsList'
@@ -17,7 +18,6 @@ import { GLOBAL_SCOPE_KEY, QuickCommandsScopeFilter } from './QuickCommandsScope
 
 type QuickCommandsPaneProps = {
   settings: GlobalSettings
-  updateSettings: (updates: Partial<GlobalSettings>) => void
   addCommandIntentSignal?: number
 }
 
@@ -41,7 +41,6 @@ export function shouldOpenQuickCommandAddIntent(
 
 export function QuickCommandsPane({
   settings,
-  updateSettings,
   addCommandIntentSignal
 }: QuickCommandsPaneProps): React.JSX.Element {
   const repos = useAppStore((s) => s.repos)
@@ -135,15 +134,10 @@ export function QuickCommandsPane({
   }
 
   const saveCommand = (next: TerminalQuickCommand): void => {
-    // Why: re-read from the store so save lands on the latest list when
-    // multiple edit dialogs fire in quick succession.
-    const latest = useAppStore.getState().settings?.terminalQuickCommands ?? []
-    const isEdit = latest.some((command) => command.id === next.id)
-    const nextList = isEdit
-      ? latest.map((command) => (command.id === next.id ? next : command))
-      : [...latest, next]
+    // The reference mutation is an authoritative insert-or-update by id, so
+    // concurrent edit dialogs no longer need a store re-read + full-list rebuild.
     useAppStore.getState().recordFeatureInteraction('quick-commands')
-    updateSettings({ terminalQuickCommands: nextList })
+    void saveTerminalQuickCommand(next)
   }
 
   const removeCommand = async (command: TerminalQuickCommand): Promise<void> => {
@@ -163,13 +157,7 @@ export function QuickCommandsPane({
     if (!confirmed) {
       return
     }
-    // Why: re-read latest list from the store at delete time — the await above
-    // can span other settings changes, and a stale closure would resurrect
-    // commands that were removed concurrently.
-    const latest = useAppStore.getState().settings?.terminalQuickCommands ?? []
-    updateSettings({
-      terminalQuickCommands: latest.filter((c) => c.id !== command.id)
-    })
+    void deleteTerminalQuickCommand(command.id)
   }
 
   return (

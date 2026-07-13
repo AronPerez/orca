@@ -1,17 +1,8 @@
-import { toast } from 'sonner'
 import { useAppStore } from '@/store'
-import { CLIENT_PLATFORM } from '@/lib/new-workspace'
-import { buildAgentResumeStartupPlan } from '@/lib/tui-agent-startup'
 import { tuiAgentToAgentKind } from '@/lib/telemetry'
 import { reconcileTabOrder } from '@/components/tab-bar/reconcile-order'
-import { isWslUncPath } from '../../../shared/wsl-paths'
-import { getLocalProjectExecutionRuntimeContext } from '@/lib/local-preflight-context'
-import {
-  resolveTuiAgentLaunchArgs,
-  resolveTuiAgentLaunchEnv
-} from '../../../shared/tui-agent-launch-defaults'
 import type { SleepingAgentSessionRecord } from '../../../shared/agent-session-resume'
-import { translate } from '@/i18n/i18n'
+import type { AgentLaunchResumeRequest } from '../../../shared/agent-launch-spawn-request'
 
 export type ResumeSleepingAgentSessionsOptions = {
   suppressNavigation?: boolean
@@ -23,23 +14,6 @@ export type ResumeSleepingAgentSessionsOptions = {
   /** Called with the tab id of each freshly launched resume tab, so
    *  navigation-suppressed callers can background-mount exactly those tabs. */
   onSessionLaunched?: (tabId: string) => void
-}
-
-function getResumeLaunchPlatform(worktreeId: string): NodeJS.Platform {
-  const state = useAppStore.getState()
-  const worktree = state.getKnownWorktreeById(worktreeId)
-  const repo = worktree ? state.repos.find((entry) => entry.id === worktree.repoId) : null
-  const projectRuntime = getLocalProjectExecutionRuntimeContext(state, worktreeId)
-  if (projectRuntime?.status === 'repair-required') {
-    return projectRuntime.repair.preferredRuntime.kind === 'wsl' ? 'linux' : CLIENT_PLATFORM
-  }
-  if (projectRuntime?.status === 'resolved' && projectRuntime.runtime.kind === 'wsl') {
-    return 'linux'
-  }
-  if (repo?.connectionId || (worktree?.path && isWslUncPath(worktree.path))) {
-    return 'linux'
-  }
-  return CLIENT_PLATFORM
 }
 
 function appendTabToWorktreeOrder(worktreeId: string, tabId: string): void {
@@ -67,55 +41,61 @@ export function launchSleepingAgentSession(
   options?: ResumeSleepingAgentSessionsOptions
 ): boolean {
   const state = useAppStore.getState()
-  const launchConfig = record.launchConfig
-  const startupPlan = buildAgentResumeStartupPlan({
-    agent: record.agent,
-    providerSession: record.providerSession,
-    cmdOverrides: state.settings?.agentCmdOverrides ?? {},
-    agentArgs:
-      launchConfig !== undefined
-        ? launchConfig.agentArgs
-        : resolveTuiAgentLaunchArgs(record.agent, state.settings?.agentDefaultArgs),
-    agentEnv:
-      launchConfig !== undefined
-        ? launchConfig.agentEnv
-        : resolveTuiAgentLaunchEnv(record.agent, state.settings?.agentDefaultEnv),
-    ...(launchConfig?.agentCommand ? { agentCommand: launchConfig.agentCommand } : {}),
-    platform: getResumeLaunchPlatform(record.worktreeId)
-  })
-  if (!startupPlan) {
-    toast.error(
-      translate(
-        'auto.lib.resume.sleeping.agent.session.f235f604fd',
-        'This agent session cannot be resumed.'
-      )
-    )
-    return false
+  // Why: resume travels by session ownership key only. The host loads the
+  // private record and resolves command/env/launchConfig/token itself, returning
+  // them through the launched receipt; the client never assembles resume argv.
+  // The key is base-collapsed (baseAgent, not the requested custom id), so two
+  // custom ids on one base resume the same owner.
+  const baseAgent = record.baseAgent ?? record.agent
+  const agentLaunch: AgentLaunchResumeRequest = {
+    resume: {
+      operation: 'resume',
+      sessionKey: {
+        worktreeId: record.worktreeId,
+        baseAgent,
+        providerSessionId: record.providerSession.id
+      }
+    }
   }
+  // Why: the tab re-displays the ORIGINALLY requested identity (the custom id, if
+  // any) while ownership/telemetry stay on the resumable base.
+  const requestedAgent = record.requestedAgent ?? record.agent
 
   const tab = state.createTab(record.worktreeId, undefined, undefined, {
-    launchAgent: record.agent,
+    launchAgent: requestedAgent,
     ...(options?.suppressNavigation ? { activate: false, recordInteraction: false } : {})
   })
   state.queueTabStartupCommand(tab.id, {
-    command: startupPlan.launchCommand,
-    ...(startupPlan.env ? { env: startupPlan.env } : {}),
-    launchConfig: startupPlan.launchConfig,
-    resumeProviderSession: record.providerSession,
-    launchAgent: record.agent,
-    ...(startupPlan.startupCommandDelivery
-      ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
+    command: '',
+    agentLaunch,
+    // Why: one-release legacy handoff. A pre-U5 record carries `launchConfig` (new
+    // host-owned records do not); surrender it plus its recorded execution owner so
+    // the host can prove the opaque command still targets the same host and ingest
+    // it on first resume. With `agentLaunch` present the host ignores these until
+    // its ingest lands, so this is contract-compatible today and functional the
+    // moment the ingest ships — no second renderer pass.
+    // Deletion trigger: legacy `launchConfig` field retirement (U10 cleanup).
+    ...(record.launchConfig
+      ? {
+          launchConfig: record.launchConfig,
+          legacyResumeRecordedConnectionId: record.connectionId ?? null
+        }
       : {}),
+    // Why: launchAgent + resumeProviderSession stay renderer-side — the resume
+    // replay-protection dedup reads them from pendingStartupByTabId to avoid
+    // double-launching a provider session that is already queued.
+    resumeProviderSession: record.providerSession,
+    launchAgent: requestedAgent,
     showSessionRestoredBanner: true,
     telemetry: {
-      agent_kind: tuiAgentToAgentKind(record.agent),
+      agent_kind: tuiAgentToAgentKind(baseAgent),
       launch_source: 'sidebar',
       request_kind: 'resume'
     }
   })
   state.claimAutomaticAgentResume(tab.id, {
     worktreeId: record.worktreeId,
-    launchAgent: record.agent,
+    launchAgent: requestedAgent,
     providerSession: record.providerSession
   })
   state.clearSleepingAgentSession(record.paneKey)

@@ -24,6 +24,7 @@ import type {
   WorkspaceCreateTelemetrySource,
   WorkspaceStatus
 } from '../../../shared/types'
+import { toLegacyAutoPreference } from '../../../shared/tui-agent-selection'
 import type { TaskSourceContext } from '../../../shared/task-source-context'
 import { translate } from '@/i18n/i18n'
 import { getWorkspaceComposerInitialFocusTarget } from '@/lib/workspace-composer-initial-focus'
@@ -164,7 +165,8 @@ function QuickTabBody({
     undefined
   )
   const preferredQuickAgent = useMemo<TuiAgent | null>(() => {
-    const pref = settings?.defaultTuiAgent
+    // 'auto' is the migrated legacy null default; map it back for the picker.
+    const pref = toLegacyAutoPreference(settings?.defaultTuiAgent)
     // Why: detection can still be pending when quick-create submits; keep the
     // prior catalog fallback while filtering disabled agents out of that choice.
     return pickQuickWorkspaceAgent(pref, cardProps.detectedAgentIds, settings?.disabledTuiAgents)

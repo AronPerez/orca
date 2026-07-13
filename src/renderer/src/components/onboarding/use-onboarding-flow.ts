@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { getAgentCatalog } from '@/lib/agent-catalog'
+import { setDefaultTuiAgent } from '@/lib/agent-catalog-authoring'
 import { useAppStore } from '@/store'
 import { activateAndRevealWorktree } from '@/lib/worktree-activation'
 import { applyDocumentTheme } from '@/lib/document-theme'
@@ -26,6 +27,7 @@ import type {
   Repo,
   TuiAgent
 } from '../../../../shared/types'
+import { toLegacyAutoPreference } from '../../../../shared/tui-agent-selection'
 import { STEPS, type StepNumber } from './use-onboarding-flow-types'
 import { persistStep, useCloseWith, usePersistCurrentStep } from './use-onboarding-flow-persistence'
 import { callRuntimeRpc, getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
@@ -191,7 +193,7 @@ export async function prepareSkippedOnboardingPreferences({
     }
     // Why: the repo step seeds folder terminals from saved settings, so preserve the visible agent choice on skip.
     if (currentStepId === 'agent' && selectedAgent) {
-      await updateSettings({ defaultTuiAgent: selectedAgent })
+      await setDefaultTuiAgent(selectedAgent)
     }
     return true
   } catch (err) {
@@ -255,11 +257,11 @@ export function useOnboardingFlow(
     'forward'
   )
   const [stepIndex, setStepIndex] = useState(initialStep)
-  const [selectedAgent, setSelectedAgent] = useState<TuiAgent | null>(
-    settings?.defaultTuiAgent && settings.defaultTuiAgent !== 'blank'
-      ? settings.defaultTuiAgent
-      : null
-  )
+  const [selectedAgent, setSelectedAgent] = useState<TuiAgent | null>(() => {
+    // 'auto' (migrated legacy null) means no fixed initial agent.
+    const pref = toLegacyAutoPreference(settings?.defaultTuiAgent)
+    return pref && pref !== 'blank' ? pref : null
+  })
   const [yoloPermissions, setYoloPermissions] = useState(
     resolveAgentPermissionModeSummary({
       agentDefaultArgs: settings?.agentDefaultArgs,

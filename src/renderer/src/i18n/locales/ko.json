@@ -2656,7 +2656,8 @@
                   "c00421d320": "포크 컨텍스트가 복사되었습니다. agent를 실행하고 붙여넣어 포크를 시작합니다.",
                   "f62b40e2c7": "복사할 터미널 컨텍스트가 없습니다",
                   "373a3103e7": "컨텍스트가 복사되었습니다",
-                  "3fc568a49d": "컨텍스트 복사 실패"
+                  "3fc568a49d": "컨텍스트 복사 실패",
+                  "customForkUnavailable": "Forking isn't available for custom agents yet"
                 }
               }
             },
@@ -5058,7 +5059,9 @@
           "3f1bdf3cb4": "환경 텍스트가 너무 커서 안전하게 파싱할 수 없습니다.",
           "codexSessionSource": "가져올 Codex 홈",
           "codexSessionSourceInfo": "Codex 기록 가져오기 정보",
-          "codexSessionSourceTooltip": "Orca는 격리된 홈에서 Codex를 실행합니다. 기존 Codex 홈을 지정하여 세션 기록을 가져옵니다. 비워두면 ~/.codex를 사용합니다."
+          "codexSessionSourceTooltip": "Orca는 격리된 홈에서 Codex를 실행합니다. 기존 Codex 홈을 지정하여 세션 기록을 가져옵니다. 비워두면 ~/.codex를 사용합니다.",
+          "agentsReadOnlyTitle": "Agent 설정은 데스크톱에서 관리됩니다",
+          "agentsReadOnlyDescription": "페어링된 클라이언트입니다. agents를 추가, 편집, 삭제하거나 기본값을 변경하려면 Orca 데스크톱 앱을 사용하세요."
         },
         "AppIconSelector": {
           "d5a112dc9b": "다음 아이콘",
@@ -9263,6 +9266,232 @@
         "MobileRelayBetaNotice": {
           "notice": "Orca Relay is in beta."
         },
+        "AgentCatalogList": {
+          "searchPlaceholder": "Search agents by name, harness, or command…",
+          "searchLabel": "Search agents",
+          "noMatch": "No agents match your search.",
+          "listLabel": "Agents"
+        },
+        "AgentCatalogManager": {
+          "title": "Agents",
+          "refreshing": "Refreshing…",
+          "refresh": "Refresh",
+          "newAgent": "New agent",
+          "zeroCustomHelper": "Duplicate a built-in or create a custom agent to save alternate args and env."
+        },
+        "AgentCatalogRowView": {
+          "enableSwitch": "Enable {{agent}}",
+          "repairFallbackLabel": "Custom agent",
+          "repairHint": "This definition must be repaired before it can launch.",
+          "repair": "Repair",
+          "deleted": "Deleted",
+          "deletedUsedBy": "Deleted — still used by {{items}} items",
+          "reviewReferences": "Review references"
+        },
+        "AgentCatalogSection": {
+          "loading": "Loading agents…",
+          "stagedRepair": "Repairing an agent is not available yet.",
+          "defaultTitle": "Default agent",
+          "nullDefaultAttention": "Choose a default agent. Until you do, attended launches can't start and will ask you to pick one."
+        },
+        "AgentCatalogStatusBadge": {
+          "enabled": "Enabled",
+          "disabled": "Disabled",
+          "baseDisabled": "Base disabled",
+          "notInstalled": "Not installed",
+          "customExecutable": "Custom executable",
+          "customPath": "Custom PATH",
+          "repairRequired": "Repair required"
+        },
+        "AgentDefaultCombobox": {
+          "searchPlaceholder": "Search agents...",
+          "noMatch": "No agents match your search.",
+          "auto": "Auto",
+          "blank": "Blank Terminal",
+          "autoHint": "Auto never selects a custom agent.",
+          "staleWarning": "This default is unavailable. Attended launches use the stock base harness command until you choose another agent.",
+          "unsetPlaceholder": "Choose a default agent",
+          "listLabel": "Default agent options"
+        },
+        "BuiltInLaunchSettingsDialog": {
+          "reset": "Reset",
+          "fieldLabelCommand": "Command",
+          "argsPlaceholder": "No default arguments",
+          "title": "Edit launch settings",
+          "description": "Set the launch command, arguments, and environment for the {{harness}} harness. Clear a field to restore its default."
+        },
+        "BuiltInDisableDialog": {
+          "title": "Disable {{base}}?",
+          "consequences": "Every new launch on {{base}} — including its custom agents — will block until you re-enable it, and snapshot resumes on it will block too.",
+          "derivatives": "{{count}} enabled custom agents built on it",
+          "references": "Used by {{count}} saved items (including its custom agents)",
+          "referencesAtLeast": "Used by at least {{count}} saved items (including its custom agents)",
+          "sessions": "{{count}} resumable sessions",
+          "sessionsAtLeast": "At least {{count}} resumable sessions",
+          "conflict": "These settings changed while this was open. The counts above are refreshed — confirm again to disable.",
+          "error": "Could not disable this harness. Reopen Settings and try again.",
+          "confirm": "Disable agent"
+        },
+        "CustomAgentEditorDialog": {
+          "fieldLabelArguments": "Arguments",
+          "cancel": "Cancel",
+          "saving": "Saving…",
+          "save": "Save",
+          "argsPlaceholder": "--model gpt-5\n--flag value",
+          "argsTokenCount": "{{count}} arguments",
+          "baseChoosePlaceholder": "Choose a base harness",
+          "baseSearchPlaceholder": "Search harnesses...",
+          "baseNoMatch": "No harnesses match your search.",
+          "duplicateNote": "This copies the source agent's configuration into a new agent. Paired-launch env sharing is turned off for the copy.",
+          "syncEnvLabel": "Allow paired-device launches to use these environment values",
+          "syncEnvDescription": "Orca does not send the values as settings to the paired device. The launched process can access — and may print — them in its terminal.",
+          "pairedVisibilityWarning": "The agent name, executable, and arguments are visible to paired devices; do not put secrets in them.",
+          "titleNew": "New custom agent",
+          "titleEdit": "Edit custom agent",
+          "titleDuplicate": "Duplicate agent",
+          "descriptionDuplicate": "Create a copy under a new name.",
+          "descriptionCreateEdit": "Save alternate arguments and environment for the {{harness}} harness.",
+          "fieldLabelEnv": "Environment variables",
+          "envSizeMeter": "{{bytes}} of {{max}} bytes",
+          "envPrecedenceHint": "Variables set here override the base harness's default environment.",
+          "envManagedAccountHint": "Explicit provider auth or home values here (including CODEX_HOME) override the selected managed account for this agent's launches. Orca still sets up the base harness's required companion and hook state.",
+          "envAdd": "Add variable",
+          "envAtCap": "You can add up to 64 variables and 16 KiB total.",
+          "envKeyPlaceholder": "NAME",
+          "envKeyAriaLabel": "Variable name",
+          "envValuePlaceholder": "value",
+          "envValueAriaLabel": "Variable value",
+          "envHide": "Hide value",
+          "envReveal": "Reveal value",
+          "envRemove": "Remove variable",
+          "errorSummaryHeading": "Fix the following before saving:",
+          "fieldLabelName": "Name",
+          "fieldLabelBase": "Base harness",
+          "baseImmutable": "The base harness can't change after creation. Create another agent to use a different harness.",
+          "baseReadOnlyLabel": "Base harness (read-only)",
+          "fieldLabelExecutable": "Executable",
+          "executableHelp": "Optional path to one executable. Command lists and pipelines belong in Quick Commands.",
+          "executablePlaceholder": "/usr/local/bin/my-agent",
+          "labelEmpty": "Enter a name for this agent.",
+          "labelBounds": "Use 80 characters or fewer.",
+          "commandEmpty": "Enter a valid executable path, or leave this blank.",
+          "commandBounds": "Use 4096 characters or fewer.",
+          "commandControlChar": "Remove control characters from the executable path.",
+          "commandQuote": "Balance the quotes in the executable path.",
+          "commandShellOperator": "This looks like a shell command. Put command lists or pipelines in Quick Commands.",
+          "argsBounds": "Use 8192 characters or fewer.",
+          "argsControlChar": "Remove the unsupported control character.",
+          "argsQuote": "Balance the quotes in the arguments.",
+          "argsQuotedLineBreak": "A quoted argument can't span multiple lines.",
+          "envBounds": "Check this variable against the name and value limits.",
+          "envReserved": "Names starting with ORCA_ are reserved.",
+          "envPrototype": "This variable name isn't allowed.",
+          "envCaseCollision": "Another variable already uses this name.",
+          "envControlChar": "Values can't contain line breaks or null characters.",
+          "envTotalBounds": "Environment variables exceed the 16 KiB limit.",
+          "invalidValue": "This value isn't valid.",
+          "labelReservedBuiltIn": "That name is reserved for the built-in {{harness}} agent.",
+          "labelInUse": "That name is already in use. Choose a different name.",
+          "revisionConflict": "These settings changed while you were editing. Review your changes and try again.",
+          "payloadTooLarge": "This configuration is too large to save. Remove some arguments or environment variables.",
+          "reloadAndRetry": "Reload settings and try again.",
+          "editorTooLarge": "This agent has too much configuration to edit here. Reduce it on the desktop host.",
+          "titleRepairReplace": "Replace corrupt agent",
+          "descriptionRepairEdit": "Fix the invalid values below to make this {{harness}} agent launchable again.",
+          "descriptionRepairReplace": "Save a new agent to replace the corrupt one. Saved references are not rebound to the new agent."
+        },
+        "CustomAgentDeleteDialog": {
+          "defaultBaseLabel": "Set default to {{base}}",
+          "defaultBaseDescription": "Uses {{base}}'s own command, arguments, and environment.",
+          "defaultAutoLabel": "Set default to Auto",
+          "defaultAutoDescription": "Orca picks an installed agent at launch.",
+          "defaultKeepLabel": "Keep a fallback to stock {{base}}",
+          "defaultKeepDescription": "Launches the plain {{base}} command with no custom settings.",
+          "defaultClearLabel": "Clear the default",
+          "defaultClearDescription": "Settings will ask you to choose one.",
+          "defaultChoiceLabel": "What should the default agent become?",
+          "recommendedBadge": "Recommended",
+          "error": "Could not delete this agent. Reopen Settings and try again.",
+          "title": "Delete {{label}}?",
+          "permanent": "This can't be undone. Custom launch settings are gone for good.",
+          "consequenceRunning": "Open terminals keep running.",
+          "consequenceAttended": "New interactive launches use stock {{base}} and show a notice.",
+          "consequenceUnattended": "Automations and background runs fail until reassigned.",
+          "consequencePreserved": "Resumes, worktrees, history, and provider sessions stay.",
+          "usedByAtLeast": "Used by at least {{count}} saved items",
+          "usedBy": "Used by {{count}} saved items",
+          "reviewReferences": "Review references",
+          "defaultHeading": "This agent is the current default",
+          "availabilityNote": "Availability is checked at launch, so a rebind isn't guaranteed to be installed.",
+          "confirm": "Delete agent"
+        },
+        "CustomAgentReferenceDialog": {
+          "title": "References to {{label}}",
+          "deletedIntro": "This agent is deleted, but these saved items still reference it by name. The name stays reserved until every reference is freed. There is no undelete — its arguments and environment are gone.",
+          "liveIntro": "These saved items reference this agent. Review where it is used before you delete it.",
+          "ownerDefault": "Default agent",
+          "ownerQuickCommand": "Quick commands",
+          "ownerCommitMessage": "Commit message",
+          "ownerSourceControl": "Source Control actions",
+          "ownerAutomation": "Automations",
+          "ownerSession": "Terminal sessions",
+          "ownerBackground": "Background runs",
+          "ownerOrchestration": "Orchestration runs",
+          "ownerWorkspace": "Workspaces",
+          "rebindableHeading": "Can free the name",
+          "removableHeading": "Removable records",
+          "retainedHeading": "Can't be freed yet",
+          "rebindableHint": "Open each item and pick another agent to free the name.",
+          "removableHint": "These clear when you delete the record they belong to.",
+          "retainedHint": "These hold the name until they finish or expire. The name is reserved until then.",
+          "countUnavailable": "Count unavailable",
+          "loading": "Loading references…",
+          "unavailable": "References could not be loaded. Reopen Settings to try again.",
+          "empty": "No saved items reference this agent.",
+          "close": "Close"
+        },
+        "CustomAgentDisableDialog": {
+          "title": "Disable {{label}}?",
+          "usedBy": "Used by {{count}} saved items.",
+          "usedByAtLeast": "Used by at least {{count}} saved items.",
+          "consequenceAttended": "New interactive launches use the stock base agent and show a notice.",
+          "consequenceUnattended": "Automations, background, and orchestration fail until reassigned.",
+          "consequenceResumes": "Session resumes still work.",
+          "consequenceReversible": "You can re-enable anytime.",
+          "conflict": "These settings changed while this was open. The count above is refreshed — confirm again to disable.",
+          "error": "Could not disable this agent. Reopen Settings and try again.",
+          "confirm": "Disable agent"
+        },
+        "CustomAgentRowActions": {
+          "trigger": "Actions for {{agent}}",
+          "editBuiltIn": "Edit launch settings",
+          "edit": "Edit",
+          "duplicate": "Duplicate",
+          "delete": "Delete"
+        },
+        "CustomAgentRepairDialog": {
+          "fallbackLabel": "this custom agent",
+          "discardError": "Could not discard this row. Reopen Settings and try again.",
+          "title": "Repair {{label}}",
+          "description": "This definition is corrupt and can't be edited in place. Replace it with a new agent or discard it.",
+          "referencesNote": "Saved references keep pointing at the old agent — they are not rebound to a replacement. Both actions are permanent.",
+          "replaceAsNew": "Replace as new agent",
+          "discard": "Discard corrupt row"
+        },
+        "CustomAgentDuplicateRepairDialog": {
+          "mutationError": "Could not resolve these agents. Reopen Settings and try again.",
+          "title": "Resolve duplicate agents",
+          "description": "These agents share one saved identity. Choose one to keep for existing references, and replace or discard the rest. This is applied all at once.",
+          "referencesNote": "Replaced agents get a new identity; discarded agents are removed. Saved references only keep working for the agent you keep.",
+          "confirm": "Resolve agents",
+          "fallbackLabel": "Custom agent",
+          "keep": "Keep for existing references",
+          "replace": "Replace as new",
+          "discard": "Discard",
+          "tooLargeNote": "This row is too large to keep or replace here. Discard it, or reduce it on the desktop host.",
+          "draftUnavailableError": "One of these agents is too large to keep or replace here. Discard it, or reduce it on the desktop host.",
+          "incompleteError": "Choose an action for every agent, keeping at most one."
+        },
         "EditorFontFamilySetting": {
           "title": "Editor Font Family",
           "description": "Font used by file editors and diff views. Leave empty to follow the terminal font.",
@@ -10336,7 +10565,8 @@
             "worktreeUnavailable": "워크트리는 더 이상 사용할 수 없습니다.",
             "openSupportedWorkspace": "세션을 재개하기 전에 워크스페이스를 여세요.",
             "localSessionSshWorkspaceUnsupported": "이 세션의 기록은 이 컴퓨터에 저장되어 있어 SSH 워크스페이스에서는 재개할 수 없습니다. 대신 로컬 워크스페이스를 여세요.",
-            "sessionHostMismatchUnsupported": "이 세션은 다른 호스트에 속합니다. 재개하려면 같은 호스트의 워크스페이스를 여세요."
+            "sessionHostMismatchUnsupported": "이 세션은 다른 호스트에 속합니다. 재개하려면 같은 호스트의 워크스페이스를 여세요.",
+            "resumeSessionUnavailable": "이 세션은 더 이상 재개할 수 없습니다."
           },
           "AiVaultPanelControls": {
             "scanningSessions": "세션 스캔 중",
@@ -10425,7 +10655,9 @@
             "recoverableEmptyOpenLogHint": "로그를 열어 복구하세요.",
             "emptyConversationDetail": "이 세션에는 저장된 대화가 없어 재개할 수 없습니다.",
             "queuedMessages": "대기 중인 메시지 {{value0}}개",
-            "subagentTranscripts": "서브에이전트 대화 기록 {{value0}}개"
+            "subagentTranscripts": "서브에이전트 대화 기록 {{value0}}개",
+            "resumeArguments": "재개 인수",
+            "loadingResumeArguments": "재개 인수를 불러오는 중…"
           },
           "AiVaultSessionRow": {
             "resumeAgentSession": "{{value0}} 세션 재개",
@@ -12984,7 +13216,10 @@
           "579c768bde": "검색어와 일치하는 agents가 없습니다.",
           "48c6a5a9b4": "agents 검색...",
           "9c6b59fe58": "기본값으로 설정",
-          "1b0d6965fa": "현재 기본값"
+          "1b0d6965fa": "현재 기본값",
+          "listLabel": "Agents",
+          "unavailableAgent": "Unavailable agent",
+          "staleWarning": "This agent is unavailable. Choose another agent, or launches use a blank terminal."
         },
         "AgentSettingsDialog": {
           "50cdb57c03": "AI agents를 관리하고, 기본값을 설정하고, 명령을 사용자 정의하세요.",
@@ -13432,6 +13667,29 @@
           "undo": "실행 취소",
           "widthOption": "{{value0}} px"
         }
+      },
+      "AgentLaunchNotices": {
+        "disabledFallback": "{{value0}}이(가) 비활성화되어 있습니다. 사용자 지정 실행 파일, 사용자 지정 인수 또는 사용자 지정 에이전트 환경 없이 기본 {{value1}}을(를) 시작했습니다.",
+        "missingFallback": "{{value0}}이(가) 삭제되었습니다. 사용자 지정 실행 파일, 사용자 지정 인수 또는 사용자 지정 에이전트 환경 없이 기본 {{value1}}을(를) 시작했습니다.",
+        "envWithheld": "이 실행은 {{value0}}의 모든 환경 값을 사용하지 않았습니다. 페어링된 실행 환경은 데스크톱 호스트에서 관리하세요.",
+        "snapshotChanged": "이 세션이 시작될 때 캡처된 설정으로 다시 시작했습니다.",
+        "vaultOriginalConfigUnavailable": "원래 실행 설정을 사용할 수 없습니다. 현재 {{value0}} 설정으로 다시 시작했습니다.",
+        "dismiss": "닫기"
+      },
+      "AgentLaunchRecoveryCard": {
+        "title": "이 워크스페이스의 에이전트를 시작하지 못했습니다.",
+        "retry": "다시 시도",
+        "retryCurrentSettings": "현재 설정으로 다시 시도",
+        "launchCurrentSettings": "현재 설정으로 시작",
+        "chooseAgent": "에이전트 선택",
+        "editAgentSettings": "에이전트 설정 편집",
+        "repairOnHost": "데스크톱 호스트에서 복구",
+        "reconnectSecurely": "안전하게 다시 연결",
+        "reconnect": "다시 연결",
+        "recoverCapacity": "실행 용량 복구…",
+        "openTerminal": "터미널 열기",
+        "forgetLaunch": "실행 지우기…",
+        "manageAgents": "에이전트 관리"
       }
     },
     "i18n": {
@@ -13669,6 +13927,81 @@
       "certificateChallengeChanged": "The certificate request changed. Retry the page and review the new warning.",
       "certificateChallengeUnavailable": "This certificate request is no longer available. Retry the page to request a new one.",
       "certificateProceedFailed": "Orca could not approve this certificate request. Retry the page and try again."
+    }
+  },
+  "agentLaunch": {
+    "failure": {
+      "unknownAgent": "해당 에이전트가 더 이상 존재하지 않습니다. 다른 에이전트를 선택한 후 다시 시도하세요.",
+      "noAgentSelected": "실행하기 전에 에이전트를 선택하세요.",
+      "needsRepair": "이 에이전트의 설정이 완료되지 않았습니다. 설정에서 구성을 마친 후 다시 시도하세요.",
+      "customDisabled": "이 에이전트가 꺼져 있습니다. 실행하려면 설정에서 켜세요.",
+      "configurationChangedPostCreate": "이 워크스페이스를 만드는 동안 에이전트 설정이 변경되었습니다. 현재 설정으로 실행하려면 다시 시도하거나 다른 에이전트를 선택하세요.",
+      "configurationChangedPreSpawn": "실행 전에 에이전트 설정이 변경되었습니다. 현재 설정으로 다시 시도하거나 다른 에이전트를 선택하세요.",
+      "baseDisabled": "기본 에이전트가 꺼져 있습니다. 실행하려면 설정에서 켜세요.",
+      "baseUnavailable": "기본 에이전트를 이 호스트에서 사용할 수 없습니다.",
+      "missingVariable": "이 실행의 작업 공간 경로를 확인할 수 없습니다.",
+      "missingTargetHome": "대상 호스트의 홈 디렉터리를 확인할 수 없습니다.",
+      "invalidCommandOverride": "이 에이전트의 명령 재정의가 잘못되었습니다. 설정에서 수정하세요.",
+      "invalidArgs": "이 에이전트의 실행 인수가 잘못되었습니다. 설정에서 수정하세요.",
+      "invalidEnv": "이 에이전트의 실행 환경이 잘못되었습니다. 설정에서 수정하세요.",
+      "secureEnvUnavailable": "이 에이전트의 환경을 원격 호스트에 안전하게 보낼 수 없습니다.",
+      "commandTooLong": "실행 명령이 너무 길어 실행할 수 없습니다. 에이전트 인수나 프롬프트를 줄이세요.",
+      "invalidSnapshot": "이 에이전트의 저장된 실행 정보가 더 이상 유효하지 않습니다.",
+      "trustPreflightFailed": "이 에이전트의 작업 공간 신뢰를 확인할 수 없습니다. 다시 시도하세요.",
+      "spawnFailed": "에이전트를 시작할 수 없습니다. 다시 시도하세요.",
+      "stateUnknown": "실행 상태를 알 수 없습니다. 다시 시도하기 전에 터미널을 확인하세요.",
+      "capacityExceeded": "이 호스트에서 대기 중인 에이전트 실행이 너무 많습니다. 중단된 실행을 다시 연결하거나 삭제한 후 다시 시도하세요."
+    },
+    "unattendedFailure": {
+      "title": {
+        "automation": "자동화의 에이전트를 시작할 수 없습니다.",
+        "orchestration": "작업의 에이전트를 시작할 수 없습니다.",
+        "background": "백그라운드 에이전트를 시작할 수 없습니다.",
+        "generic": "에이전트 실행을 완료하지 못했습니다."
+      },
+      "forgotten": "You forgot this launch, so it won't run again.",
+      "rowBadge": {
+        "didNotStart": "Didn't start",
+        "forgotten": "Forgotten"
+      }
+    },
+    "forgetConfirm": {
+      "title": "Forget this launch?",
+      "warning": "Orca cannot reach the terminal host. Forgetting does not stop the remote process; it may still be running.",
+      "confirmLabel": "Forget launch",
+      "failed": "Couldn't forget this launch. Try again.",
+      "alsoForgetSibling": "Also forget 1 other stranded launch on {{host}}.",
+      "alsoForgetSiblings": "Also forget {{count}} other stranded launches on {{host}}."
+    },
+    "requestError": {
+      "idempotencyConflict": "이 실행이 이미 진행 중입니다.",
+      "staleFailure": "이 실행은 이미 처리되었습니다. 새로 고친 후 다시 시도하세요.",
+      "untrustedReference": "이 실행 소스를 확인할 수 없습니다."
+    },
+    "capacity": {
+      "title": "실행 용량 복구",
+      "description": "이 에이전트 실행은 이 호스트에서 아직 대기 중입니다. 워크스페이스를 열어 다시 연결하거나 해결한 후 다시 실행해 보세요.",
+      "loadFailed": "대기 중인 실행을 불러오지 못했습니다. 닫았다가 다시 열어 재시도하세요.",
+      "loading": "대기 중인 실행을 불러오는 중…",
+      "empty": "실행 용량이 현재 비어 있습니다. 이 호스트에 대기 중인 실행이 없습니다.",
+      "action": {
+        "open": "열기",
+        "goToWorkspace": "워크스페이스로 이동",
+        "goToRun": "실행으로 이동"
+      },
+      "source": {
+        "interactive": "워크스페이스",
+        "cli": "CLI",
+        "automation": "자동화",
+        "background": "백그라운드",
+        "orchestration": "오케스트레이션",
+        "resume": "재개"
+      },
+      "liveness": {
+        "live": "실행 중",
+        "absent": "중지됨",
+        "unknown": "접근 불가"
+      }
     }
   }
 }

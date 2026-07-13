@@ -98,7 +98,6 @@ async function renderHeadlessTerminalState(
 const toastInfo = vi.fn()
 const LEAF_1 = '11111111-1111-4111-8111-111111111111' as const
 const LEAF_2 = '22222222-2222-4222-8222-222222222222' as const
-const UUID_RE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 const AGENT_TASK_COMPLETE_NOTIFICATION_GRACE_MS = 250
 const AGENT_TASK_COMPLETE_NOTIFICATION_MAX_WAIT_MS = 1_500
 
@@ -193,6 +192,8 @@ type StoreState = {
   clearSleepingAgentSession: ReturnType<typeof vi.fn>
   registerAgentLaunchConfig: ReturnType<typeof vi.fn>
   clearAgentLaunchConfig: ReturnType<typeof vi.fn>
+  backfillTabLaunchAgent: ReturnType<typeof vi.fn>
+  attachLaunchNotices: ReturnType<typeof vi.fn>
   markWorktreeUnread: ReturnType<typeof vi.fn>
   observeTerminalGitHubPullRequestLink: ReturnType<typeof vi.fn>
   recordTerminalInput: ReturnType<typeof vi.fn>
@@ -820,6 +821,8 @@ describe('connectPanePty', () => {
       }),
       registerAgentLaunchConfig: vi.fn(),
       clearAgentLaunchConfig: vi.fn(),
+      backfillTabLaunchAgent: vi.fn(),
+      attachLaunchNotices: vi.fn(),
       markWorktreeUnread: vi.fn(),
       observeTerminalGitHubPullRequestLink: vi.fn(),
       recordTerminalInput: vi.fn(),
@@ -1942,10 +1945,15 @@ describe('connectPanePty', () => {
 
     expect(transport.connect.mock.calls.length).toBeGreaterThan(connectCallsBeforeExit)
     const resumeConnectOptions = transport.connect.mock.calls.at(-1)?.[0] as
-      | { command?: string }
+      | { agentLaunch?: { resume?: { sessionKey?: unknown } } }
       | undefined
-    expect(resumeConnectOptions?.command).toContain('--resume')
-    expect(resumeConnectOptions?.command).toContain('sess-hibernated-1')
+    // Host-owned resume: the wake sends the ownership-key variant, not a client
+    // --resume command; the host assembles the resume argv from its private record.
+    expect(resumeConnectOptions?.agentLaunch?.resume?.sessionKey).toEqual({
+      worktreeId: 'wt-1',
+      baseAgent: 'claude',
+      providerSessionId: 'sess-hibernated-1'
+    })
 
     // The wake is one-shot: a second reveal must not spawn again.
     const connectCallsAfterWake = transport.connect.mock.calls.length
@@ -1994,8 +2002,11 @@ describe('connectPanePty', () => {
     // Still hidden: no reveal happened, so nothing respawned on exit.
     expect(transport.connect.mock.calls.length).toBe(connectCallsBeforeExit)
 
-    // The wake reports the claim it consumed so the dispatcher's generic resume never launches the same provider session into a second tab.
-    const claimKey = 'wt-1\0claude\0session_id\0sess-hibernated-bg'
+    // The wake reports the claim it consumed so the dispatcher's generic
+    // resume never launches the same provider session into a second tab.
+    // Base-collapsed ownership key: the provider-session key type is implied by
+    // the base and drops out (getProviderSessionClaimKey).
+    const claimKey = 'wt-1\0claude\0sess-hibernated-bg'
     expect(binding.wakeHibernatedAgentIfArmed(new Set([claimKey]))).toBeNull()
     expect(transport.connect.mock.calls.length).toBe(connectCallsBeforeExit)
     const claimedProviderSessions = new Set<string>()
@@ -2005,10 +2016,13 @@ describe('connectPanePty', () => {
 
     expect(transport.connect.mock.calls.length).toBeGreaterThan(connectCallsBeforeExit)
     const resumeConnectOptions = transport.connect.mock.calls.at(-1)?.[0] as
-      | { command?: string }
+      | { agentLaunch?: { resume?: { sessionKey?: unknown } } }
       | undefined
-    expect(resumeConnectOptions?.command).toContain('--resume')
-    expect(resumeConnectOptions?.command).toContain('sess-hibernated-bg')
+    expect(resumeConnectOptions?.agentLaunch?.resume?.sessionKey).toEqual({
+      worktreeId: 'wt-1',
+      baseAgent: 'claude',
+      providerSessionId: 'sess-hibernated-bg'
+    })
 
     // A second navigation-free wake must not spawn again (one-pane/one-PTY).
     const connectCallsAfterWake = transport.connect.mock.calls.length
@@ -2050,8 +2064,9 @@ describe('connectPanePty', () => {
     await flushAsyncTicks()
     expect((transport.getPtyId as unknown as () => string | null)()).toBe('tab-pty')
 
-    // Wake arrives mid-kill: nothing is armed yet, but the pane must claim the session (suppressing the generic resume) and latch the request.
-    const claimKey = 'wt-1\0claude\0session_id\0sess-hibernated-race'
+    // Wake arrives mid-kill: nothing is armed yet, but the pane must claim the
+    // session (suppressing the generic resume) and latch the request.
+    const claimKey = 'wt-1\0claude\0sess-hibernated-race'
     expect(binding.wakeHibernatedAgentIfArmed(new Set([claimKey]))).toBeNull()
     const claimedProviderSessions = new Set<string>()
     expect(binding.wakeHibernatedAgentIfArmed(claimedProviderSessions)).toBe(claimKey)
@@ -2065,10 +2080,13 @@ describe('connectPanePty', () => {
     // Arming consumed the latched wake — the --resume spawned with no reveal and no second wake event.
     expect(transport.connect.mock.calls.length).toBeGreaterThan(connectCallsBeforeExit)
     const resumeConnectOptions = transport.connect.mock.calls.at(-1)?.[0] as
-      | { command?: string }
+      | { agentLaunch?: { resume?: { sessionKey?: unknown } } }
       | undefined
-    expect(resumeConnectOptions?.command).toContain('--resume')
-    expect(resumeConnectOptions?.command).toContain('sess-hibernated-race')
+    expect(resumeConnectOptions?.agentLaunch?.resume?.sessionKey).toEqual({
+      worktreeId: 'wt-1',
+      baseAgent: 'claude',
+      providerSessionId: 'sess-hibernated-race'
+    })
   })
 
   it('keeps an in-place provider claim until the replacement PTY spawn settles', async () => {
@@ -2107,7 +2125,7 @@ describe('connectPanePty', () => {
     const deferredSpawn = createDeferred<unknown>()
     transport.connect.mockImplementationOnce(() => deferredSpawn.promise)
 
-    const claimKey = 'wt-1\0claude\0session_id\0sess-hibernated-inflight'
+    const claimKey = 'wt-1\0claude\0sess-hibernated-inflight'
     expect(binding.wakeHibernatedAgentIfArmed()).toBe(claimKey)
     const connectCallsAfterFirstWake = transport.connect.mock.calls.length
     expect(binding.wakeHibernatedAgentIfArmed()).toBe(claimKey)
@@ -2150,7 +2168,7 @@ describe('connectPanePty', () => {
     await flushAsyncTicks()
     transport.connect.mockRejectedValueOnce(new Error('transient spawn failure'))
 
-    const claimKey = 'wt-1\0claude\0session_id\0sess-hibernated-retry'
+    const claimKey = 'wt-1\0claude\0sess-hibernated-retry'
     expect(binding.wakeHibernatedAgentIfArmed()).toBe(claimKey)
     await flushAsyncTicks(20)
     const connectCallsAfterFailure = transport.connect.mock.calls.length
@@ -2230,10 +2248,13 @@ describe('connectPanePty', () => {
     // No second reveal was needed: the foreground pane resumed its recorded session directly from the arm-time wake.
     expect(transport.connect.mock.calls.length).toBeGreaterThan(connectCallsBeforeExit)
     const resumeConnectOptions = transport.connect.mock.calls.at(-1)?.[0] as
-      | { command?: string }
+      | { agentLaunch?: { resume?: { sessionKey?: unknown } } }
       | undefined
-    expect(resumeConnectOptions?.command).toContain('--resume')
-    expect(resumeConnectOptions?.command).toContain('sess-hibernated-2')
+    expect(resumeConnectOptions?.agentLaunch?.resume?.sessionKey).toEqual({
+      worktreeId: 'wt-1',
+      baseAgent: 'claude',
+      providerSessionId: 'sess-hibernated-2'
+    })
 
     // Still one-shot: a later reveal must not spawn again.
     const connectCallsAfterWake = transport.connect.mock.calls.length
@@ -2641,6 +2662,36 @@ describe('connectPanePty', () => {
       undefined,
       { connectionId: 'ssh-a' }
     )
+  })
+
+  // Registry safety (oracle 16): a custom startup launch agent must resolve its
+  // draft-prefill config from the base harness, not crash on a raw registry index.
+  it('resolves a custom startup launch agent to its base config without crashing', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport('pty-custom-claude')
+    transportFactoryQueue.push(transport)
+    const customId = 'custom-agent:claude:11111111-1111-4111-8111-111111111111'
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: null }],
+      settings: {
+        ...mockStoreState.settings,
+        customTuiAgents: [
+          { id: customId, baseAgent: 'claude', label: 'My Claude', args: '', env: {}, syncEnv: false }
+        ]
+      }
+    } as StoreState
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const deps = createDeps({
+      startup: { command: '', launchAgent: customId, draftPrompt: 'Draft this' }
+    })
+
+    expect(() => connectPanePty(pane as never, manager as never, deps as never)).not.toThrow()
+    await flushAsyncTicks()
+    expect(createdTransportOptions[0]).toBeDefined()
   })
 
   it('seeds a working status from Command Code thinking output without a startup prompt', async () => {
@@ -4794,6 +4845,100 @@ describe('connectPanePty', () => {
     expect(mockStoreState.recordTerminalInput).toHaveBeenCalledWith(makePaneKey('tab-1', LEAF_1))
   })
 
+  it('stamps host-owned launch notices onto the tab when the spawn receipt carries them', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const notices = [{ code: 'missing_custom_fallback', label: 'My Agent', baseAgent: 'claude' }]
+    const transport = createMockTransport('pty-notice')
+    transport.connect.mockImplementation(async () => ({
+      id: 'pty-notice',
+      agentLaunch: {
+        status: 'launched',
+        receipt: {
+          requestedAgent: 'claude',
+          baseAgent: 'claude',
+          notices,
+          launchToken: 'host-token-1',
+          catalogRevision: 1
+        }
+      }
+    }))
+    transportFactoryQueue.push(transport)
+
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: null }]
+    }
+
+    connectPanePty(
+      createPane(1) as never,
+      createManager(1) as never,
+      createDeps({
+        startup: {
+          command: '',
+          agentLaunch: {
+            selection: { kind: 'agent', agent: 'claude' },
+            allowEmptyPromptLaunch: true
+          }
+        }
+      }) as never
+    )
+    await flushAsyncTicks()
+
+    // The host is the notice owner; the renderer mirrors them onto the tab from
+    // the admission-minted receipt token so the banner renders and dismissal routes.
+    expect(mockStoreState.attachLaunchNotices).toHaveBeenCalledWith({
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      launchToken: 'host-token-1',
+      notices
+    })
+  })
+
+  it('does not stamp launch notices when the spawn receipt carries none', async () => {
+    const { connectPanePty } = await import('./pty-connection')
+
+    const transport = createMockTransport('pty-no-notice')
+    transport.connect.mockImplementation(async () => ({
+      id: 'pty-no-notice',
+      agentLaunch: {
+        status: 'launched',
+        receipt: {
+          requestedAgent: 'claude',
+          baseAgent: 'claude',
+          notices: [],
+          launchToken: 'host-token-2',
+          catalogRevision: 1
+        }
+      }
+    }))
+    transportFactoryQueue.push(transport)
+
+    mockStoreState = {
+      ...mockStoreState,
+      tabsByWorktree: { 'wt-1': [{ id: 'tab-1', ptyId: null }] },
+      repos: [{ id: 'repo1', connectionId: null }]
+    }
+
+    connectPanePty(
+      createPane(1) as never,
+      createManager(1) as never,
+      createDeps({
+        startup: {
+          command: '',
+          agentLaunch: {
+            selection: { kind: 'agent', agent: 'claude' },
+            allowEmptyPromptLaunch: true
+          }
+        }
+      }) as never
+    )
+    await flushAsyncTicks()
+
+    expect(mockStoreState.attachLaunchNotices).not.toHaveBeenCalled()
+  })
+
   it('does not consume startup draft delivery before deferred connect starts', async () => {
     const { connectPanePty } = await import('./pty-connection')
     globalThis.requestAnimationFrame = vi.fn(() => 1)
@@ -6053,6 +6198,90 @@ describe('connectPanePty', () => {
     expect(deps.updateTabPtyId).toHaveBeenCalledWith('tab-1', 'fresh-pty')
   })
 
+  it('consumes the host launch receipt on a reattach miss fresh-exec', async () => {
+    // Why: a reattach sessionId MISS falls through to a host fresh-exec of the
+    // resume in the same round trip and returns a launched receipt. The miss arm
+    // must key registration off the host admission token (not a retired client
+    // mint), backfill the requested identity, and stamp the launch notices.
+    const { connectPanePty } = await import('./pty-connection')
+    const notices = [{ code: 'missing_custom_fallback', label: 'My Agent', baseAgent: 'claude' }]
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async (opts: { sessionId?: string }) => {
+      if (opts.sessionId) {
+        return {
+          id: 'miss-fresh-pty',
+          launchConfig: { agentCommand: 'claude', agentArgs: '', agentEnv: {} },
+          agentLaunch: {
+            status: 'launched',
+            receipt: {
+              requestedAgent: 'claude',
+              baseAgent: 'claude',
+              notices,
+              launchToken: 'host-miss-token',
+              catalogRevision: 1
+            }
+          }
+        }
+      }
+      return 'unexpected-fresh-pty'
+    })
+    transportFactoryQueue.push(transport)
+    const pane = createPane(2)
+    const manager = createManager(2)
+    const deps = createDeps({
+      restoredLeafId: LEAF_2,
+      restoredPtyIdByLeafId: { [LEAF_2]: 'stale-pty' }
+    })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    await flushAsyncTicks(10)
+
+    expect(deps.syncPanePtyLayoutBinding).toHaveBeenCalledWith(2, 'miss-fresh-pty')
+    expect(mockStoreState.backfillTabLaunchAgent).toHaveBeenCalledWith('tab-1', 'claude')
+    expect(mockStoreState.attachLaunchNotices).toHaveBeenCalledWith({
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      launchToken: 'host-miss-token',
+      notices
+    })
+    expect(mockStoreState.registerAgentLaunchConfig).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ agentCommand: 'claude' }),
+      expect.objectContaining({ launchToken: 'host-miss-token' })
+    )
+  })
+
+  it('binds a plain legacy respawn on a reattach miss with no launch receipt', async () => {
+    // Why: a live entry with no host ownership record and no legacy launchConfig
+    // resolves to null host-side, which plain-respawns (pre-U5) rather than
+    // failing. The receipt-aware miss arm must bind that bare PTY without stamping
+    // notices, backfilling identity, or clearing the registry as an invalid snapshot.
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport()
+    transport.connect.mockImplementation(async (opts: { sessionId?: string }) => {
+      if (opts.sessionId) {
+        return { id: 'plain-respawn-pty' }
+      }
+      return 'unexpected-fresh-pty'
+    })
+    transportFactoryQueue.push(transport)
+    const pane = createPane(2)
+    const manager = createManager(2)
+    const deps = createDeps({
+      restoredLeafId: LEAF_2,
+      restoredPtyIdByLeafId: { [LEAF_2]: 'stale-pty' }
+    })
+
+    connectPanePty(pane as never, manager as never, deps as never)
+    await flushAsyncTicks(10)
+
+    expect(deps.syncPanePtyLayoutBinding).toHaveBeenCalledWith(2, 'plain-respawn-pty')
+    expect(deps.updateTabPtyId).toHaveBeenCalledWith('tab-1', 'plain-respawn-pty')
+    expect(mockStoreState.attachLaunchNotices).not.toHaveBeenCalled()
+    expect(mockStoreState.backfillTabLaunchAgent).not.toHaveBeenCalled()
+    expect(deps.onPtyErrorRef.current).not.toHaveBeenCalled()
+  })
+
   it('reattaches via the tab-level SSH pty id when deferred bookkeeping missed the tab', async () => {
     // Why: restore can miss the deferred maps; the tab's SSH pty id must still drive connect-then-reattach, not a fresh spawn into a missing provider.
     const { connectPanePty } = await import('./pty-connection')
@@ -6218,22 +6447,35 @@ describe('connectPanePty', () => {
       }
 
       expect(transport.connect).toHaveBeenCalledTimes(2)
+      // After SSH expiry the fresh fallback re-issues the resume as the host-owned
+      // ownership-key variant, not a client-assembled command. The host owns resume
+      // argv + its delivery to the remote shell (same mechanism as a fresh SSH
+      // agentLaunch), so the renderer no longer submits the command via sendInput.
       expect(transport.connect).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
-          command: "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'",
+          agentLaunch: {
+            resume: {
+              operation: 'resume',
+              sessionKey: {
+                worktreeId: 'wt-1',
+                baseAgent: 'codex',
+                providerSessionId: 'codex-session-1'
+              }
+            }
+          },
           env: expect.objectContaining({
             ORCA_PANE_KEY: paneKey,
             ORCA_TAB_ID: 'tab-1',
             ORCA_WORKTREE_ID: 'wt-1',
-            ORCA_WORKSPACE_ID: 'wt-1',
-            ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+            ORCA_WORKSPACE_ID: 'wt-1'
           })
         })
       )
-      expect(transport.sendInput).toHaveBeenCalledWith(
-        "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'\r"
-      )
+      const sshResumeConnect = transport.connect.mock.calls[1]?.[0] as
+        | { command?: string }
+        | undefined
+      expect(sshResumeConnect?.command).toBeUndefined()
     } finally {
       globalThis.setTimeout = originalSetTimeout
     }
@@ -7473,24 +7715,27 @@ describe('connectPanePty', () => {
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'lost-pty',
-        command: "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'",
-        resumeProviderSession: {
-          key: 'session_id',
-          id: 'codex-session-1',
-          transcriptPath: '/Users/example/.codex/sessions/2026/07/20/rollout-session.jsonl'
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
         },
         env: expect.objectContaining({
           ORCA_PANE_KEY: paneKey,
           ORCA_TAB_ID: 'tab-1',
           ORCA_WORKTREE_ID: 'wt-1',
-          ORCA_WORKSPACE_ID: 'wt-1',
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+          ORCA_WORKSPACE_ID: 'wt-1'
         })
       })
     )
   })
 
-  it('uses WSL quoting for cold-restored agent resume in Windows-path WSL projects', async () => {
+  it('sends the raw provider session in the resume variant for WSL projects (host owns quoting)', async () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport('fresh-pty')
     transport.connect.mockImplementation(async ({ sessionId }: { sessionId?: string }) => {
@@ -7557,17 +7802,27 @@ describe('connectPanePty', () => {
 
     expect(pane.terminal.write).toHaveBeenCalledWith('cold-payload', expect.any(Function))
     expect(transport.sendInput).not.toHaveBeenCalled()
+    // The client sends the raw provider session id in the ownership-key variant;
+    // the host owns platform-correct (WSL) quoting when it assembles the argv, so
+    // the renderer no longer shell-escapes the session id itself.
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'lost-pty',
-        command:
-          "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'\\''s'",
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: "codex-session-1's"
+            }
+          }
+        },
         env: expect.objectContaining({
           ORCA_PANE_KEY: paneKey,
           ORCA_TAB_ID: 'tab-1',
           ORCA_WORKTREE_ID: 'wt-1',
-          ORCA_WORKSPACE_ID: 'wt-1',
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+          ORCA_WORKSPACE_ID: 'wt-1'
         })
       })
     )
@@ -7637,13 +7892,21 @@ describe('connectPanePty', () => {
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'lost-pty',
-        command: "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'",
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
+        },
         env: expect.objectContaining({
           ORCA_PANE_KEY: paneKey,
           ORCA_TAB_ID: 'tab-1',
           ORCA_WORKTREE_ID: 'wt-1',
-          ORCA_WORKSPACE_ID: 'wt-1',
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+          ORCA_WORKSPACE_ID: 'wt-1'
         })
       })
     )
@@ -7719,7 +7982,16 @@ describe('connectPanePty', () => {
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'lost-pty',
-        command: "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'"
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
+        }
       })
     )
     expect(mockStoreState.clearSleepingAgentSession).toHaveBeenCalledWith(legacyPaneKey)
@@ -7792,6 +8064,11 @@ describe('connectPanePty', () => {
 
     expect(pane.terminal.write).toHaveBeenCalledWith('cold-payload', expect.any(Function))
     expect(deps.onShowSessionRestoredBanner).not.toHaveBeenCalled()
+    // Ambiguous same-tab records → no resume: the connect carries no ownership-key
+    // variant (nor any legacy resume command).
+    expect(transport.connect).not.toHaveBeenCalledWith(
+      expect.objectContaining({ agentLaunch: expect.anything() })
+    )
     expect(transport.connect).not.toHaveBeenCalledWith(
       expect.objectContaining({ command: expect.stringContaining('resume') })
     )
@@ -7863,26 +8140,37 @@ describe('connectPanePty', () => {
     await new Promise((resolve) => setTimeout(resolve, 70))
 
     expect(transport.sendInput).not.toHaveBeenCalled()
+    // Host-owned resume: the client sends the ownership-key variant plus the
+    // captured legacy config for the host's one-time ingest (with its recorded
+    // owner), and only pane-identity env — the captured agent env no longer leaks
+    // client-side because the host assembles command/env itself.
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'lost-pty',
-        command: "codex '--model' 'gpt-5' '--reasoning-effort' 'high' 'resume' 'codex-session-1'",
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
+        },
+        launchConfig,
+        legacyResumeRecordedConnectionId: null,
         env: expect.objectContaining({
-          CODEX_PROFILE: 'captured',
           ORCA_PANE_KEY: paneKey,
           ORCA_TAB_ID: 'tab-1',
           ORCA_WORKTREE_ID: 'wt-1',
-          ORCA_WORKSPACE_ID: 'wt-1',
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+          ORCA_WORKSPACE_ID: 'wt-1'
         })
       })
     )
-    expect(mockStoreState.registerAgentLaunchConfig).toHaveBeenCalledWith(paneKey, launchConfig, {
-      agentType: 'codex',
-      launchToken: expect.stringMatching(new RegExp(`^${UUID_RE}$`)),
-      tabId: 'tab-1',
-      leafId: LEAF_1
-    })
+    const codexResumeConnect = transport.connect.mock.calls.find(
+      (call: unknown[]) => (call[0] as { sessionId?: string } | undefined)?.sessionId === 'lost-pty'
+    )?.[0] as { env?: Record<string, string> } | undefined
+    expect(codexResumeConnect?.env).not.toHaveProperty('CODEX_PROFILE')
   })
 
   it('clears stale launch config when a pane consumes a non-agent startup command', async () => {
@@ -8033,21 +8321,25 @@ describe('connectPanePty', () => {
     await new Promise((resolve) => setTimeout(resolve, 70))
 
     expect(transport.sendInput).not.toHaveBeenCalled()
+    // Host-owned resume off the live status entry: the resume variant carries the
+    // live provider session; the live captured config rides as the legacy attach.
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'lost-pty',
-        command: "codex '--model' 'gpt-5-mini' 'resume' 'codex-session-1'",
-        env: expect.objectContaining({
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
-        })
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
+        },
+        launchConfig,
+        legacyResumeRecordedConnectionId: null
       })
     )
-    expect(mockStoreState.registerAgentLaunchConfig).toHaveBeenCalledWith(paneKey, launchConfig, {
-      agentType: 'codex',
-      launchToken: expect.stringMatching(new RegExp(`^${UUID_RE}$`)),
-      tabId: 'tab-1',
-      leafId: LEAF_1
-    })
     expect(mockStoreState.clearSleepingAgentSession).not.toHaveBeenCalled()
   })
 
@@ -8129,23 +8421,25 @@ describe('connectPanePty', () => {
     expect(mockStoreState.getAgentLaunchConfigForStatusEntry).toHaveBeenCalledWith(
       expect.objectContaining({ paneKey, agentType: 'codex' })
     )
-    expect(transport.connect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: 'lost-pty',
-        command: "codex '--model' 'current' 'resume' 'codex-session-1'"
-      })
-    )
-    expect(mockStoreState.registerAgentLaunchConfig).toHaveBeenCalledWith(
-      paneKey,
-      expect.objectContaining({
-        agentArgs: '--model current'
-      }),
-      expect.objectContaining({
-        agentType: 'codex',
-        tabId: 'tab-1',
-        leafId: LEAF_1
-      })
-    )
+    // The live entry wins the identity (codex-session-1, not the sleeping record's
+    // older-codex-session). The stale live config was rejected and the sleeping
+    // config does not match the live session, so no legacy attach rides — the host
+    // owns the resume argv from its private record.
+    const staleLiveResumeConnect = transport.connect.mock.calls.find(
+      (call: unknown[]) => (call[0] as { sessionId?: string } | undefined)?.sessionId === 'lost-pty'
+    )?.[0] as { agentLaunch?: unknown; command?: string; launchConfig?: unknown } | undefined
+    expect(staleLiveResumeConnect?.agentLaunch).toEqual({
+      resume: {
+        operation: 'resume',
+        sessionKey: {
+          worktreeId: 'wt-1',
+          baseAgent: 'codex',
+          providerSessionId: 'codex-session-1'
+        }
+      }
+    })
+    expect(staleLiveResumeConnect?.command).toBeUndefined()
+    expect(staleLiveResumeConnect?.launchConfig).toBeUndefined()
   })
 
   it('shows the restored banner when a sleeping resume falls back to a fresh shell', async () => {
@@ -8282,36 +8576,39 @@ describe('connectPanePty', () => {
     await flushAsyncTicks(4)
 
     expect(transport.connect).toHaveBeenCalledTimes(1)
+    // Missing restored-PTY hint → a fresh in-place spawn carrying the host-owned
+    // resume variant (no sessionId, no client command). The record has no captured
+    // config, so nothing is pre-registered — the host owns the config and its
+    // launched receipt registers the identity post-spawn.
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
-        command: "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'",
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
+        },
         launchAgent: 'codex',
         env: expect.objectContaining({
           ORCA_PANE_KEY: paneKey,
           ORCA_TAB_ID: 'tab-1',
           ORCA_WORKTREE_ID: 'wt-1',
-          ORCA_WORKSPACE_ID: 'wt-1',
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+          ORCA_WORKSPACE_ID: 'wt-1'
         })
       })
     )
     expect(transport.connect).toHaveBeenCalledWith(
       expect.not.objectContaining({ sessionId: expect.any(String) })
     )
-    expect(mockStoreState.registerAgentLaunchConfig).toHaveBeenCalledWith(
-      paneKey,
-      {
-        agentCommand: "codex '--dangerously-bypass-approvals-and-sandbox'",
-        agentArgs: '--dangerously-bypass-approvals-and-sandbox',
-        agentEnv: {}
-      },
-      {
-        agentType: 'codex',
-        launchToken: expect.stringMatching(new RegExp(`^${UUID_RE}$`)),
-        tabId: 'tab-1',
-        leafId: LEAF_2
-      }
-    )
+    const localInPlaceConnect = transport.connect.mock.calls[0]?.[0] as
+      | { command?: string }
+      | undefined
+    expect(localInPlaceConnect?.command).toBeUndefined()
+    expect(mockStoreState.registerAgentLaunchConfig).not.toHaveBeenCalled()
     expect(deps.onShowSessionRestoredBanner).not.toHaveBeenCalled()
     expect(mockStoreState.clearSleepingAgentSession).not.toHaveBeenCalled()
 
@@ -10334,6 +10631,76 @@ describe('connectPanePty', () => {
     capturedDataCallback.current?.('\x1b[c')
 
     expect(pane.terminal.write).toHaveBeenCalledWith('\x1b[c', expect.any(Function))
+
+    binding.dispose()
+  })
+
+  it('keeps hidden agent-launch query chunks live from the agentLaunch identity (empty command)', async () => {
+    // The host-resolved launch path sends command:'' (host assembles it), so the
+    // agentLaunch identity — not the command string — must gate keeping hidden
+    // query chunks live for xterm to answer them.
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport('pty-id')
+    const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+    transport.connect.mockImplementation(async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+      capturedDataCallback.current = callbacks.onData ?? null
+      return 'pty-id'
+    })
+    transportFactoryQueue.push(transport)
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const binding = connectPanePty(
+      pane as never,
+      manager as never,
+      createDeps({
+        isVisibleRef: { current: false },
+        startup: {
+          command: '',
+          agentLaunch: {
+            selection: { kind: 'agent', agent: 'codex' },
+            allowEmptyPromptLaunch: true
+          }
+        }
+      }) as never
+    )
+    await flushAsyncTicks(6)
+
+    capturedDataCallback.current?.('\x1b[c')
+
+    expect(pane.terminal.write).toHaveBeenCalledWith('\x1b[c', expect.any(Function))
+
+    binding.dispose()
+  })
+
+  it('does not keep hidden query chunks live for a bare shell (no agent identity, empty command)', async () => {
+    // Contrast: a plain hidden shell has no agentLaunch/launchAgent and no known
+    // TUI command, so the renderer must NOT hold its query chunks live (main owns
+    // the replies) — proving the identity signal is specific, not always-on.
+    const { connectPanePty } = await import('./pty-connection')
+    const transport = createMockTransport('pty-id')
+    const capturedDataCallback: { current: ((data: string) => void) | null } = { current: null }
+    transport.connect.mockImplementation(async ({ callbacks }: { callbacks: ConnectCallbacks }) => {
+      capturedDataCallback.current = callbacks.onData ?? null
+      return 'pty-id'
+    })
+    transportFactoryQueue.push(transport)
+
+    const pane = createPane(1)
+    const manager = createManager(1)
+    const binding = connectPanePty(
+      pane as never,
+      manager as never,
+      createDeps({
+        isVisibleRef: { current: false },
+        startup: { command: '' }
+      }) as never
+    )
+    await flushAsyncTicks(6)
+
+    capturedDataCallback.current?.('\x1b[c')
+
+    expect(pane.terminal.write).not.toHaveBeenCalledWith('\x1b[c', expect.any(Function))
 
     binding.dispose()
   })
@@ -14811,25 +15178,38 @@ describe('connectPanePty', () => {
 
     expect(transport.attach).not.toHaveBeenCalled()
     expect(transport.connect).toHaveBeenCalledTimes(1)
+    // Slept remote-runtime PTYs cold-spawn fresh (never reattach by sessionId),
+    // carrying the host-owned resume variant. The record has no captured config,
+    // so no launchConfig rides — the host owns the resume argv. Since the item-7
+    // receipt seam, the client mints no cold-restore launchToken either: the host
+    // fresh-exec mints its own via the launched receipt.
     expect(transport.connect).toHaveBeenCalledWith(
       expect.objectContaining({
-        command: "codex '--dangerously-bypass-approvals-and-sandbox' 'resume' 'codex-session-1'",
-        launchAgent: 'codex',
-        launchConfig: {
-          agentCommand: "codex '--dangerously-bypass-approvals-and-sandbox'",
-          agentArgs: '--dangerously-bypass-approvals-and-sandbox',
-          agentEnv: {}
+        agentLaunch: {
+          resume: {
+            operation: 'resume',
+            sessionKey: {
+              worktreeId: 'wt-1',
+              baseAgent: 'codex',
+              providerSessionId: 'codex-session-1'
+            }
+          }
         },
-        launchToken: expect.stringMatching(new RegExp(`^${UUID_RE}$`)),
+        launchAgent: 'codex',
         env: expect.objectContaining({
           ORCA_PANE_KEY: paneKey,
           ORCA_TAB_ID: 'tab-1',
           ORCA_WORKTREE_ID: 'wt-1',
-          ORCA_WORKSPACE_ID: 'wt-1',
-          ORCA_AGENT_LAUNCH_TOKEN: expect.stringMatching(new RegExp(`^${UUID_RE}$`))
+          ORCA_WORKSPACE_ID: 'wt-1'
         })
       })
     )
+    const remoteResumeConnect = transport.connect.mock.calls[0]?.[0] as
+      | { command?: string; launchConfig?: unknown; launchToken?: unknown }
+      | undefined
+    expect(remoteResumeConnect?.command).toBeUndefined()
+    expect(remoteResumeConnect?.launchConfig).toBeUndefined()
+    expect(remoteResumeConnect?.launchToken).toBeUndefined()
     expect(transport.connect).toHaveBeenCalledWith(
       expect.not.objectContaining({ sessionId: expect.any(String) })
     )

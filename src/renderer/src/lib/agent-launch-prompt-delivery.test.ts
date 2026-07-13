@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   pasteDraftWhenAgentReady: vi.fn(),
   seedNativeChatLaunchPrompt: vi.fn(),
-  markNativeChatLaunchPromptFailed: vi.fn()
+  markNativeChatLaunchPromptFailed: vi.fn(),
+  settings: {} as { customTuiAgents?: { id: string; baseAgent: string; label: string }[] }
 }))
 
 vi.mock('@/lib/agent-paste-draft', () => ({
@@ -14,7 +15,8 @@ vi.mock('@/store', () => ({
   useAppStore: {
     getState: () => ({
       seedNativeChatLaunchPrompt: mocks.seedNativeChatLaunchPrompt,
-      markNativeChatLaunchPromptFailed: mocks.markNativeChatLaunchPromptFailed
+      markNativeChatLaunchPromptFailed: mocks.markNativeChatLaunchPromptFailed,
+      settings: mocks.settings
     })
   }
 }))
@@ -25,6 +27,30 @@ describe('deliverLaunchPromptToAgentTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.pasteDraftWhenAgentReady.mockResolvedValue(true)
+    mocks.settings = {}
+  })
+
+  // Registry safety (oracle 16): a custom id resolves its native-prefill behavior
+  // from its base harness; a broken resolution would misreport native delivery as
+  // a paste failure. claude delivers via `--prefill`, so a claude-based custom id
+  // whose paste no-ops must still count as delivered.
+  it('treats a custom-based native-prefill agent delivery as success', async () => {
+    const customId = 'custom-agent:claude:11111111-1111-4111-8111-111111111111'
+    mocks.settings = {
+      customTuiAgents: [{ id: customId, baseAgent: 'claude', label: 'My Claude' }]
+    }
+    mocks.pasteDraftWhenAgentReady.mockResolvedValue(false)
+
+    await expect(
+      deliverLaunchPromptToAgentTab({
+        tabId: 'tab-1',
+        agent: customId,
+        content: 'Large generated prompt',
+        submit: true,
+        forcePaste: false
+      })
+    ).resolves.toBe(true)
+    expect(mocks.markNativeChatLaunchPromptFailed).not.toHaveBeenCalled()
   })
 
   it('seeds a native-chat launch prompt for supported submitted content', async () => {

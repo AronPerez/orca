@@ -1,12 +1,12 @@
 import { toast } from 'sonner'
 import { useAppStore } from '@/store'
-import type { AgentStartupPlan } from '@/lib/tui-agent-startup'
 import {
   createWebRuntimeAgentSessionTerminal,
   createWebRuntimeSessionTerminal,
   isWebTerminalSurfaceTabId
 } from '@/runtime/web-runtime-session'
 import type { Tab, TuiAgent } from '../../../shared/types'
+import type { AgentLaunchSpawnRequest } from '../../../shared/agent-launch-spawn-request'
 import { translate } from '@/i18n/i18n'
 
 function removeStaleLocalAgentTabsForWebHostLaunch(worktreeId: string): void {
@@ -35,7 +35,7 @@ export function launchAgentInWebHostTab(args: {
   groupId?: string
   cwd?: string | null
   hasPrompt: boolean
-  startupPlan: AgentStartupPlan
+  agentLaunch: AgentLaunchSpawnRequest
   promptAfterReady?: {
     content: string
     submit: boolean
@@ -51,12 +51,14 @@ export function launchAgentInWebHostTab(args: {
     groupId,
     cwd,
     hasPrompt,
-    startupPlan,
+    agentLaunch,
     promptAfterReady,
     viewMode,
     onPromptDelivered
   } = args
   removeStaleLocalAgentTabsForWebHostLaunch(worktreeId)
+  // Why: the host resolves the launch from `agentLaunch` (identity + prompt
+  // policy only); the client never sends an assembled command/config/token.
   const launch = {
     worktreeId,
     environmentId,
@@ -64,17 +66,7 @@ export function launchAgentInWebHostTab(args: {
     activate: true,
     ...(cwd?.trim() ? { cwd } : {}),
     ...(viewMode ? { viewMode } : {}),
-    ...(hasPrompt
-      ? {
-          command: startupPlan.launchCommand,
-          ...(startupPlan.env ? { env: startupPlan.env } : {}),
-          launchConfig: startupPlan.launchConfig,
-          launchAgent: agent,
-          ...(startupPlan.startupCommandDelivery
-            ? { startupCommandDelivery: startupPlan.startupCommandDelivery }
-            : {})
-        }
-      : { agent })
+    agentLaunch
   }
   const creation = promptAfterReady
     ? createWebRuntimeAgentSessionTerminal({

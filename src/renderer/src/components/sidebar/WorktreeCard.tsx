@@ -27,6 +27,7 @@ import { LinearAgentSkillSetupPrompt } from './LinearAgentSkillSetupPrompt'
 import WorktreeCardAgents from './WorktreeCardAgents'
 import { useWorktreeAgentRows } from './useWorktreeAgentRows'
 import { WorktreeCardStatusSlot } from './WorktreeCardStatusSlot'
+import { WorktreeCardBackgroundLaunchFailures } from './WorktreeCardBackgroundLaunchFailures'
 import { cn } from '@/lib/utils'
 import { activateWorktreeFromSidebar } from '@/lib/sidebar-worktree-activation'
 import { isFolderRepo } from '../../../../shared/repo-kind'
@@ -1829,6 +1830,8 @@ const WorktreeCard = React.memo(function WorktreeCard({
         </div>
       )}
       {parentCardBodyWithHoverDetails}
+
+      <WorktreeCardBackgroundLaunchFailures worktreeId={worktree.id} />
 
       {newCardStyle && lineageChildren ? (
         <div

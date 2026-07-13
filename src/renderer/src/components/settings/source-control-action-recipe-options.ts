@@ -103,6 +103,14 @@ export function getAgentCatalogForAction(
   if (!SOURCE_CONTROL_TEXT_ACTION_ID_SET.has(actionId)) {
     return getAgentCatalog()
   }
+  // Why customs are intentionally absent here (not the missing-customs picker
+  // class): text-generation is a headless invocation against the per-built-in
+  // spec registry, not an interactive PTY launch, so a named custom id cannot
+  // resolve to a spawn command on this path — offering one would be a row that
+  // silently resolves to something other than what it claims. The `selectedAgent`
+  // clause is continuity-only (an already-assigned agent stays visible for
+  // explicit reselection); base∈text-gen customs resolving their own config
+  // headlessly would be a separate host-contract feature.
   return getAgentCatalog().filter(
     (agent) => TEXT_GENERATION_AGENT_ID_SET.has(agent.id) || agent.id === selectedAgent
   )

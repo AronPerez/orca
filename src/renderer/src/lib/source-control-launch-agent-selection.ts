@@ -8,7 +8,7 @@ import type {
   SourceControlActionId,
   SourceControlActionRecipe
 } from '../../../shared/source-control-ai-actions'
-import { filterEnabledTuiAgents } from '../../../shared/tui-agent-selection'
+import { filterEnabledTuiAgents, toLegacyAutoPreference } from '../../../shared/tui-agent-selection'
 import type { GlobalSettings, Repo, TuiAgent } from '../../../shared/types'
 
 export function readSourceControlLaunchRecipeAgentId(
@@ -74,7 +74,8 @@ export function resolveSourceControlLaunchAgentScope(input: {
   )
   // Why: the note compares against what would run with no override, so fall back
   // to the global default agent when no global recipe agent is set.
-  const defaultTuiAgent = input.settings?.defaultTuiAgent
+  // 'auto' (migrated legacy null) pins no fixed agent, so it falls through to null.
+  const defaultTuiAgent = toLegacyAutoPreference(input.settings?.defaultTuiAgent)
   const globalAgentId =
     globalRecipeAgentId ?? (defaultTuiAgent && defaultTuiAgent !== 'blank' ? defaultTuiAgent : null)
   const hasRepoAgentOverride =

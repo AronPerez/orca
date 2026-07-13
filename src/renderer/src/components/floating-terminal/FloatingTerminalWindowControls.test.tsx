@@ -61,7 +61,9 @@ vi.mock('@/lib/telemetry', () => ({
 }))
 
 vi.mock('../../../../shared/tui-agent-selection', () => ({
-  isTuiAgentEnabled: () => true
+  isTuiAgentEnabled: () => true,
+  toLegacyAutoPreference: (value: unknown) =>
+    value === 'auto' || value === undefined ? null : value
 }))
 
 vi.mock('../../../../shared/tui-agent-launch-defaults', () => ({
@@ -203,13 +205,16 @@ describe('FloatingTerminalWindowControls default-agent launch', () => {
     // Why: TerminalPane consumes any pending startup command on first render, so
     // the launch command must be queued before activation can mount the surface -
     // otherwise the new tab can come up as a bare shell.
-    expect(mocks.queueTabStartupCommand).toHaveBeenCalledWith(
-      NEW_AGENT_TAB_ID,
-      expect.objectContaining({
-        command: 'claude',
-        launchAgent: 'claude'
-      })
-    )
+    // The floating launch sends the host-atomic default selection — never a
+    // client-cached agent id, command, or launch config.
+    const queued = mocks.queueTabStartupCommand.mock.calls[0][1]
+    expect(queued.agentLaunch).toEqual({
+      selection: { kind: 'default' },
+      allowEmptyPromptLaunch: true
+    })
+    expect(queued.command).toBeFalsy()
+    expect(queued).not.toHaveProperty('launchConfig')
+    expect(queued).not.toHaveProperty('launchAgent')
     expect(mocks.queueTabStartupCommand.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.activateTab.mock.invocationCallOrder[0]
     )

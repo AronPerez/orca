@@ -325,6 +325,9 @@ const StatusBar = lazy(() =>
 const SetupGuideModal = lazy(() => import('./components/setup-guide/SetupGuideModal'))
 const FeatureWallModal = lazy(() => import('./components/feature-wall/FeatureWallModal'))
 const FeatureTipsModal = lazy(() => import('./components/feature-tips/FeatureTipsModal'))
+const AgentLaunchCapacityRecoverySheet = lazy(
+  () => import('./components/agent/AgentLaunchCapacityRecoverySheet')
+)
 const AddRepoDialog = lazy(() => import('./components/sidebar/AddRepoDialog'))
 const NonGitFolderDialog = lazy(() => import('./components/sidebar/NonGitFolderDialog'))
 const AddProjectFromFolderDialog = lazy(
@@ -2369,6 +2372,16 @@ function App(): React.JSX.Element {
                   compact
                 >
                   <FeatureTipsModal />
+                </RecoverableRenderErrorBoundary>
+              ) : null}
+              {resolvedMountedLazyModalIds.has('agent-launch-capacity-recovery') ? (
+                <RecoverableRenderErrorBoundary
+                  boundaryId="modal.agent-launch-capacity-recovery"
+                  surface="modal"
+                  resetKey={activeModal === 'agent-launch-capacity-recovery'}
+                  compact
+                >
+                  <AgentLaunchCapacityRecoverySheet />
                 </RecoverableRenderErrorBoundary>
               ) : null}
             </Suspense>

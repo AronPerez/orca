@@ -7,22 +7,10 @@ import {
   RUNTIME_PROTOCOL_VERSION
 } from '../../../shared/protocol-version'
 
-vi.mock('@/lib/tui-agent-startup', () => ({
-  buildAgentDraftLaunchPlan: vi.fn(() => null),
-  buildAgentStartupPlan: vi.fn(() => ({
-    agent: 'codex',
-    launchCommand: 'codex',
-    expectedProcess: 'codex',
-    followupPrompt: null,
-    launchConfig: { kind: 'shell', command: 'codex' }
-  }))
-}))
-
 vi.mock('@/lib/telemetry', () => ({
   tuiAgentToAgentKind: (agent: string) => agent
 }))
 
-import { buildAgentDraftLaunchPlan, buildAgentStartupPlan } from '@/lib/tui-agent-startup'
 import { createGitHubWorkItemWorkspaceInBackground } from './github-work-item-background-create'
 
 const repo: Repo = {
@@ -155,8 +143,6 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
         telemetrySource: 'sidebar',
         setupDecision: 'inherit',
         agent: null,
-        startupPlan: null,
-        quickPrompt: '',
         quickTelemetry: null
       }),
       { revealCreationSurface: false }
@@ -242,8 +228,6 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
       agent: null,
       pendingFirstAgentMessageRename: false,
       note: '',
-      startupPlan: null,
-      quickPrompt: '',
       quickTelemetry: null
     }
     const deps = makeDeps(
@@ -387,14 +371,18 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
     expect(continueCall).toBeDefined()
     const request = continueCall?.[1] as WorktreeCreationRequest
     expect(request.agent).toBe('codex')
-    expect(request.startupPlan?.launchCommand).toBe('codex')
-    expect(request.startup).toBeUndefined()
+    // The renderer names only the requested agent + prompt; the host resolves
+    // the command/args/env. A GitHub issue seeds the draft with the bare link.
+    expect(request.agentLaunch).toEqual({
+      selection: { kind: 'agent', agent: 'codex' },
+      prompt: 'https://github.com/stablyai/orca/issues/42',
+      promptDelivery: 'draft'
+    })
     expect(request.quickTelemetry).toEqual({
       agent_kind: 'codex',
       launch_source: 'new_workspace_composer',
       request_kind: 'new'
     })
-    expect(buildAgentStartupPlan).toHaveBeenCalled()
   })
 
   it('uses runtime-owned detection and indeterminate progress for runtime repos', async () => {
@@ -445,13 +433,12 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
     const request = continueCall?.[1] as WorktreeCreationRequest
     expect(request.worktreeCreateProgressMode).toBe('indeterminate')
     expect(request.agent).toBe('codex')
-    expect(buildAgentStartupPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ platform: 'win32' })
-    )
+    // The host resolves the command on the owner platform; the renderer only
+    // names the requested agent.
+    expect(request.agentLaunch?.selection).toEqual({ kind: 'agent', agent: 'codex' })
   })
 
-  it('falls back before creating when the selected agent startup plan cannot be built', async () => {
-    vi.mocked(buildAgentStartupPlan).mockReturnValueOnce(null)
+  it('proceeds to the host launch for a detected agent without client-side command validation', async () => {
     const store = makeStore({
       ensureDetectedAgents: vi.fn().mockResolvedValue(['codex'])
     })
@@ -467,12 +454,15 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
       deps
     )
 
-    expect(result).toEqual({ kind: 'fallback', reason: 'agent-startup' })
-    expect(deps.toastError).toHaveBeenCalledWith('Could not build the agent launch command.')
-    expect(deps.removePendingCreate).toHaveBeenCalledWith('creation-1')
-    expect(deps.setActiveView).toHaveBeenCalledWith('tasks')
-    expect(openModalFallback).toHaveBeenCalledTimes(1)
-    expect(deps.continueBackgroundCreate).not.toHaveBeenCalled()
+    // No client-side command-build gate: an unresolvable agent is the host's
+    // problem (created:false / durable card), never a pre-create modal fallback.
+    expect(result).toEqual({ kind: 'background-started' })
+    expect(deps.toastError).not.toHaveBeenCalled()
+    expect(openModalFallback).not.toHaveBeenCalled()
+    expect(deps.continueBackgroundCreate).toHaveBeenCalledTimes(1)
+    const continueCall = deps.continueBackgroundCreate.mock.calls[0] as unknown[] | undefined
+    const request = continueCall?.[1] as WorktreeCreationRequest
+    expect(request.agentLaunch?.selection).toEqual({ kind: 'agent', agent: 'codex' })
   })
 
   it('stops before opening the composer when the staged create is cancelled during setup preflight', async () => {
@@ -645,13 +635,7 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
     )
   })
 
-  it('prefers native draft startup when the agent supports it', async () => {
-    vi.mocked(buildAgentDraftLaunchPlan).mockReturnValueOnce({
-      agent: 'codex',
-      launchCommand: 'codex --prompt-file',
-      expectedProcess: 'codex',
-      launchConfig: { agentCommand: 'codex', agentArgs: '--prompt-file', agentEnv: {} }
-    })
+  it('declares the work item draft intent so the host owns native-draft delivery', async () => {
     const store = makeStore({
       ensureDetectedAgents: vi.fn().mockResolvedValue(['codex'])
     })
@@ -669,9 +653,13 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
     const continueCall = deps.continueBackgroundCreate.mock.calls[0] as unknown[] | undefined
     expect(continueCall).toBeDefined()
     const request = continueCall?.[1] as WorktreeCreationRequest
-    expect(request.startupPlan?.launchCommand).toBe('codex --prompt-file')
-    expect(request.startup?.command).toBe('codex --prompt-file')
-    expect(buildAgentStartupPlan).not.toHaveBeenCalled()
+    // Native-flag vs post-ready paste is now a host decision; the renderer only
+    // declares draft delivery for the requested agent.
+    expect(request.agentLaunch).toEqual({
+      selection: { kind: 'agent', agent: 'codex' },
+      prompt: 'https://github.com/stablyai/orca/issues/42',
+      promptDelivery: 'draft'
+    })
   })
 
   it('attaches the rendered issue command when the repo configured one and trust runs', async () => {
@@ -869,9 +857,8 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
     const request = continueCall?.[1] as WorktreeCreationRequest
     // Why: Brennan's confirmed scope keeps the quick-start prompt the bare link;
     // the issue command runs as a side-pane split, not as the agent prompt.
-    expect(request.startupPlan?.draftPrompt).toBe('https://github.com/stablyai/orca/issues/42')
-    expect(request.startupPlan?.draftPrompt ?? '').not.toContain('Complete')
-    expect(request.quickPrompt).not.toContain('Complete')
+    expect(request.agentLaunch?.prompt).toBe('https://github.com/stablyai/orca/issues/42')
+    expect(request.agentLaunch?.prompt ?? '').not.toContain('Complete')
     // The issue command itself still threads through as a side-pane split.
     expect(request.issueCommand?.command).toBe('echo 42')
   })

@@ -14,6 +14,7 @@ import type {
   Repo,
   Worktree
 } from '../../../../shared/types'
+import { toLegacyAutoPreference } from '../../../../shared/tui-agent-selection'
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
 import { Field } from './automation-page-parts'
 import { AutomationMissedRunGraceField } from './AutomationMissedRunGraceField'
@@ -230,7 +231,7 @@ export function AutomationEditorDialogFooter({
                 onValueChange={(agentId) =>
                   agentId && onDraftChange((current) => ({ ...current, agentId }))
                 }
-                defaultAgent={settings?.defaultTuiAgent ?? null}
+                defaultAgent={toLegacyAutoPreference(settings?.defaultTuiAgent)}
                 triggerClassName={`h-9 w-full min-w-0 ${pickerTriggerClassName}`}
                 allowNarrowTrigger
               />

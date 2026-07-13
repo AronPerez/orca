@@ -2,6 +2,7 @@ import { agentDeliversDraftViaNativePrefill } from '@/lib/agent-native-draft-pre
 import { pasteDraftWhenAgentReady } from '@/lib/agent-paste-draft'
 import { isNativeChatSupportedAgent } from '@/lib/native-chat-supported-agent'
 import { useAppStore } from '@/store'
+import { resolveTuiAgentConfig } from '../../../shared/custom-tui-agents'
 import type { TuiAgent } from '../../../shared/types'
 
 export function deliverLaunchPromptToAgentTab(args: {
@@ -29,7 +30,16 @@ export function deliverLaunchPromptToAgentTab(args: {
   // Why: native-prefill agents (claude/openclaude etc.) get the prompt at launch,
   // so pasteDraftWhenAgentReady returns false without pasting. That is a successful
   // native delivery, not a failure — don't flag the seeded bubble in that case.
-  const deliversViaNativePrefill = agentDeliversDraftViaNativePrefill(agent, forcePaste)
+  // Resolve the base config so a custom-based agent inherits its prefill behavior.
+  const promptDeliverySettings = useAppStore.getState().settings
+  const deliversViaNativePrefill = agentDeliversDraftViaNativePrefill(
+    resolveTuiAgentConfig(
+      agent,
+      promptDeliverySettings?.customTuiAgents,
+      promptDeliverySettings?.deletedCustomTuiAgents
+    ),
+    forcePaste
+  )
 
   return pasteDraftWhenAgentReady({
     tabId,

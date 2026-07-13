@@ -68,6 +68,53 @@ describe('captureAllSleepingAgentSessions', () => {
     })
   })
 
+  it('captures the custom requestedAgent after a default-selection launch backfills the tab', () => {
+    const store = createTestStore()
+    const customId = 'custom-agent:claude:11111111-1111-4111-8111-111111111111' as const
+    store.setState({
+      settings: {
+        ...store.getState().settings,
+        customTuiAgents: [
+          {
+            id: customId,
+            baseAgent: 'claude',
+            label: 'My Claude',
+            args: '',
+            env: {},
+            syncEnv: false
+          }
+        ]
+      },
+      // Default-selection launch ({kind:'default'}) sends no agent id, so the
+      // tab boots with no launchAgent.
+      tabsByWorktree: { 'wt-1': [makeTab({ id: 'tab-1', worktreeId: 'wt-1' })] }
+    } as Partial<AppState>)
+
+    // The host receipt resolved the custom default; pty-connection backfills it
+    // write-if-absent onto the tab that had none.
+    store.getState().backfillTabLaunchAgent('tab-1', customId)
+    expect(store.getState().tabsByWorktree['wt-1']?.[0]?.launchAgent).toBe(customId)
+
+    store
+      .getState()
+      .setAgentStatus(
+        'tab-1:leaf-1',
+        { state: 'working', prompt: 'finish the task', agentType: 'claude' },
+        'Claude',
+        { updatedAt: 10, stateStartedAt: 10 },
+        { tabId: 'tab-1', worktreeId: 'wt-1' },
+        { providerSession: { key: 'session_id', id: 'claude-session-1' } }
+      )
+
+    // The captured record preserves the requested custom id while ownership and
+    // resume argv stay keyed on the resolved base.
+    expect(store.getState().sleepingAgentSessionsByPaneKey['tab-1:leaf-1']).toMatchObject({
+      agent: 'claude',
+      baseAgent: 'claude',
+      requestedAgent: customId
+    })
+  })
+
   it('captures launch config into live checkpoints and refreshes late registration', () => {
     const store = createTestStore()
     store.setState({

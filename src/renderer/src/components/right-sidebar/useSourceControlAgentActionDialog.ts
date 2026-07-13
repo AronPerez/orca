@@ -7,7 +7,7 @@ import {
 import { useAppStore } from '@/store'
 import { useRepoById } from '@/store/selectors'
 import { renderSourceControlActionCommandTemplate } from '../../../../shared/source-control-ai-actions'
-import { isTuiAgentEnabled } from '../../../../shared/tui-agent-selection'
+import { isTuiAgentEnabled, toLegacyAutoPreference } from '../../../../shared/tui-agent-selection'
 import type { TuiAgent } from '../../../../shared/types'
 import type { SourceControlAgentActionDialogProps } from './SourceControlAgentActionDialog'
 import type { UseSourceControlAgentActionDialogResult } from './source-control-agent-action-dialog-result'
@@ -15,7 +15,7 @@ import { useSavedSourceControlAgentActionAutoStart } from './useSavedSourceContr
 import {
   buildSourceControlAgentSaveTargets,
   buildSourceControlAgentStatusCopy,
-  isSourceControlAgentDetectedAndEnabled
+  isSourceControlAgentUnavailable
 } from './source-control-agent-action-dialog-support'
 import { useSourceControlAgentActionStart } from './useSourceControlAgentActionStart'
 
@@ -117,7 +117,7 @@ export function useSourceControlAgentActionDialog({
           current ??
           pickSourceControlLaunchAgent({
             savedAgent: savedAgentId,
-            defaultAgent: settings?.defaultTuiAgent,
+            defaultAgent: toLegacyAutoPreference(settings?.defaultTuiAgent),
             detectedAgents: nextAgents,
             disabledAgents
           })
@@ -152,9 +152,10 @@ export function useSourceControlAgentActionDialog({
       ),
     [enabledDetectedAgents, selectedAgent]
   )
-  const selectedAgentUnavailable = Boolean(
-    selectedAgent &&
-    !isSourceControlAgentDetectedAndEnabled(selectedAgent, detectedAgents, disabledAgents)
+  const selectedAgentUnavailable = isSourceControlAgentUnavailable(
+    selectedAgent,
+    detectedAgents,
+    settings
   )
   const hasEnabledAgents = enabledDetectedAgents.length > 0
   const commandInput = renderSourceControlActionCommandTemplate(commandTemplate, {
@@ -179,9 +180,6 @@ export function useSourceControlAgentActionDialog({
       groupId,
       promptDelivery,
       launchPlatform,
-      // Why: an SSH host runs the plain `orca` shim; keep the previewed command
-      // label aligned with the real remote launch (no `orca-ide` rename).
-      isRemote: typeof connectionId === 'string',
       launchSource,
       connectionUnavailable,
       refreshDetectedAgents,

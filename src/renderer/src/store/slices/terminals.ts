@@ -27,6 +27,10 @@ import {
   worktreeWorkspaceKey
 } from '../../../../shared/workspace-scope'
 import { deriveGeneratedTabTitle } from '../../../../shared/agent-tab-title'
+import type {
+  AgentLaunchNotice,
+  AgentLaunchNoticeCode
+} from '../../../../shared/agent-launch-contract'
 import { isDecorativeAgentTitleFrameChange } from '../../../../shared/agent-decorative-title-signature'
 import {
   makePaneKey,
@@ -41,9 +45,10 @@ import {
 import { isWslUncPath } from '../../../../shared/wsl-paths'
 import type { ProjectExecutionRuntimeResolution } from '../../../../shared/project-execution-runtime'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
+import type { AgentLaunchInput } from '../../../../shared/agent-launch-spawn-request'
 import { resolveLocalWindowsTerminalShellOverrideForTab } from '../../../../shared/local-windows-terminal-runtime'
 import { WINDOWS_GIT_BASH_SHELL } from '../../../../shared/windows-terminal-shell'
-import type { AgentStartedTelemetry } from '../../lib/worktree-activation'
+import type { StartupLaunchTelemetry } from '../../lib/worktree-activation'
 import { scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
 import { forgetAgentHibernationTabOutput } from '@/lib/agent-hibernation-output-activity'
 import { forgetForegroundTerminalTabs } from '@/lib/foreground-terminal-tabs'
@@ -480,15 +485,24 @@ export type TerminalSlice = {
   markNativeChatLaunchPromptFailed: (tabId: string) => void
   clearNativeChatLaunchPrompt: (tabId: string) => void
   pendingStartupByTabId: Record<
-    string,
-    {
-      command: string
-      /** Renderer-delivered startup input for callers needing xterm paste semantics before the submit Enter. */
+      string,
+      {
+        command: string
+        // Host-owned launch request; either a fresh identity+prompt selection or a
+      // provider-session resume/fork by session key. When set the host resolves
+      // the command and mints the token, superseding the
+      // command/launchConfig/launchToken/launchAgent/resumeProviderSession below.
+      agentLaunch?: AgentLaunchInput
+        /** Renderer-delivered startup input for callers that need xterm paste
+         *  semantics before the submit Enter. */
       delivery?: 'terminal-paste'
       startupCommandDelivery?: StartupCommandDelivery
       env?: Record<string, string>
       envToDelete?: string[]
       launchConfig?: SleepingAgentLaunchConfig
+      /** One-release legacy handoff: the recorded execution owner attached
+       *  alongside a pre-U5 record's `launchConfig` for host-side provenance. */
+      legacyResumeRecordedConnectionId?: string | null
       resumeProviderSession?: AgentProviderSessionMetadata
       launchToken?: string
       launchAgent?: TuiAgent
@@ -497,8 +511,10 @@ export type TerminalSlice = {
       initialAgentStatus?: { agent: TuiAgent; prompt: string }
       /** Show the restored-session banner when this startup command mounts. */
       showSessionRestoredBanner?: boolean
-      /** Telemetry for the `agent_started` event; threaded to the pty:spawn handler so it fires only after spawn confirms, not on click-intent. */
-      telemetry?: AgentStartedTelemetry
+      /** Telemetry metadata for the `agent_started` event. Threaded all the
+       *  way to the `pty:spawn` IPC handler in main so the event fires only
+       *  after spawn confirms — never on click-intent. */
+      telemetry?: StartupLaunchTelemetry
     }
   >
   pendingInitialCwdByTabId: Record<string, string>
@@ -576,6 +592,11 @@ export type TerminalSlice = {
     options?: { replaceExistingGeneratedTitle?: boolean }
   ) => void
   clearTabLaunchAgent: (tabId: string) => void
+  /** Write-if-absent: record the requested launch identity on a tab that has
+   *  none yet. Used to backfill default-selection launches ({kind:'default'}
+   *  send no id) from the host receipt so a custom default's identity survives
+   *  to capture/resume; never overwrites a caller-set id. */
+  backfillTabLaunchAgent: (tabId: string, agent: TuiAgent) => void
   setRuntimePaneTitle: (tabId: string, paneId: number, title: string) => void
   clearRuntimePaneTitle: (tabId: string, paneId: number) => void
   /** Mark a tab unread (agent working→idle); skipped when the tab is visible, since a "seen" flag would never clear. */
@@ -591,6 +612,23 @@ export type TerminalSlice = {
     opts?: { recordInteraction?: boolean }
   ) => void
   setTabColor: (tabId: string, color: string | null) => void
+  /** Mirror the host-owned launch notices from a spawn receipt onto the tab so
+   *  the banner renders. The host remains the owner; this only reflects the
+   *  receipt the host already produced. No-op when there are no notices. */
+  attachLaunchNotices: (args: {
+    worktreeId: string
+    tabId: string
+    launchToken: string
+    notices: readonly AgentLaunchNotice[]
+  }) => void
+  /** Dismiss a host-owned launch notice. The host is the owner: this asks it to
+   *  remove every matching code, then mirrors the confirmed removal locally. */
+  dismissLaunchNotice: (args: {
+    worktreeId: string
+    tabId: string
+    launchToken: string
+    code: AgentLaunchNoticeCode
+  }) => void
   updateTabPtyId: (tabId: string, ptyId: string, replacedPtyId?: string) => void
   clearTabPtyId: (tabId: string, ptyId?: string) => void
   shutdownWorktreeTerminals: (
@@ -634,36 +672,47 @@ export type TerminalSlice = {
     tabId: string,
     startup: {
       command: string
+      // Host-owned launch request; either a fresh identity+prompt selection or a
+      // provider-session resume/fork by session key. When set the host resolves
+      // the command and mints the token, superseding the
+      // command/launchConfig/launchToken/launchAgent/resumeProviderSession below.
+      agentLaunch?: AgentLaunchInput
       delivery?: 'terminal-paste'
       startupCommandDelivery?: StartupCommandDelivery
       env?: Record<string, string>
       envToDelete?: string[]
       launchConfig?: SleepingAgentLaunchConfig
+      // Why: one-release legacy handoff — attached only for a pre-U5 sleeping
+      // record so the host can prove its opaque `launchConfig` still targets the
+      // recorded execution owner before replay.
+      legacyResumeRecordedConnectionId?: string | null
       resumeProviderSession?: AgentProviderSessionMetadata
       launchToken?: string
       launchAgent?: TuiAgent
       draftPrompt?: string
       initialAgentStatus?: { agent: TuiAgent; prompt: string }
       showSessionRestoredBanner?: boolean
-      telemetry?: AgentStartedTelemetry
+      telemetry?: StartupLaunchTelemetry
     }
   ) => void
   queueTabInitialCwd: (tabId: string, cwd: string) => void
   consumeTabInitialCwd: (tabId: string) => string | null
   consumeTabStartupCommand: (tabId: string) => {
     command: string
+    agentLaunch?: AgentLaunchInput
     delivery?: 'terminal-paste'
     startupCommandDelivery?: StartupCommandDelivery
     env?: Record<string, string>
     envToDelete?: string[]
     launchConfig?: SleepingAgentLaunchConfig
+    legacyResumeRecordedConnectionId?: string | null
     resumeProviderSession?: AgentProviderSessionMetadata
     launchToken?: string
     launchAgent?: TuiAgent
     draftPrompt?: string
     initialAgentStatus?: { agent: TuiAgent; prompt: string }
     showSessionRestoredBanner?: boolean
-    telemetry?: AgentStartedTelemetry
+    telemetry?: StartupLaunchTelemetry
   } | null
   queueTabSetupSplit: (
     tabId: string,
@@ -1654,6 +1703,26 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     })
   },
 
+  backfillTabLaunchAgent: (tabId, agent) => {
+    set((s) => {
+      const ownerWorktreeId = getTerminalTabOwnerWorktreeId(s.tabsByWorktree, tabId)
+      if (!ownerWorktreeId) {
+        return s
+      }
+      const tabs = s.tabsByWorktree[ownerWorktreeId] ?? []
+      const tabIndex = tabs.findIndex((t) => t.id === tabId)
+      const currentTab = tabs[tabIndex]
+      // Write-if-absent: a caller-set id is authoritative; only fill the gap.
+      if (!currentTab || currentTab.launchAgent) {
+        return s
+      }
+      const nextTabs = [...tabs]
+      nextTabs[tabIndex] = { ...currentTab, launchAgent: agent }
+      scheduleRuntimeGraphSync()
+      return { tabsByWorktree: { ...s.tabsByWorktree, [ownerWorktreeId]: nextTabs } }
+    })
+  },
+
   setRuntimePaneTitle: (tabId, paneId, title) => {
     set((s) => {
       const currentByPane = s.runtimePaneTitlesByTabId[tabId] ?? {}
@@ -1823,6 +1892,52 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         )
       }
     }
+  },
+
+  attachLaunchNotices: ({ worktreeId, tabId, launchToken, notices }) => {
+    if (notices.length === 0) {
+      return
+    }
+    set((s) => {
+      const tabs = s.tabsByWorktree[worktreeId]
+      if (!tabs) {
+        return {}
+      }
+      const next = tabs.map((t) =>
+        t.id === tabId ? { ...t, launchNotices: { launchToken, notices } } : t
+      )
+      return { tabsByWorktree: { ...s.tabsByWorktree, [worktreeId]: next } }
+    })
+  },
+
+  dismissLaunchNotice: ({ worktreeId, tabId, launchToken, code }) => {
+    // Ask the host (owner) to remove and persist; mirror the confirmed removal
+    // locally so the banner refits the terminal immediately.
+    const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(get(), worktreeId)
+    if (runtimeEnvironmentId) {
+      void import('@/runtime/web-runtime-session').then(({ dismissWebRuntimeLaunchNotice }) =>
+        dismissWebRuntimeLaunchNotice({ worktreeId, tabId, launchToken, code })
+      )
+    } else {
+      void window.api.pty.dismissLaunchNotice({ worktreeId, tabId, launchToken, code })
+    }
+    set((s) => {
+      const tabs = s.tabsByWorktree[worktreeId]
+      if (!tabs) {
+        return {}
+      }
+      const next = tabs.map((t) => {
+        if (t.id !== tabId || t.launchNotices?.launchToken !== launchToken) {
+          return t
+        }
+        const remaining = t.launchNotices.notices.filter((notice) => notice.code !== code)
+        const { launchNotices: _dropped, ...rest } = t
+        return remaining.length > 0
+          ? { ...rest, launchNotices: { launchToken, notices: remaining } }
+          : rest
+      })
+      return { tabsByWorktree: { ...s.tabsByWorktree, [worktreeId]: next } }
+    })
   },
 
   updateTabPtyId: (tabId, ptyId, replacedPtyId) => {

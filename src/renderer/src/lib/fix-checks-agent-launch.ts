@@ -6,7 +6,6 @@ import { launchAgentInNewTab } from '@/lib/launch-agent-in-new-tab'
 import { launchWorkItemDirect } from '@/lib/launch-work-item-direct'
 import { getLocalProjectExecutionRuntimeContext } from '@/lib/local-preflight-context'
 import { CLIENT_PLATFORM } from '@/lib/new-workspace'
-import { planAgentCliArgsSuffix } from '@/lib/tui-agent-startup'
 import {
   pickSourceControlLaunchAgent,
   readSourceControlLaunchRecipeAgentId
@@ -19,7 +18,7 @@ import {
   DEFAULT_SOURCE_CONTROL_ACTION_COMMAND_TEMPLATES,
   renderSourceControlActionCommandTemplate
 } from '../../../shared/source-control-ai-actions'
-import { isTuiAgentEnabled } from '../../../shared/tui-agent-selection'
+import { isTuiAgentEnabled, toLegacyAutoPreference } from '../../../shared/tui-agent-selection'
 import type {
   GitHubWorkItem,
   TuiAgent,
@@ -101,7 +100,7 @@ async function pickExistingWorktreeAgent(
   }
   const settings = useAppStore.getState().settings
   const agent = pickSourceControlLaunchAgent({
-    defaultAgent: settings?.defaultTuiAgent,
+    defaultAgent: toLegacyAutoPreference(settings?.defaultTuiAgent),
     detectedAgents,
     disabledAgents: settings?.disabledTuiAgents
   })
@@ -180,14 +179,6 @@ export async function startFixChecksAgent(args: StartFixChecksAgentArgs): Promis
       )
       return false
     }
-    const agentArgsPlan = planAgentCliArgsSuffix(
-      recipe.agentArgs,
-      launchPlatform === 'win32' ? 'powershell' : 'posix'
-    )
-    if (!agentArgsPlan.ok) {
-      toast.error(agentArgsPlan.error)
-      return false
-    }
     if (!activateAndRevealWorktree(targetWorktreeId)) {
       toast.error(
         translate(
@@ -202,20 +193,13 @@ export async function startFixChecksAgent(args: StartFixChecksAgentArgs): Promis
       worktreeId: targetWorktreeId,
       groupId: args.groupId ?? targetWorktreeId,
       prompt: commandInput,
-      agentArgs: recipe.agentArgs,
+      // Why: the host resolves the fixChecks recipe's stored agentArgs from the
+      // owner locator; the client no longer sends assembled args on this path.
+      sourceRecord: { owner: 'source-control-recipe', id: 'fixChecks' },
       promptDelivery: 'submit-after-ready',
       launchPlatform,
       launchSource: args.launchSource
     })
-    if (!result) {
-      toast.error(
-        translate(
-          'auto.lib.fix.checks.agent.launch.fb6c294e85',
-          'Could not build the agent launch command.'
-        )
-      )
-      return false
-    }
     if (result.tabId) {
       focusTerminalTabSurface(result.tabId)
     }
@@ -243,7 +227,8 @@ export async function startFixChecksAgent(args: StartFixChecksAgentArgs): Promis
     launchSource: args.launchSource,
     telemetrySource: args.telemetrySource,
     promptDelivery: 'submit-after-ready',
-    agentArgs: recipe.agentArgs,
+    // The host resolves the fixChecks recipe's stored agentArgs from this locator.
+    sourceControlActionId: 'fixChecks',
     ...(agentOverride.kind === 'agent' ? { agentOverride: agentOverride.agent } : {}),
     openModalFallback: args.openModalFallback
   })

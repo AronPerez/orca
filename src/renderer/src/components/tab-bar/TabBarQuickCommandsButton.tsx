@@ -13,6 +13,7 @@ import {
 import { getRepoIdFromWorktreeId } from '../../../../shared/worktree-id'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
 import { runQuickCommandInNewTab } from '@/lib/run-quick-command-in-new-tab'
+import { deleteTerminalQuickCommand, saveTerminalQuickCommand } from '@/lib/agent-catalog-authoring'
 import type { TerminalQuickCommand } from '../../../../shared/types'
 import { useConfirmationDialog } from '@/components/confirmation-dialog'
 import { translate } from '@/i18n/i18n'
@@ -29,7 +30,6 @@ export function TabBarQuickCommandsButton({
 }: TabBarQuickCommandsButtonProps): React.JSX.Element | null {
   const allCommands = useAppStore((s) => s.settings?.terminalQuickCommands)
   const recentByGroup = useAppStore((s) => s.recentQuickCommandIdByGroup)
-  const updateSettings = useAppStore((s) => s.updateSettings)
   const repos = useAppStore((s) => s.repos)
   const confirm = useConfirmationDialog()
   // Why: floating terminals share a synthetic worktree id (`global-floating-terminal`)
@@ -94,10 +94,7 @@ export function TabBarQuickCommandsButton({
   }
 
   const handleSaveCommand = (next: TerminalQuickCommand): void => {
-    const current = useAppStore.getState().settings?.terminalQuickCommands ?? []
-    const isEdit = current.some((c) => c.id === next.id)
-    const nextList = isEdit ? current.map((c) => (c.id === next.id ? next : c)) : [...current, next]
-    void updateSettings({ terminalQuickCommands: nextList })
+    void saveTerminalQuickCommand(next)
   }
 
   const handleDeleteCommand = async (command: TerminalQuickCommand): Promise<void> => {
@@ -120,8 +117,7 @@ export function TabBarQuickCommandsButton({
     if (!confirmed) {
       return
     }
-    const current = useAppStore.getState().settings?.terminalQuickCommands ?? []
-    void updateSettings({ terminalQuickCommands: current.filter((c) => c.id !== command.id) })
+    void deleteTerminalQuickCommand(command.id)
   }
 
   const handleRun = (command: TerminalQuickCommand): void => {

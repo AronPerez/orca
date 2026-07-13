@@ -48,7 +48,7 @@ import type {
   TuiAgent
 } from '../../../../shared/types'
 import type { TerminalPaneSplitSource } from '../../../../shared/feature-education-telemetry'
-import type { EventProps } from '../../../../shared/telemetry-events'
+import type { StartupLaunchTelemetry } from '../../lib/worktree-activation'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
 import type {
   AgentProviderSessionMetadata,
@@ -221,8 +221,9 @@ type UseTerminalPaneLifecycleDeps = {
     draftPrompt?: string
     /** Initial prompt-start status for agents that lack native prompt hooks. */
     initialAgentStatus?: { agent: TuiAgent; prompt: string }
-    /** Telemetry for `agent_started`; forwarded to `pty:spawn` so main fires it only after spawn succeeds. */
-    telemetry?: EventProps<'agent_started'>
+    /** Telemetry payload for `agent_started`. Forwarded to `pty:spawn`
+     *  so main fires the event only after the spawn succeeds. */
+    telemetry?: StartupLaunchTelemetry
     /** Show the restored-session banner when this startup command mounts. */
     showSessionRestoredBanner?: boolean
     /** Initial startup may be paired with a setup split that changes its grid. */

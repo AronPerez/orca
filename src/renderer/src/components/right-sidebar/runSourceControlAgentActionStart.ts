@@ -75,16 +75,18 @@ export async function runSourceControlAgentActionStart({
       worktreeId,
       groupId: groupId ?? worktreeId,
       prompt: trimmedCommandInput,
-      agentArgs,
+      // Why: the host resolves this recipe's stored agentArgs from the owner
+      // locator; the client no longer sends assembled args on the launch path.
+      sourceRecord: { owner: 'source-control-recipe', id: actionId },
       promptDelivery,
       launchPlatform,
       launchSource
     })
-    launched = Boolean(result)
-    if (result?.tabId) {
+    launched = true
+    if (result.tabId) {
       focusTerminalTabSurface(result.tabId)
     }
-    if (result?.promptDeliveryResult) {
+    if (result.promptDeliveryResult) {
       try {
         const deliveryResult = await result.promptDeliveryResult
         launched = deliveryResult.delivered

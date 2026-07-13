@@ -4,10 +4,9 @@ import type {
   SetupDecision,
   TuiAgent,
   WorkspaceCreateTelemetrySource,
-  WorkspaceStatus,
-  WorktreeStartupLaunch
+  WorkspaceStatus
 } from '../../../shared/types'
-import type { AgentStartupPlan } from '@/lib/tui-agent-startup'
+import type { AgentLaunchSpawnRequest } from '../../../shared/agent-launch-spawn-request'
 import type { AgentStartedTelemetry } from '@/lib/worktree-activation'
 import type { TaskSourceContext, WorkspaceRunContext } from '../../../shared/task-source-context'
 
@@ -73,20 +72,19 @@ export type WorktreeCreationRequest = {
   linkedBitbucketPR?: number | null
   linkedAzureDevOpsPR?: number | null
   linkedGiteaPR?: number | null
-  /** Backend-spawn startup payload (`createWorktree` arg). Present only when the
-   *  agent launch is self-contained; otherwise the renderer drives startup via
-   *  `startupPlan`. */
-  startup?: WorktreeStartupLaunch
+  /** Host-resolved two-stage agent launch. When present the host owns resolution
+   *  and spawns the primary agent terminal on create; the renderer consumes the
+   *  `launched` receipt (never argv/env) and materializes setup/default tabs
+   *  around it. Absent for blank-shell creates. */
+  agentLaunch?: AgentLaunchSpawnRequest
   /** Repo Custom GitHub Issue Command to run in a side-pane split after the
    *  workspace's first terminal is created. Mirrors the composer's trust-gated issueCommand. */
   issueCommand?: { command: string; env?: Record<string, string> }
   pendingFirstAgentMessageRename: boolean
   /** Post-create note persisted as the worktree comment. */
   note: string
-  /** Renderer-side launch plan used to seed the first terminal when the backend
-   *  did not already spawn it. Null for blank-shell creates. */
-  startupPlan: AgentStartupPlan | null
-  quickPrompt: string
+  /** Telemetry emitted renderer-side off the host's `launched` receipt (the host
+   *  create-spawn threads no telemetry). Null for blank-shell creates. */
   quickTelemetry: AgentStartedTelemetry | null
   /** When the composer stays open for sequential creates, completion must not
    *  steal focus from the next workspace name field. */

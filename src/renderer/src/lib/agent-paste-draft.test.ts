@@ -15,7 +15,10 @@ import {
 
 const testState = vi.hoisted(() => ({
   appState: {
-    settings: {},
+    settings: {} as {
+      activeRuntimeEnvironmentId?: string | null
+      customTuiAgents?: { id: string; baseAgent: string; label: string }[]
+    },
     ptyIdsByTabId: { 'tab-1': ['pty-1'] },
     runtimePaneTitlesByTabId: {},
     tabsByWorktree: {} as Record<string, { id: string; title?: string }[]>,
@@ -329,6 +332,24 @@ describe('pasteDraftWhenAgentReady', () => {
 
     expect(testState.subscribeToPtyData).not.toHaveBeenCalled()
     expect(testState.sendRuntimePtyInputVerified).not.toHaveBeenCalled()
+  })
+
+  // Registry safety (oracle 16): a custom id inherits its base harness's native
+  // draft-prefill behavior, so it must skip the paste just like its base would.
+  it('skips the paste for a custom agent whose base delivers via native prefill', async () => {
+    const customId = 'custom-agent:pi:11111111-1111-4111-8111-111111111111'
+    testState.appState.settings = {
+      customTuiAgents: [{ id: customId, baseAgent: 'pi', label: 'My Pi' }]
+    }
+    try {
+      await expect(
+        pasteDraftWhenAgentReady({ tabId: 'tab-1', content: ISSUE_URL, agent: customId })
+      ).resolves.toBe(false)
+      expect(testState.subscribeToPtyData).not.toHaveBeenCalled()
+      expect(testState.sendRuntimePtyInputVerified).not.toHaveBeenCalled()
+    } finally {
+      testState.appState.settings = {}
+    }
   })
 
   it('submits in a separate write after force-pasting native-prefill agents', async () => {

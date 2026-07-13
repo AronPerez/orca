@@ -8,6 +8,7 @@ import {
 import {
   AI_VAULT_SESSION_DRAG_END_EVENT,
   AI_VAULT_SESSION_DRAG_START_EVENT,
+  buildAiVaultResumeEntryFromDragPayload,
   clearAiVaultSessionDragData,
   hasAiVaultSessionDragData,
   readAiVaultSessionDragData
@@ -200,6 +201,7 @@ export default function AiVaultSessionDropLayer({
         return true
       }
 
+      const resumeEntry = buildAiVaultResumeEntryFromDragPayload(payload)
       const showQueuedToast = (): void => {
         toast.success(
           translate(
@@ -234,6 +236,9 @@ export default function AiVaultSessionDropLayer({
             ...(startup.env ? { env: startup.env } : {}),
             ...(startup.envToDelete ? { envToDelete: startup.envToDelete } : {}),
             ...(startup.launchConfig ? { launchConfig: startup.launchConfig } : {}),
+            ...(resumeEntry
+              ? { agentLaunch: { vaultResume: { operation: 'resume', entry: resumeEntry } } }
+              : {}),
             targetGroupId: dropTarget.groupId,
             splitDirection: dropTarget.zone === 'center' ? undefined : dropTarget.zone
           })

@@ -21,6 +21,13 @@ import type {
   WorkspaceKey
 } from '../../../../shared/types'
 import type { WorktreeForceDeleteReason } from '../../../../shared/worktree-removal'
+import type {
+  RetryAgentLaunchAction,
+  WorktreeRetryAgentLaunchResult,
+  ForgetUnknownAgentLaunchResult
+} from '../../../../shared/agent-launch-worktree-recovery'
+import type { PendingAgentLaunchSummary } from '../../../../shared/agent-launch-pending-summary'
+import type { RuntimeClientTarget } from '@/runtime/runtime-rpc-client'
 import type { TerminalGitHubPRLink } from '../../../../shared/terminal-github-pr-link-detector'
 import type {
   PendingWorktreeCreation,
@@ -158,8 +165,73 @@ export type WorktreeSlice = {
     compareBaseRef?: string,
     // Why: reserved for automation-dispatch flows so host-side provenance can
     // be minted securely; regular create callers should omit this.
-    options?: { automationProvenanceRequest?: CreateWorktreeArgs['automationProvenanceRequest'] }
+    options?: {
+      automationProvenanceRequest?: CreateWorktreeArgs['automationProvenanceRequest']
+      /** Host-resolved two-stage agent launch. When present the host owns
+       *  resolution and spawns the primary agent terminal, so callers must
+       *  consume the `CreateWorktreeResult` union (a pre-create rejection is
+       *  `created: false` with the composer kept open, never a thrown error). */
+      agentLaunch?: CreateWorktreeArgs['agentLaunch']
+      /** Surface-owned agent_started fields for a host-emitted interactive create.
+       *  Threaded only by interactive agentLaunch creates; the host derives kind
+       *  from the receipt. Omit for background/automation (host emits nothing). */
+      agentLaunchTelemetry?: CreateWorktreeArgs['agentLaunchTelemetry']
+    }
   ) => Promise<CreateWorktreeResult>
+  /** Retry a settled agent-launch failure on an existing worktree. Mints a fresh
+   *  canonical-lowercase-UUID clientMutationId per invocation; the host owns
+   *  idempotency, the failure-id guard, and recovery-card gating. Returns the
+   *  tri-state result so the recovery card can render blocked/rejected reasons
+   *  (launched/failed reconcile into WorktreeMeta via the change notification). */
+  retryWorktreeAgentLaunch: (args: {
+    worktreeId: string
+    expectedFailureId: string
+    action: RetryAgentLaunchAction
+  }) => Promise<WorktreeRetryAgentLaunchResult>
+  /** Forget a launch stranded in launch_state_unknown. Never kills or spawns;
+   *  releases Orca's local bookkeeping (the host clears the card + capacity). */
+  forgetWorktreeAgentLaunch: (args: {
+    worktreeId: string
+    expectedOperationId: string
+  }) => Promise<ForgetUnknownAgentLaunchResult>
+  /** Retry a generic background attempt's settled failure. `worktreeId` selects
+   *  the runtime target (a background attempt may live on a remote worktree); the
+   *  wire request is keyed by `attemptId`. Mints a fresh clientMutationId per call
+   *  and returns the same tri-state result as the worktree retry. */
+  retryBackgroundAgentLaunch: (args: {
+    attemptId: string
+    worktreeId: string
+    expectedFailureId: string
+    action: RetryAgentLaunchAction
+  }) => Promise<WorktreeRetryAgentLaunchResult>
+  /** Forget a background attempt stranded in launch_state_unknown. Frees exactly
+   *  one reservation; never kills or spawns. `worktreeId` selects the runtime
+   *  target; the request is guarded by the attempt's pending operation id. */
+  forgetBackgroundAgentLaunch: (args: {
+    attemptId: string
+    worktreeId: string
+    expectedOperationId: string
+  }) => Promise<ForgetUnknownAgentLaunchResult>
+  /** Confirm-open preflight for the ":498 Also forget N…" opt-in. Returns the
+   *  host-scoped count of same-principal siblings stranded on the anchor's
+   *  disconnected host, plus that host's display name for the label. Count is 0 for
+   *  a local anchor (bulk only spans a disconnected remote provider), so the opt-in
+   *  never appears there. */
+  unknownAgentLaunchSiblingPreflight: (args: {
+    worktreeId: string
+  }) => Promise<{ count: number; hostName: string }>
+  /** Same-principal bulk forget on the anchor's disconnected host. Never kills or
+   *  spawns; frees only each sibling's own reservation and is idempotent (a
+   *  re-submit forgets 0). Returns how many siblings actually settled. */
+  forgetUnknownAgentLaunchSiblings: (args: {
+    worktreeId: string
+  }) => Promise<{ forgottenCount: number }>
+  /** Fetch the host-redacted pending-launch summary for the capacity-recovery
+   *  sheet. Pass the runtime target the capacity rejection came from; defaults to
+   *  local. The host scopes rows to the authenticated principal and strips secrets. */
+  fetchPendingAgentLaunchSummary: (
+    target?: RuntimeClientTarget
+  ) => Promise<PendingAgentLaunchSummary>
   /** Register an in-flight background creation and make it the active surface. */
   beginPendingWorktreeCreation: (entry: PendingWorktreeCreation) => void
   /** Merge a status patch into an existing pending entry. */

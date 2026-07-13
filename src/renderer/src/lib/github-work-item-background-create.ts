@@ -6,8 +6,7 @@ import {
   continueBackgroundWorktreeCreation
 } from '@/lib/worktree-creation-flow'
 import {
-  buildGitHubWorkItemBackendStartup,
-  buildGitHubWorkItemStartupPlan,
+  buildGitHubWorkItemAgentLaunch,
   buildInitialGitHubWorkItemRequest,
   type GitHubWorkItemBackgroundStoreSnapshot,
   resolvePreferredQuickAgentForGitHubWorkItem
@@ -17,7 +16,6 @@ import {
   resolveDirectPrStartPoint,
   resolveDirectSetupDecision
 } from '@/lib/launch-work-item-direct-preflight'
-import { agentLaunchCommandErrorMessage } from '@/lib/launch-work-item-direct-messages'
 import { ensureHooksConfirmed } from '@/lib/ensure-hooks-confirmed'
 import { renderIssueCommandTemplate } from '@/lib/new-workspace'
 import { getSettingsForRepoRuntimeOwner } from '@/lib/repo-runtime-owner'
@@ -242,19 +240,13 @@ export async function createGitHubWorkItemWorkspaceInBackground(
     if (!deps.hasPendingCreate(creationId)) {
       return { kind: 'background-started' }
     }
-    const { startupPlan, quickPrompt, quickTelemetry } = buildGitHubWorkItemStartupPlan({
+    // The host resolves the launch command/args/env and validates the agent; a
+    // resolution failure comes back as a post-create durable card or a
+    // created:false rejection, so there is no client-side command-build fallback.
+    const { agentLaunch, quickTelemetry } = buildGitHubWorkItemAgentLaunch({
       agent,
-      item: args.item,
-      repo,
-      store
+      item: args.item
     })
-    if (agent && !startupPlan) {
-      deps.toastError(agentLaunchCommandErrorMessage())
-      abandonStagedCreate(creationId, restoreView, deps)
-      args.openModalFallback()
-      return { kind: 'fallback', reason: 'agent-startup' }
-    }
-    const backendStartup = buildGitHubWorkItemBackendStartup(agent, startupPlan, quickTelemetry)
 
     // Why: mirror the composer's trust-gated issue-command split. Only GitHub
     // issues (numeric issue number) on git repos run it; PRs/Linear/folders never
@@ -307,10 +299,8 @@ export async function createGitHubWorkItemWorkspaceInBackground(
       ...(pushTarget ? { pushTarget } : {}),
       agent,
       ...(branchNameOverride ? { branchNameOverride } : {}),
-      ...(backendStartup ? { startup: backendStartup } : {}),
+      ...(agentLaunch ? { agentLaunch } : {}),
       ...(issueCommand ? { issueCommand } : {}),
-      startupPlan,
-      quickPrompt,
       quickTelemetry
     }
 

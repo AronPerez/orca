@@ -4,11 +4,13 @@ import type { ManagedPaneInternal } from '@/lib/pane-manager/pane-manager-types'
 import type { IBuffer, IDisposable } from '@xterm/xterm'
 import { resolveCursorAgentImeAnchor } from '@/lib/pane-manager/terminal-ime-anchor'
 import { detectAgentStatusFromTitle, agentTypeToIconAgent, isClaudeAgent } from '@/lib/agent-status'
+import { agentLaunchOutcomeErrorMessage } from '@/lib/agent-launch-failure-copy'
+import { pasteDraftWhenAgentReady } from '@/lib/agent-paste-draft'
+import { showAutomationPromptNotSentToast } from '@/lib/agent-background-session-timeout-toast'
 import { resolvePaneTitleDecision } from './terminal-title-evidence'
 import { resolveLiveAgentStatusConnectionRouting } from '@/lib/agent-status-connection-ownership'
 import { scheduleRuntimeGraphSync } from '@/runtime/sync-runtime-graph'
 import { useAppStore } from '@/store'
-import { getWorktreeMapFromState } from '@/store/selectors'
 import { parseWorkspaceKey } from '../../../../shared/workspace-scope'
 import { TerminalKittyKeyboardModeTracker } from '../../../../shared/terminal-kitty-keyboard-mode-tracker'
 import { isRuntimeOwnedSshTargetId } from '../../../../shared/execution-host'
@@ -27,7 +29,7 @@ import { takeCurrentPtyDeliveryAckCredit } from './terminal-pty-ack-gate'
 import { serializeWithAbsoluteCursor } from '../../../../shared/terminal-serialize-absolute-cursor'
 import { isTerminalQueryReply } from '../../../../shared/terminal-query-reply'
 import type { PtyBufferSnapshot, PtyConnectResult } from './pty-transport'
-import type { PtyTransportRecoveryState } from './pty-transport-types'
+import type { PtyConnectAgentLaunchFailure, PtyTransportRecoveryState } from './pty-transport-types'
 import { createIpcPtyTransport } from './pty-transport'
 import { createRemoteRuntimePtyTransport } from './remote-runtime-pty-transport'
 import { getConnectionId } from '@/lib/connection-context'
@@ -226,18 +228,14 @@ import {
   getRuntimeEnvironmentIdForWorktree
 } from '@/lib/worktree-runtime-owner'
 import { CLIENT_PLATFORM } from '@/lib/new-workspace'
-import { buildAgentResumeStartupPlan } from '@/lib/tui-agent-startup'
 import { resolveAgentStatusTerminalTitle } from '@/lib/agent-status-terminal-title'
-import {
-  resolveTuiAgentLaunchArgs,
-  resolveTuiAgentLaunchEnv
-} from '../../../../shared/tui-agent-launch-defaults'
+import type { AgentLaunchResumeRequest } from '../../../../shared/agent-launch-spawn-request'
 import {
   agentProviderSessionsEqual,
   isResumableTuiAgent,
   normalizeAgentProviderSession,
-  type AgentProviderSessionMetadata,
   type ResumableTuiAgent,
+  type SleepingAgentLaunchConfig,
   type SleepingAgentSessionRecord
 } from '../../../../shared/agent-session-resume'
 import {
@@ -251,8 +249,8 @@ import {
   recognizeAgentProcessFromCommandLine
 } from '../../../../shared/agent-process-recognition'
 import type { SetupSplitDirection, TuiAgent } from '../../../../shared/types'
-import { isWslUncPath } from '../../../../shared/wsl-paths'
-import { isTuiAgent, TUI_AGENT_CONFIG } from '../../../../shared/tui-agent-config'
+import { isTuiAgent } from '../../../../shared/tui-agent-config'
+import { resolveTuiAgentConfig } from '../../../../shared/custom-tui-agents'
 import { createDraftPasteReadyScanner } from '../../../../shared/draft-paste-ready-scanner'
 import { sendAgentDraftPasteContent } from '@/lib/agent-draft-paste-content'
 import { writeTerminalPastePtyInput } from './terminal-pty-paste-writer'
@@ -483,9 +481,17 @@ type FreshSpawnOptions = {
 
 type ColdRestoreAgentResumeStartup = PendingStartupCommand & {
   agent: ResumableTuiAgent
-  resumeProviderSession: AgentProviderSessionMetadata
-  launchConfig: NonNullable<ReturnType<typeof buildAgentResumeStartupPlan>>['launchConfig']
-  launchToken: string
+  // Host-owned resume: the client sends the ownership-key variant and the host
+  // loads its private record to assemble command/env/launchConfig/token itself.
+  agentLaunch: AgentLaunchResumeRequest
+  // One-release legacy handoff — present only for a pre-U5 record (or pre-U5 live
+  // session) whose captured config the host ingests once. Absent on v1 sessions.
+  launchConfig?: SleepingAgentLaunchConfig
+  legacyResumeRecordedConnectionId?: string | null
+  // Host-owned since the item-7 receipt seam: a reattach MISS takes its token from
+  // the launched receipt and a HIT registers no config, so the client no longer
+  // mints one here. Kept optional for the legacy-handoff pre-registration only.
+  launchToken?: string
   useLiveEntry: boolean
   hasSleepingRecord: boolean
   sleepingRecordEntry: { paneKey: string; record: SleepingAgentSessionRecord } | null
@@ -606,6 +612,12 @@ function shouldKeepHiddenStartupRendererQueriesLive(
   startup: PtyConnectionDeps['startup']
 ): boolean {
   return (
+    // Why: on the host-resolved launch path the command is assembled host-side
+    // (startup.command is ''), so the explicit agent identity is the signal that
+    // this hidden startup is a TUI whose query chunks must stay live. The
+    // agent_kind clause still covers legacy launches whose wrapper command isn't a
+    // recognizable TUI name and that thread telemetry instead of an identity.
+    Boolean(startup?.agentLaunch || startup?.launchAgent) ||
     Boolean(startup?.telemetry?.agent_kind && startup.telemetry.agent_kind !== 'other') ||
     isKnownTuiAgentTerminalStartupCommand(startup?.command ?? '')
   )
@@ -1148,11 +1160,28 @@ export function connectPanePty(
       }
     }
   }
-  const launchToken = paneStartup?.launchConfig
+  // Why: on the host-resolved agentLaunch path the renderer no longer mints a
+  // token — it is undefined until the launched receipt arrives post-spawn, then
+  // reassigned so the status-attribution callbacks and effective-config
+  // registration below use the host's admission-minted token.
+  // U7 RE-HOLD: the legacy/resume path still mints client-side because these callers
+  // keep queueing a stored launchConfig — background-session, source-control plan,
+  // launch-agent-in-new-tab (U8), sleeping-launch legacy, work-item-direct, and the
+  // web-runtime vault-resume fallback (desktop vault drag/drop now rides the host
+  // arm). Retire with the legacy launchConfig field (U10 cleanup) once all flip off it.
+  let launchToken = paneStartup?.launchConfig
     ? (paneStartup.launchToken ?? createBrowserUuid())
     : undefined
   const startupDraftAgent = paneStartup?.launchAgent ?? paneStartup?.initialAgentStatus?.agent
-  const startupDraftAgentConfig = startupDraftAgent ? TUI_AGENT_CONFIG[startupDraftAgent] : null
+  // Why: a custom id inherits its base harness's draft-prefill behavior; resolve
+  // the base before reading the built-in-only config so a custom-based agent
+  // isn't misclassified as needing a paste (a raw index yields `any`/undefined).
+  const startupDraftSettings = useAppStore.getState().settings
+  const startupDraftAgentConfig = resolveTuiAgentConfig(
+    startupDraftAgent,
+    startupDraftSettings?.customTuiAgents,
+    startupDraftSettings?.deletedCustomTuiAgents
+  )
   const startupDraftPrompt =
     typeof paneStartup?.draftPrompt === 'string' && paneStartup.draftPrompt.trim()
       ? paneStartup.draftPrompt
@@ -2582,7 +2611,7 @@ export function connectPanePty(
       state,
       paneKey: cacheKey,
       ptyId,
-      expectedConnectionId: worktreeConnectionId,
+      expectedConnectionId: getConnectionId(deps.worktreeId),
       runtimeEnvironmentId: transport.getRuntimeEnvironmentId?.() ?? runtimeEnvironmentId
     })
   }
@@ -3170,11 +3199,7 @@ export function connectPanePty(
     ...paneIdentityEnv
   }
 
-  // Why: folder workspaces can inherit their SSH target from child repos, so
-  // use the shared resolver instead of only looking up repo-backed worktrees.
-  const worktree = getWorktreeMapFromState(state).get(deps.worktreeId)
-  const worktreeConnectionId = getConnectionId(deps.worktreeId)
-  const connectionId = worktreeConnectionId ?? null
+  const connectionId = getConnectionId(deps.worktreeId) ?? null
   const tab = (state.tabsByWorktree[deps.worktreeId] ?? []).find((t) => t.id === deps.tabId)
   const shellOverride = tab?.shellOverride
   // Why: a serve/remote-runtime pane has no SSH connectionId and a Linux cwd, so
@@ -3357,6 +3382,14 @@ export function connectPanePty(
       : {}),
     ...(launchToken ? { launchToken } : {}),
     ...(paneStartup?.launchAgent ? { launchAgent: paneStartup.launchAgent } : {}),
+    // Host-resolved agentLaunch request; when set the transport sends only this
+    // and the host owns command/config/token assembly (contract B).
+    ...(paneStartup?.agentLaunch ? { agentLaunch: paneStartup.agentLaunch } : {}),
+    // One-release legacy handoff: forwarded with a pre-U5 record's launchConfig
+    // so the host can prove the opaque legacy command targets the recorded owner.
+    ...(paneStartup?.legacyResumeRecordedConnectionId !== undefined
+      ? { legacyResumeRecordedConnectionId: paneStartup.legacyResumeRecordedConnectionId }
+      : {}),
     ...(paneStartup?.telemetry ? { telemetry: paneStartup.telemetry } : {}),
     onPtyExit: onExit,
     onPtySpawn,
@@ -4042,7 +4075,9 @@ export function connectPanePty(
     return cols > 0 && rows > 0 ? { cols, rows } : null
   }
   const shouldSettleStartupGridBeforeConnect = (): boolean =>
-    Boolean(paneStartup?.command) &&
+    // The host-resolved agentLaunch path carries no client command but still
+    // launches a TUI, so settle the grid for it the same as a command launch.
+    Boolean(paneStartup?.command || paneStartup?.agentLaunch) &&
     deps.isVisibleRef.current &&
     !connectionId &&
     runtimeEnvironmentId === null
@@ -4423,18 +4458,6 @@ export function connectPanePty(
       sessionRestoredBannerShown = true
       deps.onShowSessionRestoredBanner(pane.id)
     }
-    const getColdRestoreAgentResumePlatform = (): NodeJS.Platform => {
-      if (projectRuntime?.status === 'repair-required') {
-        return projectRuntime.repair.preferredRuntime.kind === 'wsl' ? 'linux' : CLIENT_PLATFORM
-      }
-      if (projectRuntime?.status === 'resolved' && projectRuntime.runtime.kind === 'wsl') {
-        return 'linux'
-      }
-      if (connectionId || (worktree?.path && isWslUncPath(worktree.path))) {
-        return 'linux'
-      }
-      return CLIENT_PLATFORM
-    }
     const buildColdRestoreAgentResumeStartup = (): ColdRestoreAgentResumeStartup | null => {
       if (pendingStartupCommand) {
         return null
@@ -4461,41 +4484,45 @@ export function connectPanePty(
             agentProviderSessionsEqual(agent, sleepingRecord.providerSession, providerSession)))
           ? sleepingRecord.launchConfig
           : undefined
-      const launchConfig =
-        (useLiveEntry && entry ? state.getAgentLaunchConfigForStatusEntry(entry) : undefined) ??
-        matchingSleepingLaunchConfig
-      const resumePlatform = getColdRestoreAgentResumePlatform()
-      const startupPlan = buildAgentResumeStartupPlan({
-        agent,
-        providerSession,
-        cmdOverrides: state.settings?.agentCmdOverrides ?? {},
-        agentArgs:
-          launchConfig !== undefined
-            ? launchConfig.agentArgs
-            : resolveTuiAgentLaunchArgs(agent, state.settings?.agentDefaultArgs),
-        agentEnv:
-          launchConfig !== undefined
-            ? launchConfig.agentEnv
-            : resolveTuiAgentLaunchEnv(agent, state.settings?.agentDefaultEnv),
-        ...(launchConfig?.agentCommand ? { agentCommand: launchConfig.agentCommand } : {}),
-        platform: resumePlatform
-      })
-      if (!startupPlan) {
-        return null
-      }
-      const coldRestoreLaunchToken = createBrowserUuid()
+      const liveLaunchConfig =
+        useLiveEntry && entry ? state.getAgentLaunchConfigForStatusEntry(entry) : undefined
+      // One-release legacy handoff source: a live status entry's captured config
+      // rides on the current connection, a sleeping record's on its recorded owner.
+      const legacyLaunchConfig = liveLaunchConfig ?? matchingSleepingLaunchConfig
+      const legacyRecordedConnectionId = liveLaunchConfig
+        ? (connectionId ?? null)
+        : (sleepingRecord?.connectionId ?? null)
       // Why: cold restore means the PTY process is gone but the agent provider
-      // session is still resumable, so the replacement spawn must launch it.
+      // session is still resumable, so the replacement spawn must resume it. Resume
+      // travels by ownership key: the host loads its private record and assembles
+      // command/env/launchConfig/token itself — the client no longer builds resume
+      // argv from the launch-default and startup-plan helpers.
+      const agentLaunch: AgentLaunchResumeRequest = {
+        resume: {
+          operation: 'resume',
+          sessionKey: {
+            worktreeId: deps.worktreeId,
+            baseAgent: agent,
+            providerSessionId: providerSession.id
+          }
+        }
+      }
       return {
         agent,
-        command: startupPlan.launchCommand,
-        env: {
-          ...startupPlan.env,
-          ORCA_AGENT_LAUNCH_TOKEN: coldRestoreLaunchToken
-        },
-        launchConfig: startupPlan.launchConfig,
-        resumeProviderSession: providerSession,
-        launchToken: coldRestoreLaunchToken,
+        agentLaunch,
+        command: '',
+        // Pane-identity env (ORCA_PANE_KEY etc.) must reach the resumed process for
+        // hook attribution; agent env + the admission token are host-owned, and the
+        // host env merge layers them over this identity map.
+        env: paneIdentityEnv,
+        // Legacy attach rides only when a pre-U5 captured config exists; the host
+        // ingests it once when it has no v1 record and ignores it otherwise.
+        ...(legacyLaunchConfig
+          ? {
+              launchConfig: legacyLaunchConfig,
+              legacyResumeRecordedConnectionId: legacyRecordedConnectionId
+            }
+          : {}),
         useLiveEntry: Boolean(useLiveEntry),
         hasSleepingRecord: Boolean(sleepingRecord),
         sleepingRecordEntry
@@ -4508,12 +4535,18 @@ export function connectPanePty(
         return false
       }
       const state = useAppStore.getState()
-      state.registerAgentLaunchConfig(cacheKey, startup.launchConfig, {
-        agentType: startup.agent,
-        launchToken: startup.launchToken,
-        tabId: deps.tabId,
-        leafId: pane.leafId
-      })
+      // Why: only a legacy (pre-U5) cold-restore still carries a captured config to
+      // pre-register for resume-settings display. A v1-era resume has none — the
+      // host owns the config and the post-spawn launched receipt registers the real
+      // identity — so there is nothing to pre-register.
+      if (startup.launchConfig) {
+        state.registerAgentLaunchConfig(cacheKey, startup.launchConfig, {
+          agentType: startup.agent,
+          ...(startup.launchToken ? { launchToken: startup.launchToken } : {}),
+          tabId: deps.tabId,
+          leafId: pane.leafId
+        })
+      }
       return true
     }
     const clearSleepingRecordAfterColdRestoreSpawn = (
@@ -4682,8 +4715,10 @@ export function connectPanePty(
         // must still submit the resume command to the fresh remote shell.
         pendingStartupCommand = { command: startupOverride.command }
       }
+      // Every cold-restore startup carries the resume variant (a v1-era one has no
+      // launchConfig), so discriminate on agentLaunch, not the now-optional config.
       const coldRestoreOverride =
-        startupOverride && 'launchConfig' in startupOverride
+        startupOverride && 'agentLaunch' in startupOverride
           ? (startupOverride as ColdRestoreAgentResumeStartup)
           : null
       // Why: pre-signal the main process so its cooperation gate suppresses
@@ -4707,11 +4742,19 @@ export function connectPanePty(
         ...(startupOverride?.env
           ? { env: mergeStartupEnvWithPaneIdentity(startupOverride.env) }
           : {}),
-        ...(coldRestoreOverride ? { launchConfig: coldRestoreOverride.launchConfig } : {}),
-        ...(coldRestoreOverride
-          ? { resumeProviderSession: coldRestoreOverride.resumeProviderSession }
+        ...(coldRestoreOverride ? { agentLaunch: coldRestoreOverride.agentLaunch } : {}),
+        ...(coldRestoreOverride?.launchConfig
+          ? { launchConfig: coldRestoreOverride.launchConfig }
           : {}),
-        ...(coldRestoreOverride ? { launchToken: coldRestoreOverride.launchToken } : {}),
+        ...(coldRestoreOverride?.legacyResumeRecordedConnectionId !== undefined
+          ? {
+              legacyResumeRecordedConnectionId:
+                coldRestoreOverride?.legacyResumeRecordedConnectionId
+            }
+          : {}),
+        ...(coldRestoreOverride?.launchToken
+          ? { launchToken: coldRestoreOverride.launchToken }
+          : {}),
         ...(coldRestoreOverride ? { launchAgent: coldRestoreOverride.agent } : {}),
         ...(shouldDeclareHiddenAtSpawn() ? { initiallyHidden: true } : {}),
         callbacks: outputCallbacks.callbacks
@@ -4731,6 +4774,29 @@ export function connectPanePty(
             }
             return null
           }
+          if (
+            spawnedPtyId &&
+            typeof spawnedPtyId === 'object' &&
+            !('id' in spawnedPtyId) &&
+            'agentLaunch' in spawnedPtyId
+          ) {
+            // Pre-spawn host-resolved launch failure/rejection: no PTY was
+            // created. Show the localized affordance in the pane and drop any
+            // pending delivery target instead of waiting for a pane that never
+            // spawned.
+            reportError(agentLaunchOutcomeErrorMessage(spawnedPtyId.agentLaunch))
+            if (
+              paneStartup?.launchConfig ||
+              (startupOverride && 'agentLaunch' in startupOverride)
+            ) {
+              clearRegisteredStartupLaunchConfig()
+            }
+            const failureGen = await preSignalPromise
+            if (typeof failureGen === 'number') {
+              void window.api.pty.clearPendingPaneSerializer(cacheKey, failureGen).catch(() => {})
+            }
+            return null
+          }
           const resolvedPtyId =
             spawnedPtyId && typeof spawnedPtyId === 'object' && 'id' in spawnedPtyId
               ? spawnedPtyId.id
@@ -4738,10 +4804,76 @@ export function connectPanePty(
                 ? spawnedPtyId
                 : transport.getPtyId()
           if (spawnedPtyId && typeof spawnedPtyId === 'object' && 'id' in spawnedPtyId) {
+            const launchedReceipt =
+              spawnedPtyId.agentLaunch?.status === 'launched'
+                ? spawnedPtyId.agentLaunch.receipt
+                : null
+            if (launchedReceipt) {
+              // The host admission-minted token supersedes the (absent) client
+              // token so status attribution and config registration key off it.
+              launchToken = launchedReceipt.launchToken
+              // Why: a {kind:'default'} selection sends no agent id, so the tab
+              // has no launchAgent. Backfill the requested identity the host
+              // resolved (a custom default's id, not just the base) so it
+              // survives to sleeping-record capture; write-if-absent never
+              // clobbers a caller-set id.
+              useAppStore
+                .getState()
+                .backfillTabLaunchAgent(deps.tabId, launchedReceipt.requestedAgent)
+              if (launchedReceipt.notices.length > 0) {
+                // Stamp the host-owned launch notices onto this pane's tab so the
+                // banner renders locally; the host stays the owner and drives
+                // dismissal (mirrors the runtime-reveal path in useIpcEvents).
+                useAppStore.getState().attachLaunchNotices({
+                  worktreeId: deps.worktreeId,
+                  tabId: deps.tabId,
+                  launchToken: launchedReceipt.launchToken,
+                  notices: launchedReceipt.notices
+                })
+              }
+            }
+            if (spawnedPtyId.launchNotices) {
+              // Vault fallback has no admission receipt, so its host-owned
+              // notice state rides beside the successful plain PTY result.
+              useAppStore.getState().attachLaunchNotices({
+                worktreeId: deps.worktreeId,
+                tabId: deps.tabId,
+                launchToken: spawnedPtyId.launchNotices.launchToken,
+                notices: spawnedPtyId.launchNotices.notices
+              })
+            }
             registerEffectiveLaunchConfig(spawnedPtyId.launchConfig, {
-              ...(coldRestoreOverride ? { launchToken: coldRestoreOverride.launchToken } : {}),
-              ...(coldRestoreOverride ? { launchAgent: coldRestoreOverride.agent } : {})
+              ...(coldRestoreOverride?.launchToken
+                ? { launchToken: coldRestoreOverride.launchToken }
+                : {}),
+              ...(launchedReceipt ? { launchToken: launchedReceipt.launchToken } : {}),
+              ...(coldRestoreOverride ? { launchAgent: coldRestoreOverride.agent } : {}),
+              ...(launchedReceipt ? { launchAgent: launchedReceipt.baseAgent } : {})
             })
+            // Why: this is the renderer paste writer for the host-resolved
+            // agentLaunch path. The host returns a prompt ONLY when it could not
+            // fold it into the launch command — followupPrompt submits (stdin-
+            // after-start base agents), draftPrompt pastes unsubmitted (agents
+            // without a native prefill flag). The host owns that fold-vs-paste
+            // decision (correct for custom agents), so the renderer delivers
+            // exactly what it returns. Skip when a legacy caller already owns a
+            // client-set draft paste to avoid double injection.
+            const hostFollowupPrompt = spawnedPtyId.followupPrompt ?? null
+            const hostDraftPrompt = spawnedPtyId.draftPrompt ?? null
+            const hostDeliveredAgent = launchedReceipt?.baseAgent ?? paneStartup?.launchAgent
+            if (!startupDraftPromptNeedsPaste && hostDeliveredAgent) {
+              const hostFollowupSubmit = hostFollowupPrompt !== null
+              const hostDeliveredPrompt = hostFollowupPrompt ?? hostDraftPrompt
+              if (hostDeliveredPrompt) {
+                void pasteDraftWhenAgentReady({
+                  tabId: deps.tabId,
+                  content: hostDeliveredPrompt,
+                  agent: hostDeliveredAgent,
+                  submit: hostFollowupSubmit,
+                  onTimeout: () => showAutomationPromptNotSentToast(hostDeliveredAgent)
+                }).catch(() => {})
+              }
+            }
           }
           if (resolvedPtyId) {
             if (
@@ -4759,7 +4891,7 @@ export function connectPanePty(
             clearSleepingRecordAfterColdRestoreSpawn(coldRestoreOverride)
           } else if (
             paneStartup?.launchConfig ||
-            (startupOverride && 'launchConfig' in startupOverride)
+            (startupOverride && 'agentLaunch' in startupOverride)
           ) {
             // Why: delayed draft/follow-up delivery keys off this launch
             // registry. If spawn produced no PTY, the launch is no longer a
@@ -4801,7 +4933,7 @@ export function connectPanePty(
           return resolvedPtyId
         })
         .catch(async () => {
-          if (paneStartup?.launchConfig || (startupOverride && 'launchConfig' in startupOverride)) {
+          if (paneStartup?.launchConfig || (startupOverride && 'agentLaunch' in startupOverride)) {
             clearRegisteredStartupLaunchConfig()
           }
           const gen = await preSignalPromise
@@ -7109,7 +7241,10 @@ export function connectPanePty(
     }
 
     const handleReattachResult = async (
-      result: PtyConnectResult | string | void,
+      // The reattach connect now carries the resume variant so a local/daemon
+      // sessionId miss can fresh-exec the resume; if that resume cannot be resolved
+      // the host returns the in-band agentLaunch failure (handled below) with no PTY.
+      result: PtyConnectResult | PtyConnectAgentLaunchFailure | string | void,
       staleSessionId?: string | null,
       coldRestoreStartup?: ColdRestoreAgentResumeStartup | null,
       attemptGeneration = transportStreamGeneration
@@ -7118,6 +7253,17 @@ export function connectPanePty(
         return false
       }
       if (attemptGeneration !== transportStreamGeneration) {
+        return false
+      }
+      if (result && typeof result === 'object' && !('id' in result) && 'agentLaunch' in result) {
+        // Why: a reattach-miss fresh-exec whose resume the host could not resolve
+        // (no owner record / invalid legacy snapshot) yields no PTY. Surface the
+        // affordance and drop the registered config instead of a blind respawn
+        // that would just re-fail on the same unresolvable key.
+        reportError(agentLaunchOutcomeErrorMessage(result.agentLaunch))
+        if (coldRestoreStartup) {
+          clearRegisteredStartupLaunchConfig()
+        }
         return false
       }
       const connectResult =
@@ -7152,13 +7298,39 @@ export function connectPanePty(
         })
         return false
       }
+      let reattachPayloadCommitted = false
+      // A reattach MISS fell through to a host fresh-exec of the resume and returns
+      // a launched receipt exactly like a fresh spawn; a warm HIT is suppressed
+      // host-side (no receipt), so the host token, requested-identity backfill, and
+      // launch notices are consumed only on the miss arm. A plain legacy respawn
+      // (live entry with no host record and no legacy config) returns no receipt and
+      // falls through this block to a bare bind, which is the pre-U5 behavior.
+      const reattachLaunchReceipt = connectResult?.agentLaunch?.receipt ?? null
+      if (reattachLaunchReceipt) {
+        // The host admission-minted token supersedes the (now-retired) client token
+        // so status attribution and config registration key off it.
+        launchToken = reattachLaunchReceipt.launchToken
+        useAppStore
+          .getState()
+          .backfillTabLaunchAgent(deps.tabId, reattachLaunchReceipt.requestedAgent)
+        if (reattachLaunchReceipt.notices.length > 0) {
+          useAppStore.getState().attachLaunchNotices({
+            worktreeId: deps.worktreeId,
+            tabId: deps.tabId,
+            launchToken: reattachLaunchReceipt.launchToken,
+            notices: reattachLaunchReceipt.notices
+          })
+        }
+      }
       registerEffectiveLaunchConfig(connectResult?.launchConfig, {
-        ...(coldRestoreStartup ? { launchToken: coldRestoreStartup.launchToken } : {}),
+        ...(reattachLaunchReceipt ? { launchToken: reattachLaunchReceipt.launchToken } : {}),
         ...(connectResult?.launchAgent
           ? { launchAgent: connectResult.launchAgent }
-          : coldRestoreStartup
-            ? { launchAgent: coldRestoreStartup.agent }
-            : {})
+          : reattachLaunchReceipt
+            ? { launchAgent: reattachLaunchReceipt.baseAgent }
+            : coldRestoreStartup
+              ? { launchAgent: coldRestoreStartup.agent }
+              : {})
       })
       if (connectResult?.sessionExpired) {
         if (staleSessionId) {
@@ -7178,7 +7350,9 @@ export function connectPanePty(
       const isCurrentReattachPayload = (): boolean => {
         const currentPtyId = transport.getPtyId()
         return (
-          !disposed && attemptGeneration === transportStreamGeneration && currentPtyId === ptyId
+          !disposed &&
+          attemptGeneration === transportStreamGeneration &&
+          (!reattachPayloadCommitted || currentPtyId === ptyId)
         )
       }
       if (!isCurrentReattachPayload()) {
@@ -7190,6 +7364,7 @@ export function connectPanePty(
       syncHiddenRendererPtyDelivery()
       deps.syncPanePtyLayoutBinding(pane.id, ptyId)
       deps.updateTabPtyId(deps.tabId, ptyId)
+      reattachPayloadCommitted = true
       agentCompletionCoordinator.startProcessTracking()
       sampleVisiblePaneForegroundAgent()
 
@@ -7563,15 +7738,25 @@ export function connectPanePty(
               cols,
               rows,
               sessionId: pendingSessionId,
-              ...(coldRestoreStartup?.command ? { command: coldRestoreStartup.command } : {}),
+              // Why: the resume variant rides the reattach connect, not just
+              // sessionId. A warm reattach HIT ignores it (daemon owns the live
+              // launch); a local/daemon sessionId MISS falls through to a one-shot
+              // fresh exec in the same round trip, and without agentLaunch that
+              // fallback would spawn a bare shell instead of resuming the agent.
+              ...(coldRestoreStartup?.agentLaunch
+                ? { agentLaunch: coldRestoreStartup.agentLaunch }
+                : {}),
               ...(coldRestoreStartup?.env
                 ? { env: mergeStartupEnvWithPaneIdentity(coldRestoreStartup.env) }
                 : {}),
               ...(coldRestoreStartup?.launchConfig
                 ? { launchConfig: coldRestoreStartup.launchConfig }
                 : {}),
-              ...(coldRestoreStartup?.resumeProviderSession
-                ? { resumeProviderSession: coldRestoreStartup.resumeProviderSession }
+              ...(coldRestoreStartup?.legacyResumeRecordedConnectionId !== undefined
+                ? {
+                    legacyResumeRecordedConnectionId:
+                      coldRestoreStartup?.legacyResumeRecordedConnectionId
+                  }
                 : {}),
               ...(coldRestoreStartup?.launchToken
                 ? { launchToken: coldRestoreStartup.launchToken }
@@ -7777,15 +7962,20 @@ export function connectPanePty(
         cols,
         rows,
         sessionId: deferredReattachSessionId,
-        ...(coldRestoreStartup?.command ? { command: coldRestoreStartup.command } : {}),
+        // Why: the resume variant rides the reattach connect so a local/daemon
+        // sessionId MISS resumes the agent on the one-shot fresh-exec fallback
+        // instead of spawning a bare shell; a warm HIT ignores it.
+        ...(coldRestoreStartup?.agentLaunch ? { agentLaunch: coldRestoreStartup.agentLaunch } : {}),
         ...(coldRestoreStartup?.env
           ? { env: mergeStartupEnvWithPaneIdentity(coldRestoreStartup.env) }
           : {}),
         ...(coldRestoreStartup?.launchConfig
           ? { launchConfig: coldRestoreStartup.launchConfig }
           : {}),
-        ...(coldRestoreStartup?.resumeProviderSession
-          ? { resumeProviderSession: coldRestoreStartup.resumeProviderSession }
+        ...(coldRestoreStartup?.legacyResumeRecordedConnectionId !== undefined
+          ? {
+              legacyResumeRecordedConnectionId: coldRestoreStartup?.legacyResumeRecordedConnectionId
+            }
           : {}),
         ...(coldRestoreStartup?.launchToken ? { launchToken: coldRestoreStartup.launchToken } : {}),
         ...(coldRestoreStartup?.agent ? { launchAgent: coldRestoreStartup.agent } : {}),

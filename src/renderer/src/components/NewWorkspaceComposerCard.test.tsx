@@ -7,14 +7,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import NewWorkspaceComposerCard from './NewWorkspaceComposerCard'
 import type { NewWorkspaceProjectOption } from '@/lib/new-workspace-project-options'
 
+const mocks = vi.hoisted(() => ({
+  localSnapshot: null as unknown,
+  disabledTuiAgents: [] as string[],
+  capturedAgents: [] as { id: string; label: string; baseAgent?: string }[]
+}))
+
 vi.mock('@/store', () => ({
   useAppStore: (selector: (state: unknown) => unknown) =>
     selector({
       openModal: vi.fn(),
       activeModal: null,
-      settings: { defaultTuiAgent: null, disabledTuiAgents: [] },
+      settings: { defaultTuiAgent: null, disabledTuiAgents: mocks.disabledTuiAgents },
       updateSettings: vi.fn()
     })
+}))
+
+vi.mock('@/hooks/useLocalAgentCatalog', () => ({
+  useLocalAgentCatalog: () => ({
+    snapshot: mocks.localSnapshot,
+    loading: false,
+    refetch: vi.fn(),
+    applySnapshot: vi.fn()
+  })
 }))
 
 vi.mock('@/components/contextual-tours/use-contextual-tour', () => ({
@@ -28,7 +43,10 @@ vi.mock('@/components/ui/tooltip', () => ({
 }))
 
 vi.mock('@/components/agent/AgentCombobox', () => ({
-  default: () => <button type="button">Agent picker</button>
+  default: ({ agents }: { agents: { id: string; label: string; baseAgent?: string }[] }) => {
+    mocks.capturedAgents = agents
+    return <button type="button">Agent picker</button>
+  }
 }))
 
 vi.mock('@/components/sparse/SparseCheckoutPresetSelect', () => ({
@@ -196,6 +214,48 @@ function changeInputValue(input: HTMLInputElement, value: string): void {
 }
 
 let current: { container: HTMLDivElement; root: Root } | null = null
+
+describe('NewWorkspaceComposerCard custom agents', () => {
+  afterEach(() => {
+    act(() => current?.root.unmount())
+    current?.container.remove()
+    current = null
+    mocks.localSnapshot = null
+    mocks.disabledTuiAgents = []
+    mocks.capturedAgents = []
+  })
+
+  function readyCustom(id: string, label: string, commandOverride: string) {
+    return {
+      status: 'ready',
+      definition: { id, baseAgent: 'codex', label, args: '', syncEnv: false, commandOverride },
+      envSummary: { entryCount: 0, bytes: 0 },
+      availabilityReason: 'configured-executable'
+    }
+  }
+
+  it('offers a ready custom agent to the picker with its base and human label', () => {
+    mocks.localSnapshot = {
+      customAgents: [readyCustom('custom-agent:codex:aa', 'My Codex', '/opt/agent')]
+    }
+    current = renderCard()
+    const custom = mocks.capturedAgents.find((entry) => entry.id === 'custom-agent:codex:aa')
+    expect(custom).toMatchObject({ label: 'My Codex', baseAgent: 'codex' })
+    // The displayed label is the human label, never the raw custom-agent id.
+    for (const entry of mocks.capturedAgents) {
+      expect(entry.label.startsWith('custom-agent:')).toBe(false)
+    }
+  })
+
+  it('hides a disabled custom agent from the picker', () => {
+    mocks.localSnapshot = {
+      customAgents: [readyCustom('custom-agent:codex:bb', 'Hidden Codex', '/opt/hidden')]
+    }
+    mocks.disabledTuiAgents = ['custom-agent:codex:bb']
+    current = renderCard()
+    expect(mocks.capturedAgents.some((entry) => entry.id === 'custom-agent:codex:bb')).toBe(false)
+  })
+})
 
 describe('NewWorkspaceComposerCard folder task source mode', () => {
   afterEach(() => {

@@ -1,10 +1,16 @@
 import type { AgentType } from '../../../../shared/agent-status-types'
-import { TUI_AGENT_CONFIG } from '../../../../shared/tui-agent-config'
+import { resolveTuiAgentConfig } from '../../../../shared/custom-tui-agents'
+import type { CustomTuiAgent, DeletedCustomTuiAgent } from '../../../../shared/types'
 import type { PaneForegroundAgentEntry } from '@/store/slices/pane-foreground-agent'
 
 export type WindowsShiftEnterEncoding = 'alt-enter' | 'csi-u'
 
-type WindowsShiftEnterAgentSignals = {
+type CustomTuiAgentSignals = {
+  customTuiAgents?: readonly CustomTuiAgent[] | null
+  deletedCustomTuiAgents?: readonly DeletedCustomTuiAgent[] | null
+}
+
+type WindowsShiftEnterAgentSignals = CustomTuiAgentSignals & {
   foreground?: PaneForegroundAgentEntry
   launchAgentType?: AgentType
 }
@@ -12,6 +18,7 @@ type WindowsShiftEnterAgentSignals = {
 type WindowsShiftEnterPaneState = {
   paneForegroundAgentByPaneKey: Record<string, PaneForegroundAgentEntry | undefined>
   agentLaunchConfigByPaneKey: Record<string, { identity: { agentType?: AgentType } } | undefined>
+  settings?: CustomTuiAgentSignals | null
 }
 
 /** Resolve without key-path PTY I/O; current process/shell evidence overrides
@@ -28,7 +35,15 @@ export function resolveWindowsShiftEnterEncoding(
   // never byte-routing authority because warm/stale daemon state can outlive
   // the process that originally launched the agent.
   const agent = signals.foreground?.routingTrusted === true ? signals.foreground.agent : null
-  return agent ? (TUI_AGENT_CONFIG[agent].windowsShiftEnterEncoding ?? 'alt-enter') : 'alt-enter'
+  // Why: a custom id inherits its base harness's Shift+Enter encoding; resolve
+  // the base before reading the built-in-only config so a raw custom id doesn't
+  // silently fall back to alt-enter (or index an undefined entry).
+  const config = resolveTuiAgentConfig(
+    agent,
+    signals.customTuiAgents,
+    signals.deletedCustomTuiAgents
+  )
+  return config?.windowsShiftEnterEncoding ?? 'alt-enter'
 }
 
 /** Resolves only pane-keyed evidence so a split sibling cannot inherit tab ownership. */
@@ -38,6 +53,8 @@ export function resolveWindowsShiftEnterEncodingForPane(
 ): WindowsShiftEnterEncoding {
   return resolveWindowsShiftEnterEncoding({
     foreground: state.paneForegroundAgentByPaneKey[paneKey],
-    launchAgentType: state.agentLaunchConfigByPaneKey[paneKey]?.identity.agentType
+    launchAgentType: state.agentLaunchConfigByPaneKey[paneKey]?.identity.agentType,
+    customTuiAgents: state.settings?.customTuiAgents,
+    deletedCustomTuiAgents: state.settings?.deletedCustomTuiAgents
   })
 }

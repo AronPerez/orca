@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   onLaunched: vi.fn(),
   onStart: vi.fn(),
   planSourceControlAgentActionLaunch: vi.fn(),
+  resolveSourceControlAgentAvailability: vi.fn(),
   toastError: vi.fn()
 }))
 vi.mock('@/components/agent/AgentCombobox', () => ({
@@ -50,7 +51,8 @@ vi.mock('../source-control/SourceControlActionVariableChips', () => ({
   SourceControlActionVariableChips: () => React.createElement('div')
 }))
 vi.mock('@/lib/source-control-agent-action-plan', () => ({
-  planSourceControlAgentActionLaunch: mocks.planSourceControlAgentActionLaunch
+  planSourceControlAgentActionLaunch: mocks.planSourceControlAgentActionLaunch,
+  resolveSourceControlAgentAvailability: mocks.resolveSourceControlAgentAvailability
 }))
 vi.mock('sonner', () => ({
   toast: { error: mocks.toastError }
@@ -169,10 +171,15 @@ describe('SourceControlAgentActionDialog', () => {
     mocks.onStart.mockResolvedValue(true)
     mocks.planSourceControlAgentActionLaunch.mockReturnValue({
       ok: true,
+      delivery: 'paste-submit',
       summary: 'Ready to launch.',
-      commandLabel: 'codex',
+      deliveryLabel: 'Pasted and submitted after the TUI is ready',
       caveat: 'The prompt will be submitted after the agent is ready.'
     })
+    mocks.resolveSourceControlAgentAvailability.mockImplementation((agent: TuiAgent | null) => ({
+      baseAgent: agent,
+      availabilityClass: 'baseline-detection'
+    }))
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)

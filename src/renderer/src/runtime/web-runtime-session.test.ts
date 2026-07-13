@@ -542,6 +542,103 @@ describe('createWebRuntimeSessionTerminal', () => {
     )
   })
 
+  it('forwards a host-resolved agentLaunch request without a client command or config', async () => {
+    const snapshot = {
+      ...makeSnapshot(),
+      snapshotVersion: 2,
+      activeTabId: 'host-tab-2::leaf-1',
+      activeTabType: 'terminal' as const,
+      tabs: [
+        {
+          type: 'terminal' as const,
+          id: 'host-tab-2::leaf-1',
+          parentTabId: 'host-tab-2',
+          leafId: 'leaf-1',
+          title: 'Terminal 2',
+          terminal: 'pty-2',
+          status: 'ready' as const,
+          isActive: true
+        }
+      ]
+    }
+    const runtimeCall = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'create-terminal',
+        ok: true,
+        result: {
+          tab: snapshot.tabs[0],
+          publicationEpoch: snapshot.publicationEpoch,
+          snapshotVersion: snapshot.snapshotVersion,
+          agentLaunch: { status: 'launched', receipt: { launchToken: 'tok-1' } }
+        }
+      })
+      .mockResolvedValueOnce({ id: 'list', ok: true, result: snapshot })
+
+    vi.stubGlobal('window', {
+      api: { runtimeEnvironments: { call: runtimeCall } }
+    })
+
+    await expect(
+      createWebRuntimeSessionTerminal({
+        worktreeId: WORKTREE_ID,
+        targetGroupId: 'group-left',
+        agentLaunch: {
+          selection: { kind: 'agent', agent: 'claude' },
+          prompt: 'fork context',
+          promptDelivery: 'draft'
+        },
+        activate: true
+      })
+    ).resolves.toBe(true)
+
+    expect(runtimeCall).toHaveBeenNthCalledWith(1, {
+      selector: ENVIRONMENT_ID,
+      method: 'session.tabs.createTerminal',
+      params: {
+        worktree: `id:${WORKTREE_ID}`,
+        afterTabId: undefined,
+        targetGroupId: 'group-left',
+        command: undefined,
+        cwd: undefined,
+        startupCommandDelivery: undefined,
+        agent: undefined,
+        agentLaunch: {
+          selection: { kind: 'agent', agent: 'claude' },
+          prompt: 'fork context',
+          promptDelivery: 'draft'
+        },
+        activate: false,
+        select: true,
+        navigation: 'caller'
+      },
+      timeoutMs: 15_000
+    })
+  })
+
+  it('treats a pre-spawn agentLaunch failure arm as a launch failure', async () => {
+    const runtimeCall = vi.fn().mockResolvedValueOnce({
+      id: 'create-terminal',
+      ok: true,
+      result: {
+        agentLaunch: { status: 'failed', failure: { code: 'invalid_launch_snapshot' } }
+      }
+    })
+
+    vi.stubGlobal('window', {
+      api: { runtimeEnvironments: { call: runtimeCall } }
+    })
+
+    await expect(
+      createWebRuntimeSessionTerminal({
+        worktreeId: WORKTREE_ID,
+        agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, allowEmptyPromptLaunch: true }
+      })
+    ).resolves.toBe(false)
+    // No snapshot refresh follows a failed create.
+    expect(runtimeCall).toHaveBeenCalledTimes(1)
+  })
+
   it('can create a terminal without selecting the target worktree', async () => {
     const setStateResults: unknown[] = []
     mocks.setState.mockImplementation((updater: (state: unknown) => unknown) => {

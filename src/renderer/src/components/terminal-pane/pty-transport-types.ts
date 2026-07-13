@@ -5,9 +5,14 @@ import type {
 } from '../../../../shared/agent-session-resume'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
 import type { ProjectExecutionRuntimeResolution } from '../../../../shared/project-execution-runtime'
-import type { EventProps } from '../../../../shared/telemetry-events'
+import type { StartupLaunchTelemetry } from '../../lib/worktree-activation'
 import type { TerminalOscColorQueryReplyColors } from '../../../../shared/terminal-osc-color-reply'
 import type { TuiAgent } from '../../../../shared/types'
+import type {
+  AgentLaunchInput,
+  AgentLaunchSpawnOutcome
+} from '../../../../shared/agent-launch-spawn-request'
+import type { PersistedLaunchNoticeState } from '../../../../shared/agent-launch-contract'
 import type { PtyDataMeta } from './pty-dispatcher'
 
 export type PtyBufferSnapshot = {
@@ -55,10 +60,30 @@ export type PtyConnectResult = {
   coldRestore?: { scrollback: string; cwd: string; cols?: number; rows?: number }
   replay?: string
   startupCwdFallback?: { kind: 'worktree'; cwd: string }
+  launchNotices?: PersistedLaunchNoticeState
+  /** Host launch outcome for the agentLaunch fresh-agent path. The receipt
+   *  drives post-spawn token/notice bookkeeping — the renderer no longer mints
+   *  the token. Absent on legacy/resume connects. */
+  agentLaunch?: Extract<AgentLaunchSpawnOutcome, { status: 'launched' }>
+  /** Host-resolved prompt for the renderer paste writer to deliver after agent
+   *  readiness on the agentLaunch path. The host sets exactly one — and only when
+   *  the prompt could NOT fold into the launch command: `followupPrompt` submits
+   *  (stdin-after-start base agents), `draftPrompt` pastes unsubmitted (agents
+   *  without a native prefill flag). The host owns the fold-vs-paste decision, so
+   *  the renderer never re-derives it (correct for custom agents). */
+  followupPrompt?: string
+  draftPrompt?: string
   /** Trailing partial escape the daemon emulator held mid-parse; the reattach
    *  replay writes it LAST (after the reset) so a racing live continuation
    *  completes it instead of rendering literally (#7329). */
   pendingEscapeTailAnsi?: string
+}
+
+/** Pre-spawn agentLaunch failure/rejection surfaced by connect(): the host
+ *  created no PTY, so there is no id — the caller shows the localized launch
+ *  affordance and creates no pane. */
+export type PtyConnectAgentLaunchFailure = {
+  agentLaunch: Extract<AgentLaunchSpawnOutcome, { status: 'failed' | 'rejected' }>
 }
 
 type PtyCallbacks = {
@@ -107,9 +132,13 @@ export type PtyTransport = {
     resumeProviderSession?: AgentProviderSessionMetadata
     launchToken?: string
     launchAgent?: TuiAgent
+    agentLaunch?: AgentLaunchInput
+    /** One-release legacy handoff: a pre-U5 record's recorded execution owner,
+     *  sent with `launchConfig` alongside a resume variant for host provenance. */
+    legacyResumeRecordedConnectionId?: string | null
     startupCommandDelivery?: StartupCommandDelivery
     callbacks: PtyCallbacks
-  }) => void | Promise<void | string | PtyConnectResult>
+  }) => void | Promise<void | string | PtyConnectResult | PtyConnectAgentLaunchFailure>
   attach: (options: {
     existingPtyId: string
     cols?: number
@@ -169,6 +198,10 @@ export type IpcPtyTransportOptions = {
   resumeProviderSession?: AgentProviderSessionMetadata
   launchToken?: string
   launchAgent?: TuiAgent
+  agentLaunch?: AgentLaunchInput
+  /** One-release legacy handoff: a pre-U5 record's recorded execution owner,
+   *  sent with `launchConfig` alongside a resume variant for host provenance. */
+  legacyResumeRecordedConnectionId?: string | null
   startupCommandDelivery?: StartupCommandDelivery
   connectionId?: string | null
   worktreeId?: string
@@ -178,7 +211,7 @@ export type IpcPtyTransportOptions = {
   shellOverride?: string
   projectRuntime?: ProjectExecutionRuntimeResolution
   terminalColorQueryReplies?: TerminalOscColorQueryReplyColors
-  telemetry?: EventProps<'agent_started'>
+  telemetry?: StartupLaunchTelemetry
   onPtyExit?: (ptyId: string) => void
   onTitleChange?: (title: string, rawTitle: string) => void
   onPtySpawn?: (ptyId: string) => void

@@ -9,6 +9,7 @@ import type {
   RuntimeMobileSessionTabsResult,
   RuntimeStatus,
   RuntimeTerminalCreate,
+  RuntimeTerminalCreateAgentLaunchFailure,
   RuntimeTerminalSend
 } from '../../../../shared/runtime-types'
 import { TERMINAL_CREATE_IDEMPOTENCY_RUNTIME_CAPABILITY } from '../../../../shared/protocol-version'
@@ -18,6 +19,7 @@ import {
 } from '../../../../shared/terminal-input'
 import type {
   IpcPtyTransportOptions,
+  PtyConnectAgentLaunchFailure,
   PtyConnectResult,
   PtyTransport,
   PtyTransportRecoveryState
@@ -88,6 +90,7 @@ export function createRemoteRuntimePtyTransport(
     launchToken,
     launchAgent,
     terminalColorQueryReplies,
+    agentLaunch,
     worktreeId,
     tabId,
     leafId,
@@ -446,7 +449,7 @@ export function createRemoteRuntimePtyTransport(
     params: Record<string, unknown>,
     environmentId: string,
     expectedLifecycleEpoch: number
-  ): Promise<{ terminal: RuntimeTerminalCreate } | null> {
+  ): Promise<{ terminal: RuntimeTerminalCreate } | RuntimeTerminalCreateAgentLaunchFailure | null> {
     let retryAttempt = 0
     let idempotencySupported = false
     let reconcileExisting = terminalCreateNeedsReconciliation
@@ -525,7 +528,9 @@ export function createRemoteRuntimePtyTransport(
         break
       }
       try {
-        return await callRuntimeForEnvironment<{ terminal: RuntimeTerminalCreate }>(
+        return await callRuntimeForEnvironment<
+          { terminal: RuntimeTerminalCreate } | RuntimeTerminalCreateAgentLaunchFailure
+        >(
           environmentId,
           'terminal.create',
           {
@@ -1136,31 +1141,43 @@ export function createRemoteRuntimePtyTransport(
           return await attachHostSessionMirror(options)
         }
 
-        const commandToSend = options.command ?? command
-        const startupCommandDeliveryToSend =
-          options.startupCommandDelivery ?? startupCommandDelivery
         const envToSend = options.env ?? env
         const envToDeleteToSend = options.envToDelete ?? envToDelete
-        const launchConfigToSend = options.launchConfig ?? launchConfig
-        const resumeProviderSessionToSend = options.resumeProviderSession ?? resumeProviderSession
-        const launchTokenToSend = options.launchToken ?? launchToken
-        const launchAgentToSend = options.launchAgent ?? launchAgent
+        const agentLaunchToSend = options.agentLaunch ?? agentLaunch
+        // Why: on the host-resolved agentLaunch path the host owns command,
+        // launchConfig, and token assembly and ignores these client fields, so we
+        // send only the request; the legacy/resume path keeps sending them.
+        const launchFieldsToSend = agentLaunchToSend
+          ? { agentLaunch: agentLaunchToSend }
+          : (() => {
+              const commandToSend = options.command ?? command
+              const startupCommandDeliveryToSend =
+                options.startupCommandDelivery ?? startupCommandDelivery
+              const launchConfigToSend = options.launchConfig ?? launchConfig
+              const resumeProviderSessionToSend =
+                options.resumeProviderSession ?? resumeProviderSession
+              const launchTokenToSend = options.launchToken ?? launchToken
+              const launchAgentToSend = options.launchAgent ?? launchAgent
+              return {
+                ...(commandToSend !== undefined ? { command: commandToSend } : {}),
+                ...(startupCommandDeliveryToSend !== undefined
+                  ? { startupCommandDelivery: startupCommandDeliveryToSend }
+                  : {}),
+                ...(launchConfigToSend !== undefined ? { launchConfig: launchConfigToSend } : {}),
+                ...(resumeProviderSessionToSend !== undefined
+                  ? { resumeProviderSession: resumeProviderSessionToSend }
+                  : {}),
+                ...(launchTokenToSend !== undefined ? { launchToken: launchTokenToSend } : {}),
+                ...(launchAgentToSend !== undefined ? { launchAgent: launchAgentToSend } : {})
+              }
+            })()
         const created = await createTerminalWithUnknownOutcomeRecovery(
           {
             worktree: toRuntimeTerminalWorktreeSelector(worktreeId),
             clientMutationId: terminalCreateMutationId,
-            ...(commandToSend !== undefined ? { command: commandToSend } : {}),
-            ...(startupCommandDeliveryToSend !== undefined
-              ? { startupCommandDelivery: startupCommandDeliveryToSend }
-              : {}),
+            ...launchFieldsToSend,
             ...(envToSend !== undefined ? { env: envToSend } : {}),
             ...(envToDeleteToSend !== undefined ? { envToDelete: envToDeleteToSend } : {}),
-            ...(launchConfigToSend !== undefined ? { launchConfig: launchConfigToSend } : {}),
-            ...(resumeProviderSessionToSend !== undefined
-              ? { resumeProviderSession: resumeProviderSessionToSend }
-              : {}),
-            ...(launchTokenToSend !== undefined ? { launchToken: launchTokenToSend } : {}),
-            ...(launchAgentToSend !== undefined ? { launchAgent: launchAgentToSend } : {}),
             ...(terminalColorQueryReplies ? { terminalColorQueryReplies } : {}),
             tabId,
             leafId,
@@ -1178,6 +1195,20 @@ export function createRemoteRuntimePtyTransport(
             recovery.markDisconnected()
           }
           return
+        }
+        // Pre-spawn agentLaunch failure/rejection: the host created no terminal.
+        // Surface the outcome so the caller shows the localized affordance and
+        // creates no pane (symmetric with the IPC transport).
+        if (!('terminal' in created)) {
+          if (destroyed || lifecycleEpoch !== connectLifecycleEpoch) {
+            return
+          }
+          if (!destroyed && lifecycleEpoch === connectLifecycleEpoch) {
+            connecting = false
+            recovery.cancel()
+            emitRecoveryState()
+          }
+          return { agentLaunch: created.agentLaunch } satisfies PtyConnectAgentLaunchFailure
         }
         if (destroyed || lifecycleEpoch !== connectLifecycleEpoch) {
           if (
@@ -1212,7 +1243,10 @@ export function createRemoteRuntimePtyTransport(
 
         return {
           id: remotePtyId,
-          replay: ''
+          replay: '',
+          // Receipt-only: pane identity/attribution rides the receipt token and
+          // the status stream; the runtime result never echoes a launch config.
+          ...(created.terminal.agentLaunch ? { agentLaunch: created.terminal.agentLaunch } : {})
         } satisfies PtyConnectResult
       } catch (error) {
         if (!destroyed && lifecycleEpoch === connectLifecycleEpoch) {

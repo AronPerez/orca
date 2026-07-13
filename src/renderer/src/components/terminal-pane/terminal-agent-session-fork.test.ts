@@ -97,7 +97,6 @@ describe('forkAgentSessionFromPane', () => {
     })
     mockLaunchAgentInNewTab.mockReturnValue({
       tabId: 'tab-2',
-      startupPlan: {},
       pasteDraftAfterLaunch: true
     })
     mockWriteClipboardText.mockResolvedValue(undefined)
@@ -355,7 +354,50 @@ describe('forkAgentSessionFromPane', () => {
     expect(mockToast.message).toHaveBeenCalledWith(
       'Fork context copied. Launch an agent and paste it to start the fork.'
     )
+    // A plain-shell source is not a custom agent, so it never claims that limitation.
+    expect(mockToast.message).not.toHaveBeenCalledWith(
+      "Forking isn't available for custom agents yet"
+    )
     expect(pane.terminal.focus).toHaveBeenCalled()
+  })
+
+  it('names the custom-agent fork limitation instead of silently degrading to copy-context', async () => {
+    store.agentStatusByPaneKey = {
+      [`tab-1:${LEAF_ID}`]: {
+        agentType: 'custom-agent:codex:11111111-1111-4111-8111-111111111111'
+      }
+    }
+    const pane = makePane('Assistant: here is the current plan')
+    const { forkAgentSessionFromPane } = await import('./terminal-agent-session-fork')
+
+    await forkAgentSessionFromPane({
+      pane,
+      tabId: 'tab-1',
+      worktreeId: 'wt-1',
+      groupId: null
+    })
+
+    // Host-owned custom-agent fork is not wired yet; the failure must be honest.
+    expect(mockToast.message).toHaveBeenCalledWith("Forking isn't available for custom agents yet")
+    expect(mockLaunchAgentInNewTab).not.toHaveBeenCalled()
+    // The context is still copied so the user can paste it into a manual launch.
+    expect(mockWriteClipboardText).toHaveBeenCalledWith(
+      expect.stringContaining('Assistant: here is the current plan')
+    )
+    // The created fork worktree carries no host agent launch.
+    expect(mockCreateWorktree).toHaveBeenCalledWith(
+      'repo-1',
+      'auth-feature-fork',
+      'feature/auth',
+      'inherit',
+      undefined,
+      'terminal_context_menu',
+      'Fork of auth-feature',
+      undefined,
+      undefined,
+      undefined,
+      undefined
+    )
   })
 
   it('keeps the fork dialog path open when the source workspace has no git branch', async () => {
@@ -471,31 +513,6 @@ describe('forkAgentSessionFromPane', () => {
     expect(mockLaunchAgentInNewTab).not.toHaveBeenCalled()
     expect(mockWriteClipboardText).not.toHaveBeenCalled()
     expect(mockToast.error).toHaveBeenCalledWith('path already exists')
-  })
-
-  it('copies context when the detected agent cannot queue a startup plan', async () => {
-    store.agentStatusByPaneKey = {
-      [`tab-1:${LEAF_ID}`]: { agentType: 'codex' }
-    }
-    mockLaunchAgentInNewTab.mockReturnValueOnce(null)
-    const pane = makePane('Assistant: current implementation notes')
-    const { forkAgentSessionFromPane } = await import('./terminal-agent-session-fork')
-
-    await forkAgentSessionFromPane({
-      pane,
-      tabId: 'tab-1',
-      worktreeId: 'wt-1',
-      groupId: null
-    })
-
-    expect(mockCreateWorktree).toHaveBeenCalled()
-    expect(mockLaunchAgentInNewTab).toHaveBeenCalled()
-    expect(mockWriteClipboardText).toHaveBeenCalledWith(
-      expect.stringContaining('Assistant: current implementation notes')
-    )
-    expect(mockToast.message).toHaveBeenCalledWith(
-      'Fork context copied. Launch an agent and paste it to start the fork.'
-    )
   })
 
   it('surfaces clipboard failures instead of closing the fallback path silently', async () => {

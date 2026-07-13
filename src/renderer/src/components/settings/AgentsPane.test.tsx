@@ -11,14 +11,11 @@ import { getAgentAwakeDescription, getAgentAwakeTitle } from './agent-awake-copy
 import { AgentAwakeSetting } from './AgentAwakeSetting'
 import { AgentRuntimeSetting } from './AgentRuntimeSetting'
 import {
-  AgentAvailabilityControl,
   AgentPermissionsSetting,
   AgentGeneratedTabTitlesSetting,
   AgentStatusHooksSetting,
   AgentsPane,
-  getAgentsPaneSearchEntries,
-  buildAgentAvailabilitySettingsUpdate,
-  createAgentAvailabilityUpdateQueue
+  getAgentsPaneSearchEntries
 } from './AgentsPane'
 import { matchesSettingsSearch } from './settings-search'
 import { TooltipProvider } from '../ui/tooltip'
@@ -40,19 +37,6 @@ vi.mock('@/hooks/useDetectedAgents', () => ({
 type ReactElementLike = {
   type: unknown
   props: Record<string, unknown>
-}
-
-type Deferred = {
-  promise: Promise<void>
-  resolve: () => void
-}
-
-function createDeferred(): Deferred {
-  let resolve!: () => void
-  const promise = new Promise<void>((next) => {
-    resolve = next
-  })
-  return { promise, resolve }
 }
 
 async function flushPromiseQueue(): Promise<void> {
@@ -347,76 +331,6 @@ describe('AgentsPane', () => {
     expect(matchesSettingsSearch('cursor-agent', getAgentsPaneSearchEntries())).toBe(true)
   })
 
-  it('renders per-agent availability as labeled status choices without row explanation copy', () => {
-    const markup = renderPane({
-      ...getDefaultSettings('/tmp'),
-      disabledTuiAgents: ['claude']
-    })
-
-    expect(markup).toContain('aria-label="Claude availability"')
-    expect(markup).toContain('Enabled')
-    expect(markup).toContain('Disabled')
-    expect(markup).not.toContain('Shown in launch and default choices.')
-    expect(markup).not.toContain('Install to use in launch and default choices.')
-    expect(markup).not.toContain('Hidden from launch and default choices.')
-    expect(markup).not.toContain('aria-label="Enable Claude"')
-    expect(markup).not.toContain('aria-label="Disable Claude"')
-  })
-
-  it('only toggles agent availability when the segmented value changes', () => {
-    const onSetEnabled = vi.fn()
-    const control = AgentAvailabilityControl({
-      label: 'Claude',
-      isEnabled: true,
-      onSetEnabled
-    })
-    const props = control.props as {
-      value: 'enabled' | 'disabled'
-      onChange: (value: 'enabled' | 'disabled') => void
-      ariaLabel: string
-    }
-
-    expect(props.value).toBe('enabled')
-    expect(props.ariaLabel).toBe('Claude availability')
-
-    props.onChange('enabled')
-    expect(onSetEnabled).not.toHaveBeenCalled()
-
-    props.onChange('disabled')
-    expect(onSetEnabled).toHaveBeenCalledWith(false)
-  })
-
-  it('clears the default agent when disabling that agent', () => {
-    expect(
-      buildAgentAvailabilitySettingsUpdate(
-        {
-          defaultTuiAgent: 'claude',
-          disabledTuiAgents: []
-        },
-        'claude',
-        false
-      )
-    ).toEqual({
-      disabledTuiAgents: ['claude'],
-      defaultTuiAgent: null
-    })
-  })
-
-  it('keeps the default setting untouched when re-enabling an agent', () => {
-    expect(
-      buildAgentAvailabilitySettingsUpdate(
-        {
-          defaultTuiAgent: null,
-          disabledTuiAgents: ['claude']
-        },
-        'claude',
-        true
-      )
-    ).toEqual({
-      disabledTuiAgents: []
-    })
-  })
-
   it('includes agent runtime search metadata', () => {
     expect(matchesSettingsSearch('agent runtime', getAgentsPaneSearchEntries())).toBe(true)
     expect(matchesSettingsSearch('agent location', getAgentsPaneSearchEntries())).toBe(true)
@@ -425,108 +339,21 @@ describe('AgentsPane', () => {
     )
   })
 
-  it('serializes rapid availability writes against the latest settings snapshot', async () => {
-    const queueAvailabilityUpdate = createAgentAvailabilityUpdateQueue()
-    const settings: GlobalSettings = {
-      ...getDefaultSettings('/tmp'),
-      defaultTuiAgent: null,
-      disabledTuiAgents: []
-    }
-    const writes: Deferred[] = []
-    const updates: Partial<GlobalSettings>[] = []
+  it('renders authoring controls without a read-only notice on the desktop host', () => {
+    const markup = renderPane(getDefaultSettings('/tmp'))
 
-    useAppStore.setState({ settings })
-    const updateSettings = vi.fn((update: Partial<GlobalSettings>) => {
-      updates.push(update)
-      const nextSettings = {
-        ...(useAppStore.getState().settings ?? settings),
-        ...update
-      }
-      const write = createDeferred()
-      writes.push(write)
-      return write.promise.then(() => {
-        useAppStore.setState({ settings: nextSettings })
-      })
-    })
-
-    const firstWrite = queueAvailabilityUpdate({
-      getSettings: () => useAppStore.getState().settings,
-      fallbackSettings: settings,
-      updateSettings,
-      agentId: 'claude',
-      enabled: false
-    })
-    const secondWrite = queueAvailabilityUpdate({
-      getSettings: () => useAppStore.getState().settings,
-      fallbackSettings: settings,
-      updateSettings,
-      agentId: 'codex',
-      enabled: false
-    })
-
-    await flushPromiseQueue()
-    expect(updateSettings).toHaveBeenCalledTimes(1)
-    expect(updates[0]).toMatchObject({ disabledTuiAgents: ['claude'] })
-
-    writes[0].resolve()
-    await firstWrite
-    await flushPromiseQueue()
-
-    expect(updateSettings).toHaveBeenCalledTimes(2)
-    expect(updates[1]).toMatchObject({ disabledTuiAgents: ['claude', 'codex'] })
-
-    writes[1].resolve()
-    await secondWrite
+    expect(markup).not.toContain('Agent settings are managed on the desktop')
+    expect(markup).not.toContain('disabled=""')
   })
 
-  it('keeps repeated queued availability requests idempotent', async () => {
-    const queueAvailabilityUpdate = createAgentAvailabilityUpdateQueue()
-    const settings: GlobalSettings = {
-      ...getDefaultSettings('/tmp'),
-      defaultTuiAgent: null,
-      disabledTuiAgents: []
-    }
-    const writes: Deferred[] = []
-    const updates: Partial<GlobalSettings>[] = []
+  it('renders a read-only notice and disables authoring on paired clients', () => {
+    const markup = renderPane(getDefaultSettings('/tmp'), { readOnly: true })
 
-    useAppStore.setState({ settings })
-    const updateSettings = vi.fn((update: Partial<GlobalSettings>) => {
-      updates.push(update)
-      const nextSettings = {
-        ...(useAppStore.getState().settings ?? settings),
-        ...update
-      }
-      const write = createDeferred()
-      writes.push(write)
-      return write.promise.then(() => {
-        useAppStore.setState({ settings: nextSettings })
-      })
-    })
-
-    const firstWrite = queueAvailabilityUpdate({
-      getSettings: () => useAppStore.getState().settings,
-      fallbackSettings: settings,
-      updateSettings,
-      agentId: 'claude',
-      enabled: false
-    })
-    const secondWrite = queueAvailabilityUpdate({
-      getSettings: () => useAppStore.getState().settings,
-      fallbackSettings: settings,
-      updateSettings,
-      agentId: 'claude',
-      enabled: false
-    })
-
-    await flushPromiseQueue()
-    writes[0].resolve()
-    await firstWrite
-    await flushPromiseQueue()
-
-    expect(updateSettings).toHaveBeenCalledTimes(2)
-    expect(updates[1]).toMatchObject({ disabledTuiAgents: ['claude'] })
-
-    writes[1].resolve()
-    await secondWrite
+    expect(markup).toContain('Agent settings are managed on the desktop')
+    expect(markup).toContain('use the Orca desktop app')
+    // The whole authoring surface is wrapped in a disabled fieldset so no control
+    // is interactive; the host also rejects remote authoring (defense-in-depth).
+    expect(markup).toContain('<fieldset')
+    expect(markup).toContain('disabled=""')
   })
 })

@@ -8,7 +8,7 @@ import {
 
 export function createBackgroundAgentStatusConsumer(args: {
   paneKey: string
-  launchToken: string
+  getLaunchToken: () => string | null
   mainOwnsAgentStatusWrites: boolean
   expectedConnectionId: string | null | undefined
   runtimeEnvironmentId: string | null
@@ -38,11 +38,17 @@ export function createBackgroundAgentStatusConsumer(args: {
         // Why: hidden callbacks can outlive tab reuse; only the exact current
         // pane-to-PTY binding may update its status ownership.
         if (routing) {
+          const launchToken = args.getLaunchToken()
           useAppStore
             .getState()
-            .setAgentStatus(args.paneKey, payload, undefined, undefined, routing, {
-              launchToken: args.launchToken
-            })
+            .setAgentStatus(
+              args.paneKey,
+              payload,
+              undefined,
+              undefined,
+              routing,
+              launchToken ? { launchToken } : undefined
+            )
         }
       }
       args.onAgentStatus?.(payload)

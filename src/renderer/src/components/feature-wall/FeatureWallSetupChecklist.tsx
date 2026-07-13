@@ -23,7 +23,9 @@ import {
 import { AgentStep } from '../onboarding/AgentStep'
 import { NotificationStep } from '../onboarding/NotificationStep'
 import { useAppStore } from '@/store'
+import { setDefaultTuiAgent } from '@/lib/agent-catalog-authoring'
 import type { TuiAgent } from '../../../../shared/types'
+import { toLegacyAutoPreference } from '../../../../shared/tui-agent-selection'
 import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
 import { translate } from '@/i18n/i18n'
 
@@ -182,21 +184,17 @@ function SelectedStepVisual(props: { stepId: FeatureWallSetupStepId }): React.JS
 
 function DefaultAgentAction(): React.JSX.Element {
   const settings = useAppStore((s) => s.settings)
-  const updateSettings = useAppStore((s) => s.updateSettings)
   const refreshDetectedAgents = useAppStore((s) => s.refreshDetectedAgents)
   const detectedAgentIds = useAppStore((s) => s.detectedAgentIds)
   const isDetectingAgents = useAppStore((s) => s.isDetectingAgents || s.isRefreshingAgents)
+  // 'auto' (migrated legacy null) selects no fixed agent for the checklist.
+  const normalizedDefaultAgent = toLegacyAutoPreference(settings?.defaultTuiAgent)
   const selectedAgent =
-    settings?.defaultTuiAgent && settings.defaultTuiAgent !== 'blank'
-      ? settings.defaultTuiAgent
-      : null
+    normalizedDefaultAgent && normalizedDefaultAgent !== 'blank' ? normalizedDefaultAgent : null
   const detectedSet = useMemo(() => new Set(detectedAgentIds ?? []), [detectedAgentIds])
-  const handleSelectAgent = useCallback(
-    (agent: TuiAgent) => {
-      void updateSettings({ defaultTuiAgent: agent })
-    },
-    [updateSettings]
-  )
+  const handleSelectAgent = useCallback((agent: TuiAgent) => {
+    void setDefaultTuiAgent(agent)
+  }, [])
 
   useEffect(() => {
     void refreshDetectedAgents()

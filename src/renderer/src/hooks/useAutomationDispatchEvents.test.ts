@@ -292,6 +292,49 @@ describe('useAutomationDispatchEvents setup launch', () => {
     )
   })
 
+  it('persists the structured launch failure and the generic string on a typed spawn failure', async () => {
+    // Import the error class within this reset-modules cycle so its identity
+    // matches the freshly re-imported hook's `instanceof` check.
+    const { AgentLaunchSpawnOutcomeError } = await import('@/lib/agent-launch-spawn-outcome-error')
+    mockLaunchAgentBackgroundSession.mockRejectedValue(
+      new AgentLaunchSpawnOutcomeError({
+        status: 'failed',
+        failure: { code: 'custom_agent_disabled' }
+      })
+    )
+
+    await registerAndDispatch()
+
+    const failedCall = mockMarkDispatchResult.mock.calls.find(
+      (call) => call[0]?.status === 'dispatch_failed'
+    )
+    expect(failedCall).toBeDefined()
+    // The renderer passes the PLAIN failure; the durable wrapper
+    // (version/failureId/intent/occurredAt) is minted host-side at the single
+    // markDispatchResult persist authority, so it never crosses this boundary.
+    expect(failedCall?.[0]).toEqual(
+      expect.objectContaining({
+        runId: 'run-1',
+        status: 'dispatch_failed',
+        error: expect.any(String),
+        agentLaunchFailure: { code: 'custom_agent_disabled' }
+      })
+    )
+  })
+
+  it('writes only the generic string when a spawn failure is untyped', async () => {
+    mockLaunchAgentBackgroundSession.mockRejectedValue(new Error('boom'))
+
+    await registerAndDispatch()
+
+    const failedCall = mockMarkDispatchResult.mock.calls.find(
+      (call) => call[0]?.status === 'dispatch_failed'
+    )
+    expect(failedCall).toBeDefined()
+    expect(failedCall?.[0].error).toBe('boom')
+    expect(failedCall?.[0]).not.toHaveProperty('agentLaunchFailure')
+  })
+
   it('does not rerun setup for existing-worktree automations', async () => {
     const existingWorktree = {
       id: 'wt-existing',

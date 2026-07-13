@@ -10,13 +10,13 @@ import {
   saveSourceControlActionRecipe,
   type SourceControlAiWriteTarget
 } from '../../../../shared/source-control-ai-recipe-save'
+import { saveSourceControlAiSettings } from '@/lib/agent-catalog-authoring'
 import { generationParamsToActionRecipe } from './source-control-text-generation-defaults'
 
 type SourceControlAiRecipePersistenceStoreSnapshot = Pick<AppState, 'settings' | 'repos'>
 
 export async function saveSourceControlAiActionRecipeForTarget({
   getStoreState,
-  updateSettings,
   updateRepo,
   target,
   actionId,
@@ -24,7 +24,6 @@ export async function saveSourceControlAiActionRecipeForTarget({
   customAgentCommand
 }: {
   getStoreState: () => SourceControlAiRecipePersistenceStoreSnapshot
-  updateSettings: AppState['updateSettings']
   updateRepo: AppState['updateRepo']
   target: SourceControlAiWriteTarget
   actionId: SourceControlTextActionId | SourceControlLaunchActionId
@@ -49,7 +48,7 @@ export async function saveSourceControlAiActionRecipeForTarget({
     customAgentCommand
   })
   if ('sourceControlAi' in result) {
-    await updateSettings({ sourceControlAi: result.sourceControlAi })
+    await saveSourceControlAiSettings(result.sourceControlAi)
     return
   }
   await updateRepo(result.target.repoId, result.update)
