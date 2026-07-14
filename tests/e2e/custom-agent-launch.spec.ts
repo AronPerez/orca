@@ -48,6 +48,42 @@ test.use({
   seededSourceControlActions: { [RECIPE_ACTION_ID]: { agentArgs: RECIPE_ARGS } }
 })
 
+test('launches custom args selected through the new-workspace composer UI', async ({
+  orcaPage
+}) => {
+  await waitForSessionReady(orcaPage)
+  await waitForActiveWorktree(orcaPage)
+
+  await orcaPage.getByRole('button', { name: 'New workspace', exact: true }).click()
+  const dialog = orcaPage.getByRole('dialog', { name: /Create (Workspace|Worktree)/i })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.locator('[data-workspace-name-input="true"]')).toBeVisible()
+
+  const nameInput = dialog.getByPlaceholder(/Type a name/i)
+  await nameInput.fill(`e2e-custom-composer-${Date.now()}`)
+
+  const agentTrigger = dialog.locator('[data-agent-combobox-root="true"][role="combobox"]')
+  await agentTrigger.click()
+  await expect(orcaPage.getByText(CUSTOM_AGENT_LABEL, { exact: true })).toBeVisible()
+  await orcaPage.getByText(CUSTOM_AGENT_LABEL, { exact: true }).click()
+  await expect(agentTrigger).toContainText(CUSTOM_AGENT_LABEL)
+
+  const createButton = dialog.getByRole('button', { name: /Create (Workspace|Worktree)/i })
+  await expect(createButton).toBeEnabled()
+  await createButton.click()
+  await expect(dialog).toBeHidden({ timeout: 15_000 })
+
+  await ensureTerminalVisible(orcaPage)
+  await waitForActiveTerminalManager(orcaPage, 30_000)
+  await waitForPaneCount(orcaPage, 1, 30_000)
+  const ptyId = await waitForActivePanePtyId(orcaPage, 30_000)
+
+  // The fixture path is supplied only by this custom definition's args. Seeing
+  // its marker proves the composer submitted the custom id through host assembly.
+  await waitForTerminalOutput(orcaPage, READY_MARKER, 30_000)
+  await sendToTerminal(orcaPage, ptyId, '\x03')
+})
+
 test('launches a seeded custom agent through the host boundary and round-trips keyboard input', async ({
   orcaPage
 }) => {
