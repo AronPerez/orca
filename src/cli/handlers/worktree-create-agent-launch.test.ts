@@ -5,11 +5,14 @@ import type {
   CreatedRuntimeWorktreeCreateResult,
   RuntimeWorktreeCreateResult
 } from '../../shared/runtime-types'
+import type { AgentLaunchFailureCode } from '../../shared/agent-launch-contract'
+import { AGENT_LAUNCH_IDENTITY_RUNTIME_CAPABILITY } from '../../shared/protocol-version'
 import { buildWorktree } from '../test-fixtures'
 import {
   getWorktreeCreateAgentLaunch,
   handleWorktreeCreatePreRejection,
   printWorktreeCreateResult,
+  resolveWorktreeCreateLaunchParams,
   type AgentLaunchSource
 } from './worktree-create-agent-launch'
 
@@ -122,6 +125,84 @@ describe('getWorktreeCreateAgentLaunch', () => {
 const FLAG_SOURCE: AgentLaunchSource = { via: 'flag', id: 'ghost' }
 const DEFAULT_SOURCE: AgentLaunchSource = { via: 'default' }
 
+type LaunchClient = Parameters<typeof resolveWorktreeCreateLaunchParams>[0]
+
+function stubClient(options: {
+  isRemote: boolean
+  capabilities?: string[]
+  probeError?: boolean
+}): { client: LaunchClient; call: ReturnType<typeof vi.fn> } {
+  const call = vi.fn(async () => {
+    if (options.probeError) {
+      throw new Error('unreachable')
+    }
+    return {
+      id: 'req_status',
+      ok: true as const,
+      result: { capabilities: options.capabilities },
+      _meta: { runtimeId: 'runtime-1' }
+    }
+  })
+  return { client: { isRemote: options.isRemote, call } as unknown as LaunchClient, call }
+}
+
+describe('resolveWorktreeCreateLaunchParams', () => {
+  const explicitLaunch = getWorktreeCreateAgentLaunch(flags({ agent: 'codex', prompt: 'do it' }))!
+  const defaultLaunch = getWorktreeCreateAgentLaunch(flags({ agent: true }))!
+
+  it('sends the host-atomic request without probing a local runtime', async () => {
+    const { client, call } = stubClient({ isRemote: false })
+    await expect(resolveWorktreeCreateLaunchParams(client, explicitLaunch)).resolves.toEqual({
+      agentLaunch: explicitLaunch.request
+    })
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('sends the host-atomic request to a remote host advertising the capability', async () => {
+    const { client, call } = stubClient({
+      isRemote: true,
+      capabilities: [AGENT_LAUNCH_IDENTITY_RUNTIME_CAPABILITY]
+    })
+    await expect(resolveWorktreeCreateLaunchParams(client, explicitLaunch)).resolves.toEqual({
+      agentLaunch: explicitLaunch.request
+    })
+    expect(call).toHaveBeenCalledWith('status.get')
+  })
+
+  it('falls back to the legacy host-resolved id fields for a pre-identity remote host', async () => {
+    const { client } = stubClient({ isRemote: true, capabilities: [] })
+    await expect(resolveWorktreeCreateLaunchParams(client, explicitLaunch)).resolves.toEqual({
+      startupAgent: 'codex',
+      startupPrompt: 'do it'
+    })
+  })
+
+  it('reads an unreachable capability probe as a legacy host', async () => {
+    const { client } = stubClient({ isRemote: true, probeError: true })
+    await expect(resolveWorktreeCreateLaunchParams(client, explicitLaunch)).resolves.toEqual({
+      startupAgent: 'codex',
+      startupPrompt: 'do it'
+    })
+  })
+
+  it('fails fast when a pre-identity host is asked for the stored default agent', async () => {
+    const { client } = stubClient({ isRemote: true, capabilities: [] })
+    await expect(resolveWorktreeCreateLaunchParams(client, defaultLaunch)).rejects.toMatchObject({
+      code: 'incompatible_runtime'
+    })
+  })
+
+  it('fails fast when a pre-identity host is asked for a custom agent id', async () => {
+    const customLaunch = getWorktreeCreateAgentLaunch(
+      flags({ agent: 'custom-agent:codex:01234567-89ab-4cde-8f01-23456789abcd' })
+    )!
+    const { client } = stubClient({ isRemote: true, capabilities: [] })
+    await expect(resolveWorktreeCreateLaunchParams(client, customLaunch)).rejects.toMatchObject({
+      code: 'incompatible_runtime'
+    })
+  })
+})
+
 describe('handleWorktreeCreatePreRejection', () => {
   it('returns the created arm unchanged when the worktree was created', () => {
     const created = createdWorktree(LAUNCHED)
@@ -160,6 +241,24 @@ describe('handleWorktreeCreatePreRejection', () => {
 
     expect(errSpy.mock.calls[0][0]).toBe('base_agent_disabled')
     expect(errSpy.mock.calls[1][0]).toContain('stored default')
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('keeps the human line generic for a failure code from a newer host', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const response = envelope({
+      created: false,
+      agentLaunchResult: {
+        status: 'failed',
+        failure: { code: 'launch_reason_from_the_future' as AgentLaunchFailureCode }
+      }
+    })
+
+    handleWorktreeCreatePreRejection(response, FLAG_SOURCE, false)
+
+    expect(errSpy.mock.calls[0][0]).toBe('launch_reason_from_the_future')
+    expect(errSpy.mock.calls[1][0]).not.toContain('undefined')
+    expect(errSpy.mock.calls[1][0]).toContain('does not recognize')
     expect(process.exitCode).toBe(1)
   })
 

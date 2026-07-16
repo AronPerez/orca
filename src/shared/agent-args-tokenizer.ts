@@ -12,9 +12,10 @@
 //   is invalid because not every target shell can represent it consistently.
 // - Adjacent segments not separated by unquoted whitespace concatenate into one
 //   token (`a"b"c` -> `abc`); a run of only empty quotes yields one empty token.
-// - Outside quotes, backslash escapes only whitespace, quote, or backslash;
-//   before any other character it stays literal (preserves C:\Users\me). A
-//   trailing literal backslash is valid.
+// - Outside quotes, backslash escapes only space, quote, or backslash; before
+//   any other character it stays literal (preserves C:\Users\me). A trailing
+//   literal backslash is valid. An escaped TAB/CR/LF is rejected so raw control
+//   characters can never reach argv.
 // - Inside double quotes only `\"` and `\\` decode; single-quoted content is
 //   fully literal.
 // - Shell operators, substitution, redirection, globs, and env expansion have
@@ -129,10 +130,12 @@ export function tokenizeAgentArgsTemplate(template: string): AgentArgsTokenizeRe
 
     if (char === '\\') {
       const next = i + 1 < length ? template[i + 1] : null
-      if (
-        next !== null &&
-        (SEPARATORS.has(next) || next === '"' || next === "'" || next === '\\')
-      ) {
+      // Escaping TAB/CR/LF would smuggle raw control chars into argv; reject
+      // them like the quoted forms do.
+      if (next === '\t' || next === '\r' || next === '\n') {
+        return { ok: false, reason: 'control_char', index: i + 1 }
+      }
+      if (next !== null && (next === ' ' || next === '"' || next === "'" || next === '\\')) {
         current += next
         hasCurrent = true
         i += 2

@@ -154,6 +154,18 @@ describe('AgentCatalogList', () => {
     expect(keys).toEqual([rows[0].id, rows[2].id])
   })
 
+  it('keeps search outside the read-only fieldset so filtering still works', () => {
+    render(<AgentCatalogList rows={[customRow(1), customRow(2)]} readOnly {...callbacks()} />)
+    const input = screen.getByLabelText('Search agents') as HTMLInputElement
+    // Search stays enabled: it must not be inside the disabled row fieldset.
+    expect(input.closest('fieldset')).toBeNull()
+    const enable = screen.getByLabelText('Enable Agent 1')
+    expect(enable.closest('fieldset')?.hasAttribute('disabled')).toBe(true)
+    fireEvent.change(input, { target: { value: 'Agent 2' } })
+    expect(screen.queryByText('Agent 1')).toBeNull()
+    expect(screen.getByText('Agent 2')).toBeTruthy()
+  })
+
   it('keeps the row action controls keyboard-reachable', () => {
     render(<AgentCatalogList rows={[customRow(1)]} {...callbacks()} />)
     const actions = screen.getByLabelText('Actions for Agent 1') as HTMLElement

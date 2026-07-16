@@ -186,6 +186,20 @@ describe('validateDraftLocally', () => {
     expect(issues).toContainEqual({ field: 'env', reason: 'reserved_name', envEntryIndex: 0 })
   })
 
+  it('flags an exact-duplicate env key that would collapse in the serialized record', () => {
+    const issues = validateDraftLocally(
+      { kind: 'new' },
+      draftWith({
+        label: 'Work',
+        envRows: [
+          createEnvRow({ key: 'HOME', value: '/a' }),
+          createEnvRow({ key: 'HOME', value: '/b' })
+        ]
+      })
+    )
+    expect(issues).toContainEqual({ field: 'env', reason: 'case_collision', envEntryIndex: 1 })
+  })
+
   it('flags an unterminated quote in args', () => {
     const issues = validateDraftLocally(
       { kind: 'new' },

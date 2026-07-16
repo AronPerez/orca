@@ -75,6 +75,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Per-entry shape guard for rehydrated pending snapshots: reconciliation
+ *  dereferences snapshot.target.executionHostId (and joins on the ids) with no
+ *  per-entry try/catch, so one malformed entry must be skipped at load rather
+ *  than throwing inside every reconcile pass. */
+function isPendingAgentLaunchSnapshotShape(value: unknown): value is PendingAgentLaunchSnapshot {
+  if (!isRecord(value)) {
+    return false
+  }
+  const snapshot = value.snapshot
+  return (
+    typeof value.operationId === 'string' &&
+    typeof value.idempotencyKey === 'string' &&
+    typeof value.scope === 'string' &&
+    (value.clientMutationId === null || typeof value.clientMutationId === 'string') &&
+    typeof value.payloadDigest === 'string' &&
+    typeof value.launchToken === 'string' &&
+    typeof value.intent === 'string' &&
+    isRecord(snapshot) &&
+    Array.isArray(snapshot.argv) &&
+    isRecord(snapshot.target) &&
+    typeof snapshot.target.executionHostId === 'string'
+  )
+}
+
+function validPendingSnapshots(entries: unknown[]): PendingAgentLaunchSnapshot[] {
+  return entries.filter(isPendingAgentLaunchSnapshotShape)
+}
+
 function decodePending(
   pending: unknown,
   cipher: AgentLaunchOperationCipher
@@ -83,7 +111,7 @@ function decodePending(
     return []
   }
   if (pending.format === 'plaintext-v1' && Array.isArray(pending.snapshots)) {
-    return pending.snapshots as PendingAgentLaunchSnapshot[]
+    return validPendingSnapshots(pending.snapshots)
   }
   if (
     pending.format === 'electron-safe-storage-v1' &&
@@ -95,7 +123,7 @@ function decodePending(
     // rather than mis-attributing, and the settled ledger stays intact.
     const decrypted = cipher.decrypt(Buffer.from(pending.ciphertext, 'base64'))
     const parsed = JSON.parse(decrypted)
-    return Array.isArray(parsed) ? (parsed as PendingAgentLaunchSnapshot[]) : []
+    return Array.isArray(parsed) ? validPendingSnapshots(parsed) : []
   }
   return []
 }

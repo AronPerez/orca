@@ -18,6 +18,10 @@ import {
   type RepairReplaceTarget,
   type ReviewReferencesTarget
 } from './AgentCatalogSectionView'
+import {
+  AgentCatalogMigrationBlockedNotice,
+  asAgentCatalogMigrationBlocked
+} from './agent-catalog-migration-blocked'
 import { CustomAgentEditorDialog } from './CustomAgentEditorDialog'
 import { BuiltInLaunchSettingsDialog } from './BuiltInLaunchSettingsDialog'
 import { CustomAgentDeleteDialog } from './CustomAgentDeleteDialog'
@@ -70,6 +74,19 @@ export function AgentCatalogSection({
     () => (detectedIds ? new Set(detectedIds) : null),
     [detectedIds]
   )
+
+  // Why: while the pre-v1 backup is failing the host rejects every catalog
+  // write; without surfacing that, the toggles/default picker look like silent
+  // no-ops. A later success clears the notice (the block lifted).
+  const [migrationBlockedError, setMigrationBlockedError] = useState<string | null>(null)
+  const surfaceMigrationBlock = (result: { ok: boolean }): void => {
+    const blocked = asAgentCatalogMigrationBlocked(result)
+    if (blocked) {
+      setMigrationBlockedError(blocked.migrationError)
+    } else if (result.ok) {
+      setMigrationBlockedError(null)
+    }
+  }
 
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorMode, setEditorMode] = useState<CustomAgentEditorMode>({ kind: 'new' })
@@ -150,7 +167,7 @@ export function AgentCatalogSection({
     if (readOnly) {
       return
     }
-    void setDefaultTuiAgent(selection)
+    void setDefaultTuiAgent(selection).then(surfaceMigrationBlock)
   }
   const [disableOpen, setDisableOpen] = useState(false)
   const [disableTarget, setDisableTarget] = useState<{
@@ -164,11 +181,13 @@ export function AgentCatalogSection({
   // otherwise the reference-aware confirmation opens (plan §973). Base-disable
   // impact counts are a pending host query, so bases still toggle directly.
   const requestCustomDisable = async (id: CustomTuiAgentId): Promise<void> => {
+    // A failed query cannot prove "unreferenced": report an unreadable owner
+    // (count -1) so the confirmation still opens instead of being bypassed.
     const summary = await window.api.settings.agentCatalog
       .referenceSummary({ id })
-      .catch(() => [] as AgentReferenceSummary[])
+      .catch((): AgentReferenceSummary[] => [{ owner: 'default', count: -1 }])
     if (!disableNeedsConfirmation(summary)) {
-      void setTuiAgentEnabled(id, false)
+      void setTuiAgentEnabled(id, false).then(surfaceMigrationBlock)
       return
     }
     const ready = snapshot?.customAgents.find(
@@ -192,15 +211,17 @@ export function AgentCatalogSection({
   // the confirmation names enabled derivatives, saved references, and resumable
   // sessions (plan §973). Derivatives are local; references/sessions are host-computed.
   const requestBaseDisable = async (base: BuiltInTuiAgent): Promise<void> => {
+    // A failed query cannot prove "no impact": `atLeast` marks the counts as
+    // floors so the confirmation still opens instead of being bypassed.
     const impact = await window.api.settings.agentCatalog
       .baseDisableImpact({ base })
       .catch<BaseDisableImpact>(() => ({
-        savedReferences: { count: 0, atLeast: false },
-        resumableSessions: { count: 0, atLeast: false }
+        savedReferences: { count: 0, atLeast: true },
+        resumableSessions: { count: 0, atLeast: true }
       }))
     const enabledDerivatives = snapshot ? countEnabledDerivatives(snapshot, base) : 0
     if (!baseDisableNeedsConfirmation({ enabledDerivatives, impact })) {
-      void setTuiAgentEnabled(base, false)
+      void setTuiAgentEnabled(base, false).then(surfaceMigrationBlock)
       return
     }
     setBaseDisableTarget({
@@ -225,7 +246,7 @@ export function AgentCatalogSection({
       }
       return
     }
-    void setTuiAgentEnabled(agent, enabled)
+    void setTuiAgentEnabled(agent, enabled).then(surfaceMigrationBlock)
   }
   const handleRefresh = (): void => {
     if (readOnly) {
@@ -244,6 +265,9 @@ export function AgentCatalogSection({
 
   return (
     <>
+      {migrationBlockedError !== null ? (
+        <AgentCatalogMigrationBlockedNotice migrationError={migrationBlockedError} />
+      ) : null}
       <AgentCatalogSectionView
         snapshot={snapshot}
         detectedIds={detectedSet}

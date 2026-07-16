@@ -622,7 +622,8 @@ export type TerminalSlice = {
     notices: readonly AgentLaunchNotice[]
   }) => void
   /** Dismiss a host-owned launch notice. The host is the owner: this asks it to
-   *  remove every matching code, then mirrors the confirmed removal locally. */
+   *  remove every matching code and optimistically removes it locally without
+   *  waiting on the host ack, so the banner clears immediately. */
   dismissLaunchNotice: (args: {
     worktreeId: string
     tabId: string
@@ -1911,8 +1912,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   },
 
   dismissLaunchNotice: ({ worktreeId, tabId, launchToken, code }) => {
-    // Ask the host (owner) to remove and persist; mirror the confirmed removal
-    // locally so the banner refits the terminal immediately.
+    // Ask the host (owner) to remove and persist; remove optimistically locally
+    // (no wait on the host ack) so the banner refits the terminal immediately.
     const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(get(), worktreeId)
     if (runtimeEnvironmentId) {
       void import('@/runtime/web-runtime-session').then(({ dismissWebRuntimeLaunchNotice }) =>

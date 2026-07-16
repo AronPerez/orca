@@ -1161,6 +1161,7 @@ export function clearProviderPtyState(id: string): void {
   rendererVisibilityKnownPtys.delete(id)
   pendingHiddenRendererResizeOutputPtys.delete(id)
   deliveredHiddenRendererResizeOutputPtys.delete(id)
+  clearStartupTerminalColorQueryReplies(id)
   // Why: every teardown path funnels through here — hidden/interest gate bits must not outlive the PTY or a reused map entry could silently gate a new one.
   clearHiddenRendererPtyDeliveryState(id)
   clearBackgroundedDeliverySyncForPty(id)
@@ -3980,380 +3981,460 @@ export function registerPtyHandlers(
           agentLaunchDraftPrompt = resolution.plan.draftPrompt ?? null
         }
       }
-      const isClaudeLaunch = !args.connectionId && isClaudeLaunchCommand(args.command)
-      if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
-        settleAgentLaunch('failed')
-        throw new Error('A Claude account switch is in progress. Try again after it finishes.')
-      }
-      const terminalRuntimeOptions =
-        process.platform === 'win32' && !args.connectionId
-          ? resolveLocalWindowsTerminalRuntimeOptions({
-              requestedShellOverride: args.shellOverride,
-              settings: getSettings?.(),
-              projectRuntime: args.projectRuntime,
-              fallbackHostShell: process.env.COMSPEC || 'powershell.exe'
-            })
-          : { shellOverride: args.shellOverride, terminalWindowsWslDistro: null }
-      const initialShellOverride = terminalRuntimeOptions.shellOverride
-      const initialSelectionTarget = getCodexSelectionTargetForPty(
-        initialShellOverride,
-        cwd,
-        terminalRuntimeOptions.terminalWindowsWslDistro ?? null
-      )
-      const claudeAuth =
-        isClaudeLaunch && prepareClaudeAuth ? await prepareClaudeAuth(initialSelectionTarget) : null
-      spawnTiming.mark('auth')
-      if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
-        settleAgentLaunch('failed')
-        throw new Error('A Claude account switch is in progress. Try again after it finishes.')
-      }
-      if (claudeAuth?.stripAuthEnv && hasClaudeAuthEnvConflict(args.env)) {
-        settleAgentLaunch('failed')
-        throw new Error(
-          'This Claude launch defines explicit Anthropic auth environment variables. Remove those overrides before using a managed Claude account.'
-        )
-      }
-      // Why: the daemon-backed provider skips LocalPtyProvider's buildSpawnEnv, so assemble the same host-local env here for parity.
-      // Safety: skip entirely for SSH — every injection is a loopback secret or a local path that leaks or misleads on the remote host.
-      const isDaemonHostSpawn =
-        !args.connectionId &&
-        !(provider instanceof LocalPtyProvider) &&
-        !routesFreshSpawnsToLocalProvider(provider)
-      // Why: daemon host-env setup needs a stable id BEFORE provider.spawn so buildPtyHostEnv hooks/Pi cleanup can run; daemon still honors opts.sessionId ?? mint().
-      // Note: sessionId is STABLE across daemon restarts by design — do NOT simplify to a fresh UUID per spawn; that orphans reconnectable state.
-      // Why: only clear ids minted in THIS request on failure — a caller-supplied args.sessionId may name an existing PTY we must not clobber.
-      const isMintedSessionId = args.sessionId === undefined && isDaemonHostSpawn
-      const effectiveSessionId =
-        args.sessionId ?? (isDaemonHostSpawn ? mintPtySessionId(args.worktreeId) : undefined)
-      const effectiveSessionAppId =
-        effectiveSessionId !== undefined
-          ? getAppPtyId(args.connectionId, effectiveSessionId)
-          : undefined
-      const effectiveSessionRelayId =
-        effectiveSessionId !== undefined
-          ? getRelayPtyId(args.connectionId, effectiveSessionId)
-          : undefined
-      const expectedWslDistro = !args.connectionId
-        ? (resolveWslSessionContext({
-            cwd,
-            sessionId: effectiveSessionId,
-            shellOverride: terminalRuntimeOptions.shellOverride,
-            terminalWindowsWslDistro: terminalRuntimeOptions.terminalWindowsWslDistro
-          })?.distro ?? null)
-        : null
-      const startupTerminalColorQueryReplyColors = getStartupTerminalColorQueryReplyColors(args)
-      // Why: forward pane env to SSH only when the relay hook path is enabled, or a newer relay could emit statuses this build can't route.
-      const sshSourceEnv = stripRemotePaneEnvWhenHooksDisabled(args.connectionId, args.env)
-      const baseEnvWithAuth = claudeAuth
-        ? { ...sshSourceEnv, ...claudeAuth.envPatch }
-        : sshSourceEnv
-      const spawnPaneKey = baseEnvWithAuth?.ORCA_PANE_KEY
-      const parsedSpawnPaneKey = parseValidPaneKey(spawnPaneKey)
-      const verifiedPaneKey =
-        parsedSpawnPaneKey &&
-        typeof args.tabId === 'string' &&
-        args.tabId === parsedSpawnPaneKey.tabId &&
-        args.leafId === parsedSpawnPaneKey.leafId
-          ? makePaneKey(parsedSpawnPaneKey.tabId, parsedSpawnPaneKey.leafId)
-          : null
-      const verifiedLeafId =
-        verifiedPaneKey && parsedSpawnPaneKey ? parsedSpawnPaneKey.leafId : null
-      const metadataLeafId =
-        typeof args.leafId === 'string' && isTerminalLeafId(args.leafId) ? args.leafId : null
-      const metadataPaneKey =
-        typeof args.tabId === 'string' &&
-        isValidTerminalTabId(args.tabId) &&
-        args.tabId.length <= 512 &&
-        metadataLeafId
-          ? makePaneKey(args.tabId, metadataLeafId)
-          : null
-      const legacySpawnPaneKey = verifiedPaneKey ? null : parseLegacyNumericPaneKey(spawnPaneKey)
-      const migrationUnsupportedPaneKey =
-        legacySpawnPaneKey &&
-        typeof args.tabId === 'string' &&
-        args.tabId === legacySpawnPaneKey.tabId &&
-        typeof args.leafId === 'string' &&
-        isTerminalLeafId(args.leafId)
-          ? makePaneKey(args.tabId, args.leafId)
-          : null
-      const stablePaneKey = verifiedPaneKey ?? migrationUnsupportedPaneKey
-      let baseEnv = baseEnvWithAuth ? { ...baseEnvWithAuth } : undefined
-      const shouldRefreshAgentTeamsEnv =
-        !args.connectionId &&
-        runtime !== undefined &&
-        stablePaneKey !== null &&
-        shouldRefreshNativeClaudeAgentTeamsEnv({
-          command: args.command,
-          launchConfig: args.launchConfig
-        })
-      let effectiveLaunchConfig = args.launchConfig
-      const shouldPreAllocateTerminalHandle =
-        runtime !== undefined &&
-        ((!(provider instanceof LocalPtyProvider) && !routesFreshSpawnsToLocalProvider(provider)) ||
-          shouldRefreshAgentTeamsEnv)
-      const preAllocatedHandle = shouldPreAllocateTerminalHandle
-        ? runtime.createPreAllocatedTerminalHandle()
-        : null
-      if (shouldRefreshAgentTeamsEnv && preAllocatedHandle) {
-        // Why: Agent Teams ids/tokens are process-local, so the team env must be regenerated for the new leader PTY.
-        const prepared = await runtime.prepareClaudeAgentTeamsLeaderForHandle({
-          handle: preAllocatedHandle,
-          baseEnv: baseEnv ?? {},
-          // Validated custom agent env propagates to teammate panes.
-          ...(args.launchConfig
-            ? { childEnv: stripEphemeralAgentTeamsEnv(args.launchConfig.agentEnv) }
-            : {})
-        })
-        baseEnv = {
-          ...baseEnv,
-          ...prepared.env
+      // Hoisted out of the try below so its settling catch can reject a pane
+      // reservation taken before a pre-spawn throw.
+      let reservationPaneKey: string | null = null
+      let paneSpawnReservation: PaneSpawnReservation | null = null
+      let finishTerminalInstall: () => void = () => {}
+      // Why: the admission token/background attempt minted above must settle on
+      // ANY pre-spawn throw (auth prep, host-env assembly, invariant checks) —
+      // an unsettled token burns launch capacity until restart. The catch below
+      // therefore covers the whole pre-spawn region, not just provider.spawn.
+      try {
+        const isClaudeLaunch = !args.connectionId && isClaudeLaunchCommand(args.command)
+        if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
+          settleAgentLaunch('failed')
+          throw new Error('A Claude account switch is in progress. Try again after it finishes.')
         }
-        if (args.launchConfig) {
-          // Why: the regenerated team identity spawns the leader (baseEnv above)
-          // but must never persist; the durable snapshot keeps only custom env.
-          effectiveLaunchConfig = {
-            ...args.launchConfig,
-            agentEnv: stripEphemeralAgentTeamsEnv(args.launchConfig.agentEnv)
+        const terminalRuntimeOptions =
+          process.platform === 'win32' && !args.connectionId
+            ? resolveLocalWindowsTerminalRuntimeOptions({
+                requestedShellOverride: args.shellOverride,
+                settings: getSettings?.(),
+                projectRuntime: args.projectRuntime,
+                fallbackHostShell: process.env.COMSPEC || 'powershell.exe'
+              })
+            : { shellOverride: args.shellOverride, terminalWindowsWslDistro: null }
+        const initialShellOverride = terminalRuntimeOptions.shellOverride
+        const initialSelectionTarget = getCodexSelectionTargetForPty(
+          initialShellOverride,
+          cwd,
+          terminalRuntimeOptions.terminalWindowsWslDistro ?? null
+        )
+        const claudeAuth =
+          isClaudeLaunch && prepareClaudeAuth
+            ? await prepareClaudeAuth(initialSelectionTarget)
+            : null
+        spawnTiming.mark('auth')
+        if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
+          settleAgentLaunch('failed')
+          throw new Error('A Claude account switch is in progress. Try again after it finishes.')
+        }
+        if (claudeAuth?.stripAuthEnv && hasClaudeAuthEnvConflict(args.env)) {
+          settleAgentLaunch('failed')
+          throw new Error(
+            'This Claude launch defines explicit Anthropic auth environment variables. Remove those overrides before using a managed Claude account.'
+          )
+        }
+        // Why: the daemon-backed provider replaces LocalPtyProvider and therefore
+        // never runs its buildSpawnEnv closure. We must assemble the same
+        // host-local env (OpenCode plugin, agent-hook server, Pi/OMP managed
+        // extensions, Codex home, dev CLI overrides, GitHub attribution shims)
+        // here so both spawn paths behave identically. buildPtyHostEnv is the
+        // shared helper that encapsulates the full set of injections and guards.
+        //
+        // Safety: skip the entire injection when a remote (SSH) connection is in
+        // play. Every injection here is either host-loopback (the agent-hook
+        // server binds 127.0.0.1, so shipping its token to an SSH host would
+        // leak a loopback secret for no functional benefit) or a path on the
+        // local filesystem (OpenCode plugin dir, Pi/OMP extension paths, Codex
+        // home, dev CLI bin, attribution shim dir) that would resolve to
+        // nothing — or something misleading — on the remote machine.
+        const isDaemonHostSpawn =
+          !args.connectionId &&
+          !(provider instanceof LocalPtyProvider) &&
+          !routesFreshSpawnsToLocalProvider(provider)
+        // Why: daemon host-env setup needs a stable id BEFORE provider.spawn so
+        // provider hooks and legacy Pi overlay cleanup can run in buildPtyHostEnv.
+        // DaemonPtyAdapter.doSpawn mints an id the same way when sessionId is
+        // absent — lifting the mint here gives pty.ts the id up-front without
+        // changing daemon semantics (the daemon still honors opts.sessionId ?? mint()).
+        //
+        // Note: the sessionId is STABLE across daemon restarts by design —
+        // DaemonPtyAdapter.reconcileOnStartup reuses it so that users' live
+        // shells survive crashes. Do NOT "simplify" id allocation back to a
+        // fresh UUID per spawn; that would orphan reconnectable terminal state.
+        // Why: only state for ids we minted in THIS request should be cleared on
+        // spawn failure. If the caller supplied args.sessionId it may refer to
+        // an existing PTY whose state (OpenCode hooks, legacy Pi overlay cleanup,
+        // agent-hook pane caches) we must not clobber on a retry/attach failure.
+        const isMintedSessionId = args.sessionId === undefined && isDaemonHostSpawn
+        const effectiveSessionId =
+          args.sessionId ?? (isDaemonHostSpawn ? mintPtySessionId(args.worktreeId) : undefined)
+        const effectiveSessionAppId =
+          effectiveSessionId !== undefined
+            ? getAppPtyId(args.connectionId, effectiveSessionId)
+            : undefined
+        const effectiveSessionRelayId =
+          effectiveSessionId !== undefined
+            ? getRelayPtyId(args.connectionId, effectiveSessionId)
+            : undefined
+        const expectedWslDistro = !args.connectionId
+          ? (resolveWslSessionContext({
+              cwd,
+              sessionId: effectiveSessionId,
+              shellOverride: terminalRuntimeOptions.shellOverride,
+              terminalWindowsWslDistro: terminalRuntimeOptions.terminalWindowsWslDistro
+            })?.distro ?? null)
+          : null
+        const startupTerminalColorQueryReplyColors = getStartupTerminalColorQueryReplyColors(args)
+        const preSpawnStartupTerminalColorReplyPtyId =
+          startupTerminalColorQueryReplyColors && effectiveSessionId !== undefined
+            ? (effectiveSessionAppId ?? effectiveSessionId)
+            : null
+        // Why: the renderer sets pane env for SSH too. Only forward it to the
+        // remote when the relay hook path is enabled; otherwise a newer relay
+        // could emit statuses this Orca build is not prepared to route.
+        const sshSourceEnv = stripRemotePaneEnvWhenHooksDisabled(args.connectionId, args.env)
+        const baseEnvWithAuth = claudeAuth
+          ? { ...sshSourceEnv, ...claudeAuth.envPatch }
+          : sshSourceEnv
+        const spawnPaneKey = baseEnvWithAuth?.ORCA_PANE_KEY
+        const parsedSpawnPaneKey = parseValidPaneKey(spawnPaneKey)
+        const verifiedPaneKey =
+          parsedSpawnPaneKey &&
+          typeof args.tabId === 'string' &&
+          args.tabId === parsedSpawnPaneKey.tabId &&
+          args.leafId === parsedSpawnPaneKey.leafId
+            ? makePaneKey(parsedSpawnPaneKey.tabId, parsedSpawnPaneKey.leafId)
+            : null
+        const verifiedLeafId =
+          verifiedPaneKey && parsedSpawnPaneKey ? parsedSpawnPaneKey.leafId : null
+        const metadataLeafId =
+          typeof args.leafId === 'string' && isTerminalLeafId(args.leafId) ? args.leafId : null
+        const metadataPaneKey =
+          typeof args.tabId === 'string' &&
+          isValidTerminalTabId(args.tabId) &&
+          args.tabId.length <= 512 &&
+          metadataLeafId
+            ? makePaneKey(args.tabId, metadataLeafId)
+            : null
+        const legacySpawnPaneKey = verifiedPaneKey ? null : parseLegacyNumericPaneKey(spawnPaneKey)
+        const migrationUnsupportedPaneKey =
+          legacySpawnPaneKey &&
+          typeof args.tabId === 'string' &&
+          args.tabId === legacySpawnPaneKey.tabId &&
+          typeof args.leafId === 'string' &&
+          isTerminalLeafId(args.leafId)
+            ? makePaneKey(args.tabId, args.leafId)
+            : null
+        const stablePaneKey = verifiedPaneKey ?? migrationUnsupportedPaneKey
+        let baseEnv = baseEnvWithAuth ? { ...baseEnvWithAuth } : undefined
+        const shouldRefreshAgentTeamsEnv =
+          !args.connectionId &&
+          runtime !== undefined &&
+          stablePaneKey !== null &&
+          shouldRefreshNativeClaudeAgentTeamsEnv({
+            command: args.command,
+            launchConfig: args.launchConfig
+          })
+        let effectiveLaunchConfig = args.launchConfig
+        const shouldPreAllocateTerminalHandle =
+          runtime !== undefined &&
+          ((!(provider instanceof LocalPtyProvider) &&
+            !routesFreshSpawnsToLocalProvider(provider)) ||
+            shouldRefreshAgentTeamsEnv)
+        const preAllocatedHandle = shouldPreAllocateTerminalHandle
+          ? runtime.createPreAllocatedTerminalHandle()
+          : null
+        if (shouldRefreshAgentTeamsEnv && preAllocatedHandle) {
+          // Why: native Agent Teams team ids/tokens are process-local. A sleeping
+          // record preserves the user's native launch shape, but the team env
+          // itself must be regenerated for the new leader PTY.
+          const prepared = await runtime.prepareClaudeAgentTeamsLeaderForHandle({
+            handle: preAllocatedHandle,
+            baseEnv: baseEnv ?? {},
+            // Validated custom agent env propagates to teammate panes.
+            ...(args.launchConfig
+              ? { childEnv: stripEphemeralAgentTeamsEnv(args.launchConfig.agentEnv) }
+              : {})
+          })
+          baseEnv = {
+            ...baseEnv,
+            ...prepared.env
+          }
+          if (args.launchConfig) {
+            // Why: the regenerated team identity spawns the leader (baseEnv above)
+            // but must never persist; the durable snapshot keeps only custom env.
+            effectiveLaunchConfig = {
+              ...args.launchConfig,
+              agentEnv: stripEphemeralAgentTeamsEnv(args.launchConfig.agentEnv)
+            }
           }
         }
-      }
-      const requestedAgentTeamsPath = baseEnv?.ORCA_AGENT_TEAMS_TEAM_ID ? baseEnv.PATH : undefined
-      const agentTeamsEnvToDelete = shouldRefreshAgentTeamsEnv
-        ? ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR']
-        : undefined
-      if (baseEnv && stablePaneKey) {
-        baseEnv.ORCA_PANE_KEY = stablePaneKey
-        if (typeof args.tabId === 'string') {
-          baseEnv.ORCA_TAB_ID = args.tabId
-        } else if (!args.connectionId) {
+        const requestedAgentTeamsPath = baseEnv?.ORCA_AGENT_TEAMS_TEAM_ID ? baseEnv.PATH : undefined
+        const agentTeamsEnvToDelete = shouldRefreshAgentTeamsEnv
+          ? ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR']
+          : undefined
+        if (baseEnv && stablePaneKey) {
+          baseEnv.ORCA_PANE_KEY = stablePaneKey
+          if (typeof args.tabId === 'string') {
+            baseEnv.ORCA_TAB_ID = args.tabId
+          } else if (!args.connectionId) {
+            delete baseEnv.ORCA_TAB_ID
+          }
+          if (typeof args.worktreeId === 'string') {
+            baseEnv.ORCA_WORKTREE_ID = args.worktreeId
+          } else if (!args.connectionId) {
+            delete baseEnv.ORCA_WORKTREE_ID
+          }
+        } else if (baseEnv) {
+          // Why: ORCA_PANE_KEY crosses into shells and hook registries. Only the
+          // key proven to match this spawn's tab+leaf may leave the IPC boundary.
+          delete baseEnv.ORCA_PANE_KEY
           delete baseEnv.ORCA_TAB_ID
-        }
-        if (typeof args.worktreeId === 'string') {
-          baseEnv.ORCA_WORKTREE_ID = args.worktreeId
-        } else if (!args.connectionId) {
           delete baseEnv.ORCA_WORKTREE_ID
+          delete baseEnv.ORCA_AGENT_LAUNCH_TOKEN
         }
-      } else if (baseEnv) {
-        // Why: ORCA_PANE_KEY crosses into shells/hook registries; only a key proven to match this spawn's tab+leaf may cross the IPC boundary.
-        delete baseEnv.ORCA_PANE_KEY
-        delete baseEnv.ORCA_TAB_ID
-        delete baseEnv.ORCA_WORKTREE_ID
-        delete baseEnv.ORCA_AGENT_LAUNCH_TOKEN
-      }
-      const validatedPaneKey = stablePaneKey
-      // Why: SSH can strip ORCA_PANE_KEY when remote hooks are off; IPC tab/leaf metadata still names the pane.
-      const reservationPaneKey = metadataPaneKey ?? validatedPaneKey
-      const validatedLeafId = verifiedLeafId ?? metadataLeafId
-      let env: Record<string, string> | undefined = baseEnv
-      const effectiveShellOverride = terminalRuntimeOptions.shellOverride
-      const nativeWindowsConptySpawn = isNativeWindowsLocalPtySpawn({
-        connectionId: args.connectionId,
-        cwd: args.cwd,
-        shellOverride: effectiveShellOverride
-      })
-      const codexSelectionTarget = getCodexSelectionTargetForPty(
-        effectiveShellOverride,
-        cwd,
-        terminalRuntimeOptions.terminalWindowsWslDistro ?? null
-      )
-      const codexResumePreparation = prepareCodexResumeHome({
-        connectionId: args.connectionId,
-        launchAgent: args.launchAgent,
-        providerSession: args.resumeProviderSession,
-        target: codexSelectionTarget,
-        launchEnv: baseEnv,
-        workspacePath: cwd
-      })
-      const codexResumeHome = codexResumePreparation ? await codexResumePreparation : null
-      const selectedCodexHomePath = isDaemonHostSpawn
-        ? getCompatibleSelectedCodexHomePath(
-            codexSelectionTarget,
-            codexResumeHome
-              ? codexResumeHome.codexHomePath
-              : (getSelectedCodexHomePath?.(codexSelectionTarget, baseEnv, {
-                  workspacePath: cwd,
-                  launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined
-                }) ?? null)
-          )
-        : null
-      const skipCodexHomeEnv =
-        isDaemonHostSpawn &&
-        shouldSkipCodexHomeEnvForWindowsShell(effectiveShellOverride, cwd) &&
-        !selectedCodexHomePath
-      const stripInheritedOrcaCodexHome =
-        isDaemonHostSpawn &&
-        shouldStripInheritedOrcaCodexHome({
-          target: codexSelectionTarget,
-          selectedCodexHomePath,
-          skipCodexHomeEnv,
-          settings: getSettings?.()
+        const validatedPaneKey = stablePaneKey
+        // Why: SSH can strip ORCA_PANE_KEY when remote hooks are disabled; the
+        // IPC tab/leaf metadata still names the pane and matches runtime fallback.
+        reservationPaneKey = metadataPaneKey ?? validatedPaneKey
+        const validatedLeafId = verifiedLeafId ?? metadataLeafId
+        let env: Record<string, string> | undefined = baseEnv
+        const effectiveShellOverride = terminalRuntimeOptions.shellOverride
+        const nativeWindowsConptySpawn = isNativeWindowsLocalPtySpawn({
+          connectionId: args.connectionId,
+          cwd: args.cwd,
+          shellOverride: effectiveShellOverride
         })
-      if (isDaemonHostSpawn) {
-        if (effectiveSessionId === undefined) {
-          // Should be unreachable: effectiveSessionId is a string when isDaemonHostSpawn; defense-in-depth.
-          throw new Error('Invariant violation: daemon spawn without sessionId')
-        }
-        const sessionIdForEnv = effectiveSessionId
-        // Why: this id reaches filesystem paths; reject traversal/separators so a crafted IPC payload can't escape the expected roots.
-        if (!isSafePtySessionId(sessionIdForEnv, app.getPath('userData'))) {
-          throw new Error('Invalid PTY session id')
-        }
-        // Why: clone before mutating so injections don't leak back into args.env (renderer may reuse it).
-        env = { ...baseEnv }
-        try {
-          buildPtyHostEnv(sessionIdForEnv, env, {
-            isPackaged: app.isPackaged,
-            userDataPath: app.getPath('userData'),
+        const codexSelectionTarget = getCodexSelectionTargetForPty(
+          effectiveShellOverride,
+          cwd,
+          terminalRuntimeOptions.terminalWindowsWslDistro ?? null
+        )
+        const codexResumePreparation = prepareCodexResumeHome({
+          connectionId: args.connectionId,
+          launchAgent: args.launchAgent,
+          providerSession: args.resumeProviderSession,
+          target: codexSelectionTarget,
+          launchEnv: baseEnv,
+          workspacePath: cwd
+        })
+        const codexResumeHome = codexResumePreparation ? await codexResumePreparation : null
+        const selectedCodexHomePath = isDaemonHostSpawn
+          ? getCompatibleSelectedCodexHomePath(
+              codexSelectionTarget,
+              codexResumeHome
+                ? codexResumeHome.codexHomePath
+                : (getSelectedCodexHomePath?.(codexSelectionTarget, baseEnv, {
+                    workspacePath: cwd,
+                    launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined
+                  }) ?? null)
+            )
+          : null
+        const skipCodexHomeEnv =
+          isDaemonHostSpawn &&
+          shouldSkipCodexHomeEnvForWindowsShell(effectiveShellOverride, cwd) &&
+          !selectedCodexHomePath
+        const stripInheritedOrcaCodexHome =
+          isDaemonHostSpawn &&
+          shouldStripInheritedOrcaCodexHome({
+            target: codexSelectionTarget,
             selectedCodexHomePath,
             skipCodexHomeEnv,
-            stripInheritedOrcaCodexHome,
-            githubAttributionEnabled: getSettings?.()?.enableGitHubAttribution ?? false,
-            launchCommand: args.command,
-            launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
-            shellPath: effectiveShellOverride ?? process.env.COMSPEC,
-            isWsl: shouldSkipCodexHomeEnvForWindowsShell(effectiveShellOverride, cwd),
-            wslDistro:
-              codexSelectionTarget.runtime === 'wsl' ? codexSelectionTarget.wslDistro : null,
-            agentStatusHooksEnabled: isAgentStatusHooksEnabled(getSettings?.()),
-            networkProxySettings: getSettings?.(),
-            deferGitConfigGuardToDaemon:
-              provider.supportsGitCredentialGuardHost?.(effectiveSessionId) === true
+            settings: getSettings?.()
           })
-          promoteAgentTeamsShimPath(env, requestedAgentTeamsPath)
-        } catch (err) {
-          // Why: buildPtyHostEnv has fs side-effects (Pi/OMP install); clear per-PTY state on throw, but only minted ids — caller ids may name existing PTYs.
-          if (isMintedSessionId) {
-            clearProviderPtyState(sessionIdForEnv)
+        if (isDaemonHostSpawn) {
+          if (effectiveSessionId === undefined) {
+            // Should be unreachable: the expression above returns a string when
+            // isDaemonHostSpawn is true. Defense-in-depth in case future edits
+            // break this invariant.
+            throw new Error('Invariant violation: daemon spawn without sessionId')
           }
-          throw err
+          const sessionIdForEnv = effectiveSessionId
+          // Why: this id still reaches filesystem side-effects for provider
+          // hook state and stale pre-migration Pi overlay cleanup; reject
+          // traversal/path separators before a crafted IPC payload can escape
+          // the expected roots.
+          if (!isSafePtySessionId(sessionIdForEnv, app.getPath('userData'))) {
+            throw new Error('Invalid PTY session id')
+          }
+          // Why: clone before mutating so we don't leak injections back into
+          // args.env (which the renderer may reuse for other IPC calls).
+          env = { ...baseEnv }
+          try {
+            buildPtyHostEnv(sessionIdForEnv, env, {
+              isPackaged: app.isPackaged,
+              userDataPath: app.getPath('userData'),
+              selectedCodexHomePath,
+              skipCodexHomeEnv,
+              stripInheritedOrcaCodexHome,
+              githubAttributionEnabled: getSettings?.()?.enableGitHubAttribution ?? false,
+              launchCommand: args.command,
+              launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
+              shellPath: effectiveShellOverride ?? process.env.COMSPEC,
+              isWsl: shouldSkipCodexHomeEnvForWindowsShell(effectiveShellOverride, cwd),
+              wslDistro:
+                codexSelectionTarget.runtime === 'wsl' ? codexSelectionTarget.wslDistro : null,
+              agentStatusHooksEnabled: isAgentStatusHooksEnabled(getSettings?.()),
+              networkProxySettings: getSettings?.(),
+              deferGitConfigGuardToDaemon:
+                provider.supportsGitCredentialGuardHost?.(effectiveSessionId) === true
+            })
+            promoteAgentTeamsShimPath(env, requestedAgentTeamsPath)
+          } catch (err) {
+            // Why: buildPtyHostEnv has filesystem side-effects (Pi/OMP managed
+            // extension installation). If it throws before we reach provider.spawn,
+            // clear per-PTY state so the next attempt starts clean.
+            //
+            // Only sweep state for ids we MINTED in this request — caller-
+            // supplied ids may refer to existing PTYs whose overlay/hook state
+            // must not be clobbered by a transient overlay-mkdir failure on a
+            // retry/attach path.
+            if (isMintedSessionId) {
+              clearProviderPtyState(sessionIdForEnv)
+            }
+            throw err
+          }
         }
-      }
-      spawnTiming.mark('host_env')
-      const spawnEnv = preAllocatedHandle
-        ? { ...env, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
-        : env
-      const envToDelete = claudeAuth?.stripAuthEnv
-        ? [...CLAUDE_AUTH_ENV_VARS, 'ANTHROPIC_CUSTOM_HEADERS']
-        : undefined
-      let combinedEnvToDelete = mergePtyEnvDeletions(
-        mergePtyEnvDeletions(
+        spawnTiming.mark('host_env')
+        const spawnEnv = preAllocatedHandle
+          ? { ...env, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
+          : env
+        const envToDelete = claudeAuth?.stripAuthEnv
+          ? [...CLAUDE_AUTH_ENV_VARS, 'ANTHROPIC_CUSTOM_HEADERS']
+          : undefined
+        let combinedEnvToDelete = mergePtyEnvDeletions(
           mergePtyEnvDeletions(
             mergePtyEnvDeletions(
-              mergePtyEnvDeletions(envToDelete, args.envToDelete ?? []),
-              agentTeamsEnvToDelete ?? []
+              mergePtyEnvDeletions(
+                mergePtyEnvDeletions(envToDelete, args.envToDelete ?? []),
+                agentTeamsEnvToDelete ?? []
+              ),
+              isDaemonHostSpawn ? getInheritedAgentHookEnvKeysToDelete(spawnEnv) : []
             ),
-            isDaemonHostSpawn ? getInheritedAgentHookEnvKeysToDelete(spawnEnv) : []
+            skipCodexHomeEnv ? CODEX_HOME_ENV_KEYS : []
           ),
-          skipCodexHomeEnv ? CODEX_HOME_ENV_KEYS : []
-        ),
-        // Why: the persistent daemon compares its own merged CODEX_HOME pair;
-        // main cannot safely decide ownership for a process it may not parent.
-        stripInheritedOrcaCodexHome ? ['ORCA_CODEX_HOME'] : []
-      )
-      if (codexResumeHome?.codexHomePath) {
-        combinedEnvToDelete = removeCodexHomeDeletionRequests(combinedEnvToDelete)
-      }
-      deleteRequestedEnvKeys(spawnEnv, combinedEnvToDelete)
-      promoteAgentTeamsShimPath(spawnEnv, requestedAgentTeamsPath)
-      const spawnOptions: PtySpawnOptions = {
-        cols: args.cols,
-        rows: args.rows,
-        cwd,
-        env: spawnEnv,
-        ...(isMintedSessionId ? { isNewSession: true } : {})
-      }
-      if (!isDaemonHostSpawn && codexResumeHome) {
-        spawnOptions.codexHomePathOverride = { value: codexResumeHome.codexHomePath }
-      }
-      if (combinedEnvToDelete) {
-        spawnOptions.envToDelete = combinedEnvToDelete
-      }
-      if (args.command !== undefined) {
-        spawnOptions.command = args.command
-      }
-      if (args.commandDelivery !== undefined) {
-        spawnOptions.commandDelivery = args.commandDelivery
-      }
-      if (args.startupCommandDelivery !== undefined) {
-        spawnOptions.startupCommandDelivery = args.startupCommandDelivery
-      }
-      if (isTuiAgent(args.launchAgent)) {
-        spawnOptions.launchAgent = args.launchAgent
-      }
-      if (typeof args.launchToken === 'string' && args.launchToken.length > 0) {
-        spawnOptions.launchToken = args.launchToken
-      }
-      if (args.worktreeId !== undefined) {
-        spawnOptions.worktreeId = args.worktreeId
-      }
-      if (reservationPaneKey) {
-        spawnOptions.paneKey = reservationPaneKey
-      }
-      if (typeof args.tabId === 'string' && args.tabId.length > 0 && args.tabId.length <= 512) {
-        spawnOptions.tabId = args.tabId
-      }
-      if (effectiveSessionId !== undefined) {
-        spawnOptions.sessionId = effectiveSessionId
-      }
-      // Why: without this, the Windows daemon path ignores the user's Default Shell preference (LocalPtyProvider already honors it via getWindowsShell()).
-      if (effectiveShellOverride !== undefined) {
-        spawnOptions.shellOverride = effectiveShellOverride
-      }
-      const hadSessionSizeBeforeAttach =
-        effectiveSessionAppId !== undefined ? ptySizes.has(effectiveSessionAppId) : false
-      const sessionSizeBeforeAttach =
-        effectiveSessionAppId !== undefined ? ptySizes.get(effectiveSessionAppId) : undefined
-      if (effectiveSessionId !== undefined) {
-        // Why: daemon PTYs can emit before spawn() resolves; set real geometry now or early bytes default to 80x24 and wrap TUIs.
-        ptySizes.set(effectiveSessionAppId ?? effectiveSessionId, {
-          cols: args.cols,
-          rows: args.rows
-        })
-      }
-      if (process.platform === 'win32' && !args.connectionId) {
-        // Why: the renderer models PowerShell as one shell family; thread the implementation choice so both PTY paths resolve the same executable.
-        spawnOptions.terminalWindowsWslDistro =
-          terminalRuntimeOptions.terminalWindowsWslDistro ?? null
-        spawnOptions.terminalWindowsPowerShellImplementation = getSettings
-          ? (getSettings()?.terminalWindowsPowerShellImplementation ?? 'auto')
-          : undefined
-      }
-      if (startupTerminalColorQueryReplyColors) {
-        spawnOptions.startupIngress = {
-          colors: startupTerminalColorQueryReplyColors,
-          deadlineMs: 5_000
+          // Why: the persistent daemon compares its own merged CODEX_HOME pair;
+          // main cannot safely decide ownership for a process it may not parent.
+          stripInheritedOrcaCodexHome ? ['ORCA_CODEX_HOME'] : []
+        )
+        if (codexResumeHome?.codexHomePath) {
+          combinedEnvToDelete = removeCodexHomeDeletionRequests(combinedEnvToDelete)
         }
-      }
-      const existingPaneSpawn = reservationPaneKey
-        ? paneSpawnReservationsByPaneKey.get(reservationPaneKey)
-        : undefined
-      if (existingPaneSpawn) {
-        // Why: an in-flight spawn already owns this pane, so this request's
-        // resolved launch is discarded — release its admission reservation.
-        settleAgentLaunch('failed')
-        return await existingPaneSpawn.promise
-      }
-      const finishTerminalInstall = beginPtySpawnForWorktree(
-        args.worktreeId,
-        cwd,
-        args.connectionId
-      )
-      const paneSpawnReservation = reservationPaneKey ? reservePaneSpawn(reservationPaneKey) : null
-      const initiallyHidden = args.initiallyHidden === true
-      // Why: daemon PTYs can emit before spawn() resolves, so the hidden mark must beat byte zero (terminal-query-authority.md §races); other providers are safe with the post-spawn mark below.
-      const preSpawnHiddenMarkId =
-        initiallyHidden && isDaemonHostSpawn && effectiveSessionAppId !== undefined
-          ? effectiveSessionAppId
-          : null
-      if (preSpawnHiddenMarkId !== null) {
-        markHiddenRendererPty(preSpawnHiddenMarkId)
-      }
-      let result: PtySpawnResult
-      let preparedProvisionalExecutionContext = false
-      try {
+        deleteRequestedEnvKeys(spawnEnv, combinedEnvToDelete)
+        promoteAgentTeamsShimPath(spawnEnv, requestedAgentTeamsPath)
+        const spawnOptions: PtySpawnOptions = {
+          cols: args.cols,
+          rows: args.rows,
+          cwd,
+          env: spawnEnv,
+          ...(isMintedSessionId ? { isNewSession: true } : {})
+        }
+        if (!isDaemonHostSpawn && codexResumeHome) {
+          spawnOptions.codexHomePathOverride = { value: codexResumeHome.codexHomePath }
+        }
+        if (combinedEnvToDelete) {
+          spawnOptions.envToDelete = combinedEnvToDelete
+        }
+        if (args.command !== undefined) {
+          spawnOptions.command = args.command
+        }
+        if (args.commandDelivery !== undefined) {
+          spawnOptions.commandDelivery = args.commandDelivery
+        }
+        if (args.startupCommandDelivery !== undefined) {
+          spawnOptions.startupCommandDelivery = args.startupCommandDelivery
+        }
+        if (isTuiAgent(args.launchAgent)) {
+          spawnOptions.launchAgent = args.launchAgent
+        }
+        if (typeof args.launchToken === 'string' && args.launchToken.length > 0) {
+          spawnOptions.launchToken = args.launchToken
+        }
+        if (args.worktreeId !== undefined) {
+          spawnOptions.worktreeId = args.worktreeId
+        }
+        if (reservationPaneKey) {
+          spawnOptions.paneKey = reservationPaneKey
+        }
+        if (typeof args.tabId === 'string' && args.tabId.length > 0 && args.tabId.length <= 512) {
+          spawnOptions.tabId = args.tabId
+        }
+        if (effectiveSessionId !== undefined) {
+          spawnOptions.sessionId = effectiveSessionId
+        }
+        // Why: on Windows, fall back to the persisted default-shell setting
+        // when the renderer didn't send a per-tab override. Without this, the
+        // daemon path ignores the user's "Default Shell" preference entirely —
+        // it just calls resolvePtyShellPath(env) which reads COMSPEC (cmd.exe)
+        // or falls back to PowerShell. The LocalPtyProvider already consults
+        // getWindowsShell(); this mirrors that on the daemon path so users who
+        // set WSL as default actually get WSL when pressing Ctrl+T.
+        if (effectiveShellOverride !== undefined) {
+          spawnOptions.shellOverride = effectiveShellOverride
+        }
+        const hadSessionSizeBeforeAttach =
+          effectiveSessionAppId !== undefined ? ptySizes.has(effectiveSessionAppId) : false
+        const sessionSizeBeforeAttach =
+          effectiveSessionAppId !== undefined ? ptySizes.get(effectiveSessionAppId) : undefined
+        if (effectiveSessionId !== undefined) {
+          // Why: daemon PTYs can emit prompt/startup bytes before spawn()
+          // resolves. Runtime headless snapshots need the real pane geometry
+          // for those early bytes; otherwise they default to 80x24 and wrap TUIs.
+          ptySizes.set(effectiveSessionAppId ?? effectiveSessionId, {
+            cols: args.cols,
+            rows: args.rows
+          })
+        }
+        if (process.platform === 'win32' && !args.connectionId) {
+          // Why: the renderer only models PowerShell as one shell family. Thread
+          // the persisted implementation choice through spawnOptions so both the
+          // in-process and daemon-backed PTY paths can resolve the same effective
+          // executable without inventing a fourth top-level shell.
+          spawnOptions.terminalWindowsWslDistro =
+            terminalRuntimeOptions.terminalWindowsWslDistro ?? null
+          spawnOptions.terminalWindowsPowerShellImplementation = getSettings
+            ? (getSettings()?.terminalWindowsPowerShellImplementation ?? 'auto')
+            : undefined
+        }
+        if (startupTerminalColorQueryReplyColors) {
+          spawnOptions.startupIngress = {
+            colors: startupTerminalColorQueryReplyColors,
+            deadlineMs: 5_000,
+            ...(nativeWindowsConptySpawn
+              ? { echoProjection: 'windows-conpty-esc-stripped' as const }
+              : {})
+          }
+        }
+        const existingPaneSpawn = reservationPaneKey
+          ? paneSpawnReservationsByPaneKey.get(reservationPaneKey)
+          : undefined
+        if (existingPaneSpawn) {
+          // Why: an in-flight spawn already owns this pane, so this request's
+          // resolved launch is discarded — release its admission reservation.
+          settleAgentLaunch('failed')
+          return await existingPaneSpawn.promise
+        }
+        finishTerminalInstall = beginPtySpawnForWorktree(args.worktreeId, cwd, args.connectionId)
+        paneSpawnReservation = reservationPaneKey ? reservePaneSpawn(reservationPaneKey) : null
+        const initiallyHidden = args.initiallyHidden === true
+        // Why pre-spawn for daemon-host sessions (id minted up front): daemon
+        // PTYs can emit prompt bytes before spawn() resolves, and the hidden
+        // mark must beat the first byte so the gate + model responder own
+        // spawn-time queries (terminal-query-authority.md §races). Other
+        // providers cannot emit until spawn resolves; the post-spawn mark
+        // below is byte-zero-safe for them.
+        const preSpawnHiddenMarkId =
+          initiallyHidden && isDaemonHostSpawn && effectiveSessionAppId !== undefined
+            ? effectiveSessionAppId
+            : null
+        if (preSpawnHiddenMarkId !== null) {
+          markHiddenRendererPty(preSpawnHiddenMarkId)
+        }
+        let result: PtySpawnResult
+        let preparedProvisionalExecutionContext = false
         try {
           if (preAllocatedHandle) {
             trustedTerminalHandleEnv.add(preAllocatedHandle)
+          }
+          if (preSpawnStartupTerminalColorReplyPtyId && startupTerminalColorQueryReplyColors) {
+            // Why: daemon PTYs can emit Codex's short-timeout OSC color probes before spawn resolves.
+            registerStartupTerminalColorQueryReplies(
+              preSpawnStartupTerminalColorReplyPtyId,
+              startupTerminalColorQueryReplyColors
+            )
           }
           spawnTiming.mark('options')
           const expectedPtyId = effectiveSessionAppId ?? effectiveSessionId
@@ -4398,6 +4479,9 @@ export function registerPtyHandlers(
           const spawnError = normalizeNodePtySpawnError(err)
           const isIdentityMismatch =
             isSshPtyIdentityMismatchError(spawnError) || isSshPtyIdentityMismatchError(rawMessage)
+          if (preSpawnStartupTerminalColorReplyPtyId) {
+            clearStartupTerminalColorQueryReplies(preSpawnStartupTerminalColorReplyPtyId)
+          }
           if (effectiveSessionAppId !== undefined) {
             if (isIdentityMismatch && hadSessionSizeBeforeAttach && sessionSizeBeforeAttach) {
               ptySizes.set(effectiveSessionAppId, sessionSizeBeforeAttach)
@@ -4467,6 +4551,20 @@ export function registerPtyHandlers(
         // Why: record the native-Windows-ConPTY determination before the headless seed so the emulator's DA1 override exists from byte zero.
         if (nativeWindowsConptySpawn) {
           markNativeWindowsConptyPty(result.id)
+        }
+        if (startupTerminalColorQueryReplyColors) {
+          if (result.isReattach) {
+            if (preSpawnStartupTerminalColorReplyPtyId) {
+              clearStartupTerminalColorQueryReplies(preSpawnStartupTerminalColorReplyPtyId)
+            }
+          } else if (preSpawnStartupTerminalColorReplyPtyId) {
+            moveStartupTerminalColorQueryReplies(preSpawnStartupTerminalColorReplyPtyId, result.id)
+          } else {
+            registerStartupTerminalColorQueryReplies(
+              result.id,
+              startupTerminalColorQueryReplyColors
+            )
+          }
         }
         const relayResultId = getRelayPtyId(args.connectionId, result.id)
         if (store && args.connectionId) {
@@ -4716,9 +4814,14 @@ export function registerPtyHandlers(
         }
         return resolvePaneSpawnReservation(reservationPaneKey, paneSpawnReservation, response)
       } catch (err) {
-        // Why: settle both reservations so a failed spawn cannot block later pane launches or consume admission capacity.
-        // Why: a spawn/persist/post-spawn failure releases the launch admission
-        // reservation (no terminal survives to reconcile).
+        // Why: once the reservation is created, any later throw —
+        // spawn failure, persist failure, or a post-spawn helper such as
+        // seedHeadlessTerminal/registerPty/track — must settle it. Otherwise
+        // it lingers in paneSpawnReservationsByPaneKey and every future spawn
+        // for this pane awaits a promise that never resolves. reject is a
+        // no-op once the reservation has already resolved.
+        // Why: a pre-spawn/spawn/persist/post-spawn failure releases the launch
+        // admission reservation (no terminal survives to reconcile).
         settleAgentLaunch('failed')
         // Drop any private resume attribution staged for this launch so a failed
         // spawn strands no record (no-op if register was not reached).

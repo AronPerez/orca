@@ -35,7 +35,8 @@ import { getOptionalLinearIssueLinkFlag } from './worktree-linear-issue-link'
 import {
   getWorktreeCreateAgentLaunch,
   handleWorktreeCreatePreRejection,
-  printWorktreeCreateResult
+  printWorktreeCreateResult,
+  resolveWorktreeCreateLaunchParams
 } from './worktree-create-agent-launch'
 
 type HookWarningResult = {
@@ -219,6 +220,11 @@ export const WORKTREE_HANDLERS: Record<string, CommandHandler> = {
       }
     }
     const linearIssueLink = getOptionalLinearIssueLinkFlag(flags, 'linear-issue')
+    // Negotiated wire shape: a pre-identity remote host would silently strip
+    // the unknown agentLaunch key, so it gets the legacy startupAgent id.
+    const launchParams = agentLaunch
+      ? await resolveWorktreeCreateLaunchParams(client, agentLaunch)
+      : undefined
     // The host resolves the agentLaunch identity and fails fast on the `cli`
     // column; the CLI consumes the created / pre-create-rejection result union.
     const response = await client.call<RuntimeWorktreeCreateResult>('worktree.create', {
@@ -238,7 +244,7 @@ export const WORKTREE_HANDLERS: Record<string, CommandHandler> = {
       ...(cwdParentWorktree ? { cwdParentWorktree } : {}),
       noParent,
       callerTerminalHandle,
-      ...(agentLaunch ? { agentLaunch: agentLaunch.request } : {})
+      ...launchParams
     })
     const created = handleWorktreeCreatePreRejection(response, agentLaunch?.source, json)
     if (!created) {

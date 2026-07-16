@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { buildInteractiveLaunchParams } from './interactive-worktree-launch-params'
 import type { TuiAgent } from '../../../src/shared/types'
 
-const CUSTOM_ID = 'custom-agent:claude:abc123' as TuiAgent
+// Canonical minted shape: custom-agent:<base>:<lowercase UUID> (see mintCustomTuiAgentId).
+const CUSTOM_ID = 'custom-agent:claude:0f8b7c6a-1d2e-4a3b-9c4d-5e6f7a8b9c0d' as TuiAgent
 
 describe('buildInteractiveLaunchParams', () => {
   it('launches no agent for a blank terminal', () => {
@@ -66,6 +67,17 @@ describe('buildInteractiveLaunchParams', () => {
     })
     expect(params).toEqual({ startupCommand: 'codex', createdWithAgent: 'codex' })
     expect(params).not.toHaveProperty('agentLaunch')
+  })
+
+  it('fails visibly when a custom selection reaches the legacy path (probe failed)', () => {
+    expect(() =>
+      buildInteractiveLaunchParams({
+        selectedAgentId: CUSTOM_ID,
+        hasIdentityCapability: false,
+        deferToHostDefault: false,
+        legacyCommand: undefined
+      })
+    ).toThrow(/custom agents/)
   })
 
   it('omits startupCommand on the legacy path when no command resolved', () => {

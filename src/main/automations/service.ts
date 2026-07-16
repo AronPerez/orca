@@ -141,6 +141,13 @@ export class AutomationService {
   }
 
   async markDispatchResult(result: AutomationDispatchResult): Promise<AutomationRun> {
+    // Why: a late renderer/headless completion must not overwrite a run that
+    // already reached a final status — in particular a forgotten run
+    // (dispatch_failed + agentLaunchForgottenAt); its settled outcome stands.
+    const current = this.store.listAutomationRuns().find((entry) => entry.id === result.runId)
+    if (current && isFinalAutomationRunStatus(current.status)) {
+      return current
+    }
     const run = this.store.updateAutomationRun(stampAutomationDispatchLaunchFailure(result))
     clearAutomationDispatchTokens(run.automationId, run.id)
     if (!isFinalAutomationRunStatus(run.status)) {

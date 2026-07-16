@@ -26,6 +26,9 @@ import type { AgentLaunchSpawnTarget } from './agent-launch-spawn'
  *  derived from this shape; nothing is copied from a client payload. */
 export type AgentLaunchHostDescriptor =
   | { kind: 'local'; platform: NodeJS.Platform; shell?: AgentStartupShell }
+  // Forward scaffolding: today's callers describe WSL workspaces as 'local'
+  // (divergent shell, honest-unknown detection/home); distro-aware callers adopt
+  // this arm when they can probe the distro's own PATH/$HOME.
   | { kind: 'wsl'; distro: string; shell?: AgentStartupShell }
   | { kind: 'ssh'; connectionId: string; platform: NodeJS.Platform; shell?: AgentStartupShell }
   | {

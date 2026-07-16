@@ -4,6 +4,7 @@
 // failure rollback, dispose-keeps-record, and the one-time legacy handoff.
 import { describe, expect, it } from 'vitest'
 import type { AgentLaunchSnapshot } from '../../shared/agent-launch-host-contract'
+import type { TuiAgent } from '../../shared/types'
 import {
   getAgentSessionOwnershipKey,
   type AgentProviderSessionMetadata,
@@ -312,5 +313,59 @@ describe('AgentSessionRecordStore durable persistence', () => {
       })?.baseAgent
     ).toBe('codex')
     expect(other).toContain('codex')
+  })
+
+  it('rehydrate strips a shape-corrupt snapshot so resume degrades in-band, not a throw', () => {
+    const store = new AgentSessionRecordStore()
+    store.rebuildRecordsFrom([
+      {
+        worktreeId: 'wt-1',
+        requestedAgent: 'claude',
+        baseAgent: 'claude',
+        providerSession: SESSION,
+        // Corrupt persisted snapshot (no argv/agentEnv/target): the replay path
+        // reads those fields without re-validating shape.
+        launchSnapshot: { version: 1 } as unknown as AgentLaunchSnapshot,
+        registeredAt: 1,
+        updatedAt: 1
+      }
+    ])
+    const record = store.resolveByOwnershipKey(OWNERSHIP)
+    expect(record).not.toBeNull()
+    expect(record?.launchSnapshot).toBeUndefined()
+  })
+
+  it('rehydrate strips a shape-corrupt legacy config and drops an invalid requested identity', () => {
+    const store = new AgentSessionRecordStore()
+    store.rebuildRecordsFrom([
+      {
+        worktreeId: 'wt-1',
+        requestedAgent: 'claude',
+        baseAgent: 'claude',
+        providerSession: SESSION,
+        legacyLaunchConfig: {
+          agentArgs: 42,
+          agentEnv: null
+        } as unknown as SleepingAgentLaunchConfig,
+        registeredAt: 1,
+        updatedAt: 1
+      },
+      {
+        worktreeId: 'wt-2',
+        requestedAgent: { hijacked: true } as unknown as TuiAgent,
+        baseAgent: 'codex',
+        providerSession: { key: 'session_id', id: 'sess-2' },
+        registeredAt: 1,
+        updatedAt: 1
+      }
+    ])
+    expect(store.resolveByOwnershipKey(OWNERSHIP)?.legacyLaunchConfig).toBeUndefined()
+    expect(
+      store.resolveByOwnershipKey({
+        worktreeId: 'wt-2',
+        baseAgent: 'codex',
+        providerSessionId: 'sess-2'
+      })
+    ).toBeNull()
   })
 })

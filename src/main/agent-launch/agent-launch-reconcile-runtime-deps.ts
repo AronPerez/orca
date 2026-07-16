@@ -17,6 +17,10 @@
 //     survivor is never falsely settled `absent` before its provider reconnects.
 
 import type { AgentLaunchExecutionHostId } from '../../shared/agent-launch-host-contract'
+import {
+  parseExecutionHostId,
+  RUNTIME_OWNED_SSH_TARGET_ID_PREFIX
+} from '../../shared/execution-host'
 import type { PendingAgentLaunchSnapshot } from './agent-launch-operation-store'
 import type { AgentLaunchOperationStore } from './agent-launch-operation-store'
 import {
@@ -47,6 +51,36 @@ export type ReconcileRuntimeDeps = {
   settleBoundary: (launchToken: string, settlement: 'registered' | 'failed') => void
   mintFailureId: () => string
   now?: () => number
+}
+
+/** Host authority for one controller re-list pass. Local and WSL terminals
+ *  execute on this machine (in-process ones died with main; daemon ones were
+ *  just re-listed), so a successful full list always speaks for them. A remote
+ *  ssh/runtime host is authoritative ONLY when its relay connection contributed
+ *  at least one session to that same successful list — the reconnected+re-listed
+ *  proof the liveness rules above require — so a disconnected or merely-quiet
+ *  remote survivor stays `unknown` instead of being falsely settled absent. */
+export function hostAuthorityFromRelistedConnections(
+  relistedConnectionIds: ReadonlySet<string>
+): (hostId: AgentLaunchExecutionHostId) => boolean {
+  return (hostId) => {
+    if (hostId === 'local' || hostId.startsWith('wsl:')) {
+      return true
+    }
+    const parsed = parseExecutionHostId(hostId)
+    if (parsed?.kind === 'ssh') {
+      return relistedConnectionIds.has(parsed.targetId)
+    }
+    if (parsed?.kind === 'runtime') {
+      // Runtime envs are reached over their runtime-owned SSH target; same
+      // prefix rule as getRuntimeOwnedSshTargetId (kept in sync via the shared
+      // constant).
+      return relistedConnectionIds.has(
+        `${RUNTIME_OWNED_SSH_TARGET_ID_PREFIX}${parsed.environmentId}`
+      )
+    }
+    return false
+  }
 }
 
 function resolveLiveness(

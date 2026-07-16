@@ -251,9 +251,10 @@ export function assembleCommand(input: AssembleCommandInput): AssembleCommandRes
   const recipeArgTokens = recipeArgs.tokens.map((token) =>
     interpolateVariables(token, input.values)
   )
-  // Recipe args always use the v1 grammar, so they get the same cmd-metachar
-  // fail-closed check the custom definition-args band gets.
-  const cmdSensitiveTokens = [...(input.isCustomArgs ? argTokens : []), ...recipeArgTokens]
+  // Every user-configurable args band fails closed on cmd: built-in
+  // agentDefaultArgs can carry %/! just like custom or recipe args, and the cmd
+  // quoter cannot encode them faithfully inside a double-quoted element.
+  const cmdSensitiveTokens = [...argTokens, ...recipeArgTokens]
   if (input.shell === 'cmd') {
     for (const token of cmdSensitiveTokens) {
       if (CMD_UNENCODABLE_CHAR_RE.test(token)) {

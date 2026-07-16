@@ -13,11 +13,13 @@ import type {
 } from '../../shared/agent-launch-contract'
 import type {
   CreatedRuntimeWorktreeCreateResult,
+  RuntimeStatus,
   RuntimeWorktreeCreateResult
 } from '../../shared/runtime-types'
-import type { WorktreeAgentLaunchRejection } from '../../shared/types'
-import { isTuiAgent } from '../../shared/tui-agent-config'
-import { RuntimeClientError, type RuntimeRpcSuccess } from '../runtime-client'
+import type { BuiltInTuiAgent, WorktreeAgentLaunchRejection } from '../../shared/types'
+import { AGENT_LAUNCH_IDENTITY_RUNTIME_CAPABILITY } from '../../shared/protocol-version'
+import { isBuiltInTuiAgent, isTuiAgent } from '../../shared/tui-agent-config'
+import { RuntimeClientError, type RuntimeClient, type RuntimeRpcSuccess } from '../runtime-client'
 import { formatWorktreeShow, printResult } from '../format'
 
 type Flags = Map<string, string | boolean>
@@ -81,6 +83,53 @@ export function getWorktreeCreateAgentLaunch(flags: Flags): WorktreeCreateAgentL
   throw new RuntimeClientError('invalid_argument', 'Missing value for --agent')
 }
 
+/** The launch's worktree.create wire shape: the host-atomic request, or the
+ *  legacy host-resolved id fields for a pre-identity host. */
+export type WorktreeCreateLaunchParams =
+  | { agentLaunch: AgentLaunchSpawnRequest }
+  | { startupAgent: BuiltInTuiAgent; startupPrompt: string }
+
+type LaunchCapabilityClient = Pick<RuntimeClient, 'call' | 'isRemote'>
+
+async function hostSupportsAgentLaunchIdentity(client: LaunchCapabilityClient): Promise<boolean> {
+  try {
+    const status = await client.call<RuntimeStatus>('status.get')
+    return status.result.capabilities?.includes(AGENT_LAUNCH_IDENTITY_RUNTIME_CAPABILITY) === true
+  } catch {
+    // Mobile parity: an unreachable probe reads as unsupported, degrading to
+    // the legacy id path every host still accepts.
+    return false
+  }
+}
+
+/** Negotiate the launch wire shape. A remote pairing may reach a pre-identity
+ *  `orca serve` host whose schema silently strips the unknown `agentLaunch` key
+ *  (agent-less worktree), so probe agent-launch.identity.v1 and fall back to the
+ *  legacy host-resolved startupAgent id. Local runtimes ship with this CLI. */
+export async function resolveWorktreeCreateLaunchParams(
+  client: LaunchCapabilityClient,
+  launch: WorktreeCreateAgentLaunch
+): Promise<WorktreeCreateLaunchParams> {
+  if (!client.isRemote || (await hostSupportsAgentLaunchIdentity(client))) {
+    return { agentLaunch: launch.request }
+  }
+  const selection = launch.request.selection
+  // FAIL-FAST: a pre-identity host cannot resolve a stored default or a custom id.
+  if (selection.kind !== 'agent') {
+    throw new RuntimeClientError(
+      'incompatible_runtime',
+      'This Orca host predates default-agent launch. Pass --agent <id> or update the host.'
+    )
+  }
+  if (!isBuiltInTuiAgent(selection.agent)) {
+    throw new RuntimeClientError(
+      'incompatible_runtime',
+      'This Orca host predates custom agents. Pass a built-in --agent id or update the host.'
+    )
+  }
+  return { startupAgent: selection.agent, startupPrompt: launch.request.prompt ?? '' }
+}
+
 // Client-safe reasons: never reference argv, env keys/values, paths, or labels.
 const FAILURE_REASONS: Record<AgentLaunchFailureCode, string> = {
   unknown_agent: 'the agent no longer exists',
@@ -110,6 +159,11 @@ const REQUEST_ERROR_REASONS: Record<AgentLaunchRequestError['code'], string> = {
   untrusted_reference: 'the launch source could not be verified'
 }
 
+// A newer host may send a code this CLI predates — never print "undefined".
+function reasonForCode(reasons: Record<string, string | undefined>, code: string): string {
+  return reasons[code] ?? 'the launch failed for a reason this CLI version does not recognize'
+}
+
 function describeSource(source: AgentLaunchSource, requestedAgent: string | undefined): string {
   if (source.via === 'flag') {
     return `agent "${source.id}" requested via --agent`
@@ -120,7 +174,7 @@ function describeSource(source: AgentLaunchSource, requestedAgent: string | unde
 }
 
 function failureHumanLine(failure: AgentLaunchFailure, source: AgentLaunchSource): string {
-  return `Could not launch ${describeSource(source, failure.requestedAgent)}: ${FAILURE_REASONS[failure.code]}.`
+  return `Could not launch ${describeSource(source, failure.requestedAgent)}: ${reasonForCode(FAILURE_REASONS, failure.code)}.`
 }
 
 function rejectionParts(
@@ -135,7 +189,7 @@ function rejectionParts(
     code: rejection.requestError.code,
     human: `Could not launch ${
       source.via === 'flag' ? `agent "${requested}"` : requested
-    }: ${REQUEST_ERROR_REASONS[rejection.requestError.code]}.`
+    }: ${reasonForCode(REQUEST_ERROR_REASONS, rejection.requestError.code)}.`
   }
 }
 

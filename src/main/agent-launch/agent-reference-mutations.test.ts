@@ -145,6 +145,33 @@ describe('quick-command stale-reference write rule', () => {
     expect(result.ok).toBe(true)
   })
 
+  it('rejects an agent whose base cannot run agent-prompt quick commands', () => {
+    // Normalization silently drops stdin-after-start rows, so the save must
+    // fail typed instead of returning ok while the command vanishes.
+    const builtIn = apply(settingsWith(), {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ agent: 'ante' })
+    })
+    expect(builtIn).toMatchObject({
+      ok: false,
+      code: 'invalid_agent_reference',
+      owner: 'quick-command',
+      reason: 'unknown_agent'
+    })
+
+    const derivative = liveAgent({ id: customId('ante'), baseAgent: 'ante', label: 'My Ante' })
+    const custom = apply(settingsWith({ customTuiAgents: [derivative] }), {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ agent: derivative.id })
+    })
+    expect(custom).toMatchObject({
+      ok: false,
+      code: 'invalid_agent_reference',
+      owner: 'quick-command',
+      reason: 'unknown_agent'
+    })
+  })
+
   it('a new row cannot mint fallback authority from a stale id', () => {
     // The same stale id that is preserved on its own row is rejected when a
     // client echoes it into a different/new row.
@@ -301,5 +328,33 @@ describe('commit-message and source-control field-level rule', () => {
       } as Partial<NonNullable<GlobalSettings['sourceControlAi']>>
     })
     expect(rejected).toMatchObject({ ok: false, owner: 'source-control-recipe' })
+  })
+
+  it('ignores prototype keys in the incoming actions record', () => {
+    const settings = settingsWith({
+      sourceControlAi: {
+        enabled: true,
+        agentId: null,
+        actions: {},
+        selectedModelByAgent: {},
+        selectedThinkingByModel: {},
+        customAgentCommand: '',
+        instructionsByOperation: {}
+      } as GlobalSettings['sourceControlAi']
+    })
+    const result = apply(settings, {
+      kind: 'source-control-update',
+      changes: {
+        actions: JSON.parse('{"__proto__": {"agentId": "claude"}}') as Record<string, unknown>
+      } as Partial<NonNullable<GlobalSettings['sourceControlAi']>>
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    const actions = result.patch.sourceControlAi?.actions ?? {}
+    // The merged record must keep the plain-object prototype and stay empty.
+    expect(Object.getPrototypeOf(actions)).toBe(Object.prototype)
+    expect(Object.keys(actions)).toEqual([])
   })
 })

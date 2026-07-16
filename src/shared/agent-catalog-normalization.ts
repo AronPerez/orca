@@ -65,12 +65,15 @@ export function normalizeAgentCatalog(
   const repairRequiredById = new Map<CustomTuiAgentId, CorruptCatalogRow>()
   const corruptRows: CorruptCatalogRow[] = []
   const validRowsById = new Map<CustomTuiAgentId, LiveRowValidation[]>()
-  const rows: LiveRowValidation[] = []
+  // Each row keeps its persisted array index: repair mutations splice the
+  // persisted array by physicalIndex, so it must never be derived from how
+  // many rows happened to classify as live/corrupt before this one.
+  const rows: { row: LiveRowValidation; index: number }[] = []
 
   if (Array.isArray(input.customTuiAgents)) {
     input.customTuiAgents.forEach((raw, index) => {
       const row = validateLiveRow(raw, index)
-      rows.push(row)
+      rows.push({ row, index })
       const id =
         row.kind === 'valid' ? row.definition.id : row.row.id !== undefined ? row.row.id : null
       if (id !== null) {
@@ -93,7 +96,7 @@ export function normalizeAgentCatalog(
     }
   }
 
-  for (const row of rows) {
+  for (const { row, index } of rows) {
     if (row.kind === 'valid') {
       const id = row.definition.id
       if (duplicateIds.has(id)) {
@@ -103,7 +106,7 @@ export function normalizeAgentCatalog(
           label: row.definition.label,
           issues: [{ field: 'identity', reason: 'duplicate_id' }],
           rawBytes: measureRawBytes(row.definition),
-          physicalIndex: liveCustomAgents.length + corruptRows.length,
+          physicalIndex: index,
           raw: row.definition
         })
         continue

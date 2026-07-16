@@ -462,7 +462,21 @@ export class Coordinator {
     // existing retry/circuit-break path and never injects a prompt, so no agent
     // launches — the failure lands on the dispatch's owner record, not a PTY.
     if (identity && this.runtime.validateDispatchAgentLaunch) {
-      const validation = await this.runtime.validateDispatchAgentLaunch(identity)
+      let validation: DispatchAgentLaunchValidation
+      try {
+        validation = await this.runtime.validateDispatchAgentLaunch(identity)
+      } catch (err) {
+        // Why: a THROWN validation (not an ok:false result) must still fail the
+        // dispatch, or the row would strand 'dispatched' with no prompt injected.
+        const updated = this.db.failDispatch(
+          dispatch.id,
+          err instanceof Error ? err.message : String(err)
+        )
+        if (updated?.status === 'circuit_broken') {
+          this.state.failedTasks.push(task.id)
+        }
+        throw err
+      }
       if (!validation.ok) {
         const updated = this.db.failDispatch(
           dispatch.id,

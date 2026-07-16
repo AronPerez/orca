@@ -176,24 +176,28 @@ export function AgentCatalogSectionView({
 
   return (
     <div className="space-y-8">
-      <section className="space-y-3">
-        <SettingsSubsectionHeader
-          title={translate(
-            'auto.components.settings.AgentCatalogSection.defaultTitle',
-            'Default agent'
-          )}
-          description={getSettingOwnershipSummary('agentLaunchDefaults').description}
-        />
-        {defaultUnset ? <DefaultAttentionBanner /> : null}
-        <AgentDefaultCombobox
-          value={defaultValue}
-          options={defaultOptions}
-          staleDefault={staleDefault}
-          unset={defaultUnset}
-          autoFocusTrigger={defaultUnset}
-          onChange={onSelectDefault}
-        />
-      </section>
+      {/* Why: read-only disabling is scoped per control group (not one pane-wide
+          fieldset) so the catalog search box stays usable on paired clients. */}
+      <fieldset disabled={readOnly} className="m-0 min-w-0 border-0 p-0">
+        <section className="space-y-3">
+          <SettingsSubsectionHeader
+            title={translate(
+              'auto.components.settings.AgentCatalogSection.defaultTitle',
+              'Default agent'
+            )}
+            description={getSettingOwnershipSummary('agentLaunchDefaults').description}
+          />
+          {defaultUnset ? <DefaultAttentionBanner /> : null}
+          <AgentDefaultCombobox
+            value={defaultValue}
+            options={defaultOptions}
+            staleDefault={staleDefault}
+            unset={defaultUnset}
+            autoFocusTrigger={defaultUnset}
+            onChange={onSelectDefault}
+          />
+        </section>
+      </fieldset>
 
       <AgentCatalogManager
         rows={rows}

@@ -77,15 +77,37 @@ describe('agent-session-record-store persistence envelope', () => {
     expect(decodeAgentSessionRecordStore(encoded, cipher).records).toEqual([record])
   })
 
-  it('drops records rather than blocking boot when the cipher is unavailable at decode', () => {
+  it('flags an unreadable encrypted section when the cipher is unavailable at decode', () => {
     const encoded = encodeAgentSessionRecordStore({ records: [record] }, reversibleCipher(true))
-    // Keychain reset: encrypted section can no longer be read.
-    expect(decodeAgentSessionRecordStore(encoded, reversibleCipher(false)).records).toEqual([])
+    // Locked/late keychain at boot: the ciphertext is intact, just unreadable
+    // NOW, so decode must flag it instead of reporting an empty store that the
+    // next durable mutation would overwrite.
+    expect(decodeAgentSessionRecordStore(encoded, reversibleCipher(false))).toEqual({
+      records: [],
+      decryptionUnavailable: true
+    })
+  })
+
+  it('a decrypt failure with an available cipher stays a plain empty state (keychain reset)', () => {
+    const encoded = encodeAgentSessionRecordStore({ records: [record] }, reversibleCipher(true))
+    const broken: AgentSessionRecordCipher = {
+      available: () => true,
+      encrypt: (plaintext) => Buffer.from(plaintext, 'utf-8'),
+      decrypt: () => {
+        throw new Error('key mismatch')
+      }
+    }
+    // Permanent loss: overwriting self-heals, so no flag.
+    expect(decodeAgentSessionRecordStore(encoded, broken)).toEqual({
+      records: [],
+      decryptionUnavailable: false
+    })
   })
 
   it('returns empty state for an unknown version', () => {
     expect(decodeAgentSessionRecordStore({ version: 9 }, reversibleCipher(true))).toEqual({
-      records: []
+      records: [],
+      decryptionUnavailable: false
     })
   })
 })
@@ -114,6 +136,16 @@ describe('agent-session-record-store persistence file I/O', () => {
   it('returns empty state when the file is absent', () => {
     expect(
       loadAgentSessionRecordStoreState(agentSessionRecordStorePath(dir), reversibleCipher(true))
-    ).toEqual({ records: [] })
+    ).toEqual({ records: [], decryptionUnavailable: false })
+  })
+
+  it('flags an encrypted file as unreadable when the cipher is unavailable at load', () => {
+    const path = agentSessionRecordStorePath(dir)
+    writeAgentSessionRecordStoreState(path, { records: [record] }, reversibleCipher(true))
+    const loaded = loadAgentSessionRecordStoreState(path, reversibleCipher(false))
+    expect(loaded).toEqual({ records: [], decryptionUnavailable: true })
+    // The file itself is untouched — a later boot with the keychain unlocked
+    // still recovers the records.
+    expect(loadAgentSessionRecordStoreState(path, reversibleCipher(true)).records).toEqual([record])
   })
 })

@@ -47,7 +47,10 @@ export function stripLegacyReplayEnv(
   const isTeam = isCapturedAgentTeamsConfig(env)
   const shimDir = env.ORCA_AGENT_TEAMS_SHIM_DIR?.trim() || null
   const delimiter = pathDelimiterForShell(shell)
-  const cleaned: Record<string, string> = {}
+  // Null prototype: an own '__proto__' key (JSON/IPC can produce one) must
+  // survive as data so validateCustomAgentEnv rejects it downstream, instead of
+  // being silently swallowed by the Object.prototype.__proto__ setter.
+  const cleaned: Record<string, string> = Object.create(null) as Record<string, string>
   for (const [key, value] of Object.entries(env)) {
     const lower = key.toLowerCase()
     // Orca attribution (pane/hook/token, team ids, pairing, environment) plus the

@@ -13,6 +13,8 @@ import { isGroupAddress, resolveGroupAddress } from '../../orchestration/groups'
 import { reconcileLifecycleMessage } from '../../orchestration/lifecycle-reconciliation'
 import { abbreviateOrchestrationTasks } from '../../../../shared/orchestration-task-summary'
 import { ORCHESTRATION_GATE_METHODS } from './orchestration-gates'
+import { getHostAgentLaunchOperationStore } from '../../../agent-launch/agent-launch-operation-store-host'
+import { getHostAgentLaunchBoundary } from '../../../agent-launch/agent-launch-boundary-host'
 
 const MESSAGE_TYPES: MessageType[] = [
   'status',
@@ -620,6 +622,27 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
       const forgotten = db.forgetDispatch(ctx.id)
       if (!forgotten) {
         throw new Error(`Dispatch for task ${params.task} is not in a forgettable state`)
+      }
+      // Parity with worktree/background forgets: a launch stranded while its
+      // liveness is unknown still holds its private op-store pending and its
+      // admission reservation (capacity). Settle the ledger 'forgotten', drop
+      // the attribution, and free the reservation — never kills or spawns.
+      const operationStore = getHostAgentLaunchOperationStore()
+      const pending = operationStore.findPendingByScope(ctx.id)
+      if (pending) {
+        operationStore.recordSettled({
+          operationId: pending.operationId,
+          idempotencyKey: pending.idempotencyKey,
+          scope: pending.scope,
+          payloadDigest: pending.payloadDigest,
+          status: 'forgotten',
+          terminalId: null,
+          failureId: null,
+          settledAt: Date.now()
+        })
+        operationStore.clearPending(pending.launchToken)
+        // A 'failed' settle releases the reservation the unknown launch held.
+        getHostAgentLaunchBoundary().settleAgentLaunch(pending.launchToken, 'failed')
       }
       return { dispatch: forgotten }
     }

@@ -212,6 +212,11 @@ export function useMobileAiVaultResumeActions(args: {
         // invalid_launch_snapshot is the only outcome offering an explicit
         // current-settings relaunch; Orca never substitutes it silently.
         if (display.action?.id === 'launch-current-settings') {
+          // Why: the current-settings fallback sends a structurally different
+          // createTerminal payload; reusing the failed arm's idempotency key
+          // would trip host payload-conflict detection. Drop it so the fallback
+          // claims a fresh key (the arm created nothing, so nothing to dedupe).
+          resumeMutationRegistryRef.current.releaseOnSuccess(session.id)
           setResumeFallbackSession(session)
         }
       } catch (err) {

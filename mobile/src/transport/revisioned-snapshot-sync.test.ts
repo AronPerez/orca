@@ -46,6 +46,28 @@ describe('createRevisionedSnapshotSync', () => {
     expect(sync.getSnapshot('host')?.revision).toBe(100)
   })
 
+  it('stops self-chaining when successful fetches make no revision progress', async () => {
+    const sync = createRevisionedSnapshotSync<Snap>()
+    const { fetch, resolvers, count } = deferredFetch()
+    const conn = sync.openConnection('host', fetch)
+
+    conn.announce(10)
+    expect(count()).toBe(1)
+    // Host persistently serves a revision below the announced one: the first
+    // response drives one follow-up (progress from empty), but a second
+    // no-progress response must not spin an unbounded RPC loop.
+    resolvers[0]!({ kind: 'value', runtimeId: 'r', value: { revision: 3 } })
+    await tick()
+    expect(count()).toBe(2)
+    resolvers[1]!({ kind: 'value', runtimeId: 'r', value: { revision: 3 } })
+    await tick()
+    expect(count()).toBe(2)
+
+    // A later announce re-drives exactly one fetch.
+    conn.announce(11)
+    expect(count()).toBe(3)
+  })
+
   it('does not let a stale fetch response replace a newer cached snapshot', async () => {
     const sync = createRevisionedSnapshotSync<Snap>()
     const { fetch, resolvers } = deferredFetch()

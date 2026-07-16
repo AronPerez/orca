@@ -9292,7 +9292,9 @@
           "loading": "Loading agents…",
           "stagedRepair": "Repairing an agent is not available yet.",
           "defaultTitle": "Default agent",
-          "nullDefaultAttention": "Choose a default agent. Until you do, attended launches can't start and will ask you to pick one."
+          "nullDefaultAttention": "Choose a default agent. Until you do, attended launches can't start and will ask you to pick one.",
+          "migrationBlockedTitle": "Agent settings are temporarily read-only",
+          "migrationBlockedDescription": "Orca could not back up your existing agent settings before updating them, so changes are blocked to protect your data. Resolve the problem below, then try again."
         },
         "AgentCatalogStatusBadge": {
           "enabled": "Enabled",

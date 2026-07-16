@@ -13,6 +13,7 @@ import type { StartupCommandDelivery } from './codex-startup-delivery'
 import {
   buildShellCommandFromArgv,
   clearEnvCommand,
+  CMD_UNENCODABLE_CHAR_RE,
   commandSeparator,
   resolveStartupShell,
   type AgentStartupShell
@@ -177,7 +178,7 @@ export function buildAgentStartupPlanFromResolvedLaunch(
     // through to the readiness-writer paste rather than dropping the prompt.
   }
 
-  const parts = !trimmedPrompt
+  const plannedParts = !trimmedPrompt
     ? NO_PROMPT
     : (args.promptDelivery ?? 'submit') === 'draft'
       ? draftParts(
@@ -187,6 +188,18 @@ export function buildAgentStartupPlanFromResolvedLaunch(
           args.maxInlineDraftChars ?? Number.POSITIVE_INFINITY
         )
       : submitParts(launch, trimmedPrompt)
+  // Why: the cmd quoter cannot encode % ! ^ " inside a double-quoted argv
+  // element (cmd_metachar) — an embedded quote would re-split the command line.
+  // Fail closed off argv and deliver the FULL prompt via the readiness writer.
+  const parts =
+    shell === 'cmd' && plannedParts.argvSuffix.some((el) => CMD_UNENCODABLE_CHAR_RE.test(el))
+      ? {
+          ...NO_PROMPT,
+          ...((args.promptDelivery ?? 'submit') === 'draft'
+            ? { draftPrompt: trimmedPrompt }
+            : { followupPrompt: trimmedPrompt })
+        }
+      : plannedParts
 
   // The durable launch config records only the base command (no resume flags), so
   // a fresh relaunch never re-resumes a stale session; the resume flags land only

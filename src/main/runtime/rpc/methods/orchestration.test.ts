@@ -6,6 +6,8 @@ import { buildRegistry, type RpcContext, type RpcRequest } from '../core'
 import { OrchestrationDb } from '../../orchestration/db'
 import { OrcaRuntimeService } from '../../orca-runtime'
 import type { RuntimeTerminalSummary } from '../../../../shared/runtime-types'
+import { getHostAgentLaunchOperationStore } from '../../../agent-launch/agent-launch-operation-store-host'
+import { getHostAgentLaunchBoundary } from '../../../agent-launch/agent-launch-boundary-host'
 
 function lifecycleGroupRecipientError(type: 'worker_done' | 'heartbeat'): string {
   return `${type} messages must be sent to a concrete coordinator terminal handle, not a group address.`
@@ -1629,9 +1631,9 @@ describe('orchestration RPC methods', () => {
     it('throws for a task with no dispatch context', async () => {
       setup()
       const task = db.createTask({ spec: 'work' })
-      await expect(
-        call('orchestration.dispatchForget', { task: task.id })
-      ).rejects.toThrow('No dispatch context')
+      await expect(call('orchestration.dispatchForget', { task: task.id })).rejects.toThrow(
+        'No dispatch context'
+      )
     })
 
     it('refuses to forget a dispatch that is not stranded (not dispatched)', async () => {
@@ -1639,9 +1641,60 @@ describe('orchestration RPC methods', () => {
       const task = db.createTask({ spec: 'work' })
       const ctx = db.createDispatchContext(task.id, 'term_a')
       db.completeDispatch(ctx.id)
-      await expect(
-        call('orchestration.dispatchForget', { task: task.id })
-      ).rejects.toThrow('not in a forgettable state')
+      await expect(call('orchestration.dispatchForget', { task: task.id })).rejects.toThrow(
+        'not in a forgettable state'
+      )
+    })
+
+    it('settles the op-store ledger, clears the pending snapshot, and frees the reservation (parity with worktree forget)', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const dispatchCtx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(dispatchCtx.id, strandedFailure)
+
+      // Seed a dispatch-scoped launch pending (orchestration op-store scope is
+      // the dispatch context id) into the host singleton store.
+      const operationStore = getHostAgentLaunchOperationStore()
+      operationStore.beginPending({
+        operationId: 'op-dispatch-1',
+        idempotencyKey: 'idem-dispatch-1',
+        scope: dispatchCtx.id,
+        clientMutationId: null,
+        payloadDigest: 'digest-dispatch-1',
+        launchToken: 'token-dispatch-1',
+        intent: 'orchestration',
+        snapshot: {
+          version: 1,
+          requestedAgent: 'claude',
+          baseAgent: 'claude',
+          displayLabel: 'Claude',
+          mode: 'built-in',
+          argv: ['claude'],
+          agentEnv: {},
+          capturedEnvPolicy: 'none',
+          target: {
+            platform: 'darwin',
+            execution: 'native',
+            shell: 'posix',
+            isRemote: true,
+            executionHostId: 'ssh:host'
+          }
+        }
+      })
+      const settleSpy = vi.spyOn(getHostAgentLaunchBoundary(), 'settleAgentLaunch')
+
+      try {
+        await call('orchestration.dispatchForget', { task: task.id })
+
+        // Private attribution dropped, ledger settled 'forgotten', capacity freed.
+        expect(operationStore.getPending('token-dispatch-1')).toBeNull()
+        expect(operationStore.settledForScope(dispatchCtx.id)).toMatchObject([
+          { operationId: 'op-dispatch-1', status: 'forgotten', terminalId: null, failureId: null }
+        ])
+        expect(settleSpy).toHaveBeenCalledWith('token-dispatch-1', 'failed')
+      } finally {
+        settleSpy.mockRestore()
+      }
     })
   })
 

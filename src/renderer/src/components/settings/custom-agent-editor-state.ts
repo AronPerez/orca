@@ -172,6 +172,26 @@ export function serializeEnvRows(rows: readonly CustomAgentEnvRow[]): Record<str
   return env
 }
 
+/** Exact-duplicate keys collapse to one `Record` entry in `serializeEnvRows`, so
+ *  the shared validator never sees them; flag the later row here instead of
+ *  silently dropping the user's earlier value. Blank keys already get their own
+ *  bounds error from the shared validator. */
+export function duplicateEnvKeyIssues(rows: readonly CustomAgentEnvRow[]): AgentFieldIssue[] {
+  const seen = new Set<string>()
+  const issues: AgentFieldIssue[] = []
+  rows.forEach((row, index) => {
+    if (row.key === '') {
+      return
+    }
+    if (seen.has(row.key)) {
+      issues.push({ field: 'env', reason: 'case_collision', envEntryIndex: index })
+      return
+    }
+    seen.add(row.key)
+  })
+  return issues
+}
+
 /** The canonical mutation payload: label normalized, an empty override stored as
  *  no override (`null`), args line-endings canonicalized on save, env assembled. */
 export function toCustomAgentDraft(draft: CustomAgentEditorDraft): CustomAgentDraft {
@@ -240,6 +260,7 @@ export function validateDraftLocally(
       builtInIssues.push(builtInArgsIssue)
     }
     builtInIssues.push(...validateCustomAgentEnv(serializeEnvRows(draft.envRows)))
+    builtInIssues.push(...duplicateEnvKeyIssues(draft.envRows))
     return builtInIssues
   }
   const labelIssue = validateAgentLabel(draft.label)
@@ -261,6 +282,7 @@ export function validateDraftLocally(
     issues.push(argsIssue)
   }
   issues.push(...validateCustomAgentEnv(serializeEnvRows(draft.envRows)))
+  issues.push(...duplicateEnvKeyIssues(draft.envRows))
   return issues
 }
 

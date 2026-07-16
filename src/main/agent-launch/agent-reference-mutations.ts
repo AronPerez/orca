@@ -14,7 +14,9 @@ import type { SourceControlAiSettings } from '../../shared/source-control-ai-typ
 import type { AgentReferenceMutationRequest } from '../../shared/agent-reference-snapshot'
 import { CUSTOM_AGENT_ID } from '../../shared/commit-message-agent-spec'
 import { isBuiltInTuiAgent } from '../../shared/tui-agent-config'
-import { isCustomTuiAgentId, type AgentCatalog } from '../../shared/custom-tui-agents'
+import type { AgentCatalog } from '../../shared/custom-tui-agents'
+import { supportsTerminalAgentQuickCommand } from '../../shared/terminal-quick-commands'
+import { decideAgentField } from './agent-reference-field-decision'
 
 export type AgentReferenceMutationError = {
   ok: false
@@ -35,68 +37,6 @@ export type AgentReferenceMutationApplication =
       newReferenceRevision: number
     }
   | AgentReferenceMutationError
-
-/** A changed agent reference must resolve to a currently effectively enabled
- *  live identity: enabled built-in, or live custom whose own id and base are
- *  both enabled. Stale/tombstoned ids never enter through a *change*. */
-function isEffectivelyEnabledLiveIdentity(agent: TuiAgent, catalog: AgentCatalog): boolean {
-  if (isBuiltInTuiAgent(agent)) {
-    return !catalog.disabledAgents.has(agent)
-  }
-  if (!isCustomTuiAgentId(agent)) {
-    return false
-  }
-  const definition = catalog.liveById.get(agent)
-  if (!definition) {
-    return false
-  }
-  return !catalog.disabledAgents.has(agent) && !catalog.disabledAgents.has(definition.baseAgent)
-}
-
-type AgentFieldDecision =
-  | { ok: true; value: TuiAgent | typeof CUSTOM_AGENT_ID | null | undefined }
-  | { ok: false; reason: 'unknown_agent' | 'disabled_agent' }
-
-/** Field-level rule: undefined preserves stored; the exact stored value (even a
- *  stale custom id) is a no-op; null clears; anything else must be enabled+live
- *  (or the commit-message 'custom' sentinel where allowed). */
-function decideAgentField(args: {
-  incoming: unknown
-  stored: unknown
-  catalog: AgentCatalog
-  allowCustomSentinel: boolean
-}): AgentFieldDecision {
-  const { incoming, stored, catalog, allowCustomSentinel } = args
-  if (incoming === undefined) {
-    return { ok: true, value: undefined }
-  }
-  if (incoming === null) {
-    return { ok: true, value: null }
-  }
-  if (incoming === stored) {
-    return { ok: true, value: stored as TuiAgent }
-  }
-  if (allowCustomSentinel && incoming === CUSTOM_AGENT_ID) {
-    return { ok: true, value: CUSTOM_AGENT_ID }
-  }
-  if (typeof incoming !== 'string') {
-    return { ok: false, reason: 'unknown_agent' }
-  }
-  if (isBuiltInTuiAgent(incoming)) {
-    return catalog.disabledAgents.has(incoming)
-      ? { ok: false, reason: 'disabled_agent' }
-      : { ok: true, value: incoming }
-  }
-  if (isCustomTuiAgentId(incoming)) {
-    if (!catalog.liveById.has(incoming)) {
-      return { ok: false, reason: 'unknown_agent' }
-    }
-    return isEffectivelyEnabledLiveIdentity(incoming, catalog)
-      ? { ok: true, value: incoming }
-      : { ok: false, reason: 'disabled_agent' }
-  }
-  return { ok: false, reason: 'unknown_agent' }
-}
 
 export type ApplyAgentReferenceMutationArgs = {
   settings: GlobalSettings
@@ -157,6 +97,22 @@ export function applyAgentReferenceMutation(
         // omitted field keeps the stored reference; there is nothing to clear to.
         const agent = decision.value === undefined ? storedAgent : decision.value
         if (agent === null || agent === undefined || agent === CUSTOM_AGENT_ID) {
+          return {
+            ok: false,
+            code: 'invalid_agent_reference',
+            owner: 'quick-command',
+            field: 'agent',
+            reason: 'unknown_agent'
+          }
+        }
+        // Base capability must hold at save time: normalization silently drops
+        // stdin-after-start rows later, so an incapable base must fail the save
+        // rather than return ok while the command vanishes. A stale custom id
+        // whose base cannot be proven stays preserved per the field-level rule.
+        const capabilityBase = isBuiltInTuiAgent(agent)
+          ? agent
+          : catalog.liveById.get(agent)?.baseAgent
+        if (capabilityBase !== undefined && !supportsTerminalAgentQuickCommand(capabilityBase)) {
           return {
             ok: false,
             code: 'invalid_agent_reference',
@@ -263,6 +219,11 @@ export function applyAgentReferenceMutation(
           ...stored?.actions
         }
         for (const [actionId, incomingAction] of Object.entries(incomingActions)) {
+          // A "__proto__" key would hit the setter in the keyed assignment
+          // below and rewrite merged's prototype instead of storing a row.
+          if (actionId === '__proto__' || actionId === 'constructor' || actionId === 'prototype') {
+            continue
+          }
           const storedAction = stored?.actions?.[actionId as keyof typeof merged]
           if (incomingAction === undefined) {
             continue

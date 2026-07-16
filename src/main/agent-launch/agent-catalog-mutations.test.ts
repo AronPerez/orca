@@ -682,4 +682,24 @@ describe('update-built-in', () => {
     })
     expect(protoKey).toMatchObject({ ok: false, reason: 'prototype_key' })
   })
+
+  it('rejects reserved ORCA_* env names and case collisions like the custom path', () => {
+    const reserved = apply({
+      mutation: {
+        kind: 'update-built-in',
+        agent: 'codex',
+        changes: { commandOverride: null, args: '', env: { ORCA_PANE_KEY: 'spoof' } }
+      }
+    })
+    expect(reserved).toMatchObject({ ok: false, reason: 'reserved_name' })
+
+    const collision = apply({
+      mutation: {
+        kind: 'update-built-in',
+        agent: 'codex',
+        changes: { commandOverride: null, args: '', env: { Path: 'a', PATH: 'b' } }
+      }
+    })
+    expect(collision).toMatchObject({ ok: false, reason: 'case_collision' })
+  })
 })

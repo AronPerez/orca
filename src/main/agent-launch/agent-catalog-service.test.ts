@@ -42,11 +42,13 @@ type StoreStubState = {
   worktreeMeta?: Record<string, WorktreeMeta>
   failAutomationScan?: boolean
   failWorktreeScan?: boolean
+  agentCatalogMigrationError?: string | null
 }
 
 function makeStoreStub(state: StoreStubState): Store {
   const stub = {
     getSettings: () => state.settings,
+    getAgentCatalogMigrationError: () => state.agentCatalogMigrationError ?? null,
     updateSettings: (updates: Partial<GlobalSettings>) => {
       state.settings = { ...state.settings, ...updates }
       return state.settings
@@ -556,5 +558,45 @@ describe('local draft endpoint', () => {
     if (row.status === 'ready') {
       expect(row.envSummary.entryCount).toBe(1)
     }
+  })
+})
+
+describe('pre-v1 migration gate', () => {
+  it('blocks catalog and reference mutations while the pinned pre-v1 backup has failed', () => {
+    const state: StoreStubState = {
+      settings: baseSettings(),
+      repos: [],
+      automations: [],
+      agentCatalogMigrationError: 'disk full'
+    }
+    const service = new AgentCatalogService(makeStoreStub(state))
+    const before = state.settings
+
+    const catalogResult = service.mutate({
+      expectedRevision: 1,
+      mutation: {
+        kind: 'create',
+        baseAgent: 'codex',
+        draft: { label: 'Blocked', commandOverride: null, args: '', env: {}, syncEnv: false }
+      }
+    })
+    expect(catalogResult).toEqual({
+      ok: false,
+      code: 'agent_catalog_migration_blocked',
+      migrationError: 'disk full'
+    })
+
+    const referenceResult = service.mutateReferences({
+      expectedReferenceRevision: 1,
+      mutation: { kind: 'quick-command-delete', id: 'qc-1' }
+    })
+    expect(referenceResult).toEqual({
+      ok: false,
+      code: 'agent_catalog_migration_blocked',
+      migrationError: 'disk full'
+    })
+
+    // No v1 write of any kind may land on the unbacked-up profile.
+    expect(state.settings).toBe(before)
   })
 })

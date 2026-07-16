@@ -3562,6 +3562,21 @@ export function connectPanePty(
   // pre-existing session when a late reattach resolves, so a remount racing
   // a slow-but-alive connect costs a wasted view rebuild, not a shell.
   const TRANSPORT_CONNECT_SETTLE_GRACE_MS = 60_000
+  const resolveCurrentRecoveryPtyId = (): string | null =>
+    transport.getPtyId() ?? useAppStore.getState().ptyIdsByTabId?.[deps.tabId]?.[0] ?? null
+  // Mirrors the detector's own gates so recovery can re-validate after async
+  // gaps (liveness probe, window-cap retry) instead of replaying a stale
+  // verdict against a healed, settling, or disposed pane.
+  const isInputStillUndeliverable = (): boolean => {
+    const connectStillSettling =
+      transportConnectInFlightSince !== null &&
+      Date.now() - transportConnectInFlightSince < TRANSPORT_CONNECT_SETTLE_GRACE_MS
+    return (
+      !disposed &&
+      !connectStillSettling &&
+      !(transport.isConnected?.() && transport.getPtyId() !== null)
+    )
+  }
   const requestRecoveryForUndeliverableInput = (): void => {
     if (transport.isConnected?.() && transport.getPtyId() !== null) {
       return
@@ -3579,14 +3594,15 @@ export function connectPanePty(
     if (connectStillSettling || disposed) {
       return
     }
-    const storePtyId = useAppStore.getState().ptyIdsByTabId?.[deps.tabId]?.[0] ?? null
-    const undeliverablePtyId = transport.getPtyId() ?? storePtyId
+    const undeliverablePtyId = resolveCurrentRecoveryPtyId()
     void requestTerminalPaneRecovery({
       tabId: deps.tabId,
       ptyId: undeliverablePtyId,
       reason: 'input-undeliverable',
       terminalRecoveryGeneration,
       terminalRecoveryInstanceId: terminalRecoveryInstance.id,
+      resolveCurrentPtyId: resolveCurrentRecoveryPtyId,
+      isStillUndeliverable: isInputStillUndeliverable,
       // Why: pty:hasPty answers null for ids the local registry doesn't own,
       // and a disconnected remote pane would otherwise remount-churn on every
       // cooldown window while typing. Local panes keep the lenient gate.
@@ -3604,13 +3620,13 @@ export function connectPanePty(
       // Certification can arrive while this terminal still owns queued or
       // detached scheduler work; release its delivery credits immediately.
       discardTerminalOutput(pane.terminal)
-      const storePtyId = useAppStore.getState().ptyIdsByTabId?.[deps.tabId]?.[0] ?? null
       void requestTerminalPaneRecovery({
         tabId: deps.tabId,
-        ptyId: transport.getPtyId() ?? storePtyId,
+        ptyId: resolveCurrentRecoveryPtyId(),
         reason,
         terminalRecoveryGeneration,
-        terminalRecoveryInstanceId: terminalRecoveryInstance.id
+        terminalRecoveryInstanceId: terminalRecoveryInstance.id,
+        resolveCurrentPtyId: resolveCurrentRecoveryPtyId
       })
     }
   )

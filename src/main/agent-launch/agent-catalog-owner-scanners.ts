@@ -161,10 +161,14 @@ export function registerBuiltInOwnerScanners(
 
 // Why: the orchestration dispatch store is per-runtime (not a host singleton like
 // session/background), so its scanner registers from the runtime rather than the
-// built-in pass. The guard keeps that registration idempotent even if several
-// runtimes share one catalog service (its store), so a shared index never
-// double-counts a dispatch reference.
-const orchestrationScannerRegistered = new WeakSet<AgentTombstoneReferenceIndex>()
+// built-in pass. The slot keeps registration idempotent (a shared index never
+// double-counts a dispatch reference) while always delegating to the LATEST
+// registered accessor, so a torn-down-and-recreated runtime does not leave the
+// scanner reading the first runtime's disposed db forever.
+const orchestrationScannerAccessor = new WeakMap<
+  AgentTombstoneReferenceIndex,
+  { current: () => Iterable<unknown> }
+>()
 
 /** §266/§217 `orchestration` = coordinator worker dispatches. Each dispatch row
  *  records its requested identity, so a deleted custom id's tombstone stays
@@ -175,15 +179,18 @@ export function registerOrchestrationOwnerScanner(
   index: AgentTombstoneReferenceIndex,
   referencedRequestedAgents: () => Iterable<unknown>
 ): void {
-  if (orchestrationScannerRegistered.has(index)) {
+  const existing = orchestrationScannerAccessor.get(index)
+  if (existing) {
+    existing.current = referencedRequestedAgents
     return
   }
-  orchestrationScannerRegistered.add(index)
+  const slot = { current: referencedRequestedAgents }
+  orchestrationScannerAccessor.set(index, slot)
   index.register({
     owner: 'orchestration',
     scan: () => {
       try {
-        return { ok: true, referencedIds: [...referencedRequestedAgents()] }
+        return { ok: true, referencedIds: [...slot.current()] }
       } catch {
         return { ok: false }
       }

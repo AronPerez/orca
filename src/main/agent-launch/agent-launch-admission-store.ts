@@ -204,10 +204,20 @@ export class AgentLaunchAdmissionStore {
 
   /** Convert a held reservation into a committed record after the post-create
    *  fingerprint recheck. Counters already include the reservation, so this
-   *  never re-increments. A lost/expired reservation fails closed. */
+   *  never re-increments. A lost/expired reservation fails closed, as does a
+   *  commit into a worktree already at the per-worktree cap. */
   admitReserved(reservationId: string, input: AgentLaunchAdmitInput): AdmissionResult {
     const principal = this.reservations.get(reservationId)
     if (!principal) {
+      return { ok: false, failure: { code: 'launch_capacity_exceeded', reason: 'capacity' } }
+    }
+    // The hold never counted against a worktree, and a retry commits into an
+    // EXISTING worktree that may already be at the cap — recheck it here. The
+    // reservation stays held; the caller's releaseReservation frees it.
+    if (
+      input.worktreeId !== null &&
+      (this.countsByWorktree.get(input.worktreeId) ?? 0) >= MAX_PENDING_LAUNCHES_PER_WORKTREE
+    ) {
       return { ok: false, failure: { code: 'launch_capacity_exceeded', reason: 'capacity' } }
     }
     this.reservations.delete(reservationId)
@@ -223,8 +233,7 @@ export class AgentLaunchAdmissionStore {
     }
     this.byToken.set(record.launchToken, record)
     // The reservation already counted toward principal/host/remote; the worktree
-    // is known only now (post-create), and a brand-new worktree starts at 0, so
-    // this commit never trips the per-worktree cap.
+    // slot is taken only now that it is known (post-create or retry).
     this.incrementWorktree(record.worktreeId)
     return { ok: true, record }
   }

@@ -111,6 +111,14 @@ describe('custom agents in the tab quick-launch list', () => {
     expect(ordered[0]).toBe(CUSTOM_ID)
   })
 
+  it('drops (never hoists) a baseline-stock custom default whose base is undetected', () => {
+    // The default-first hoist must not resurrect a custom the detection gate
+    // filtered out — it would be a dead row at the top of the list.
+    const ordered = orderTabLaunchAgents(CUSTOM_ID, ['claude'], [customEntry])
+    expect(ordered).not.toContain(CUSTOM_ID)
+    expect(ordered).toEqual(['claude'])
+  })
+
   it('labels and matches a custom agent by its label and command override, with the base icon id', () => {
     const customs = [{ ...customEntry, commandOverride: 'codex --model gpt-5.6-sol-xhigh' }]
     const options = buildTabAgentLaunchOptions([CUSTOM_ID, 'codex'], {}, customs)

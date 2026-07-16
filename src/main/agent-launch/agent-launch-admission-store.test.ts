@@ -248,6 +248,46 @@ describe('AgentLaunchAdmissionStore reservations', () => {
     expect(store.pendingForWorktree('wt-new')).toBe(1)
   })
 
+  it('admitReserved rejects a retry into a worktree already at the per-worktree cap', () => {
+    const store = new AgentLaunchAdmissionStore()
+    const principal: AdmissionPrincipal = { kind: 'local' }
+    for (let i = 0; i < MAX_PENDING_LAUNCHES_PER_WORKTREE; i += 1) {
+      expect(admitOne(store, principal, `run-${i}`, 'wt-busy').ok).toBe(true)
+    }
+    // A retry reserves against an EXISTING worktree; the hold itself never
+    // counted against the worktree, so the commit-time recheck must reject.
+    const reservation = reserveOne(store, principal)
+    expect(reservation.ok).toBe(true)
+    if (!reservation.ok) {
+      return
+    }
+    const admitted = admitReservedOne(
+      store,
+      reservation.reservation.reservationId,
+      'wt-busy',
+      'wt-busy'
+    )
+    expect(admitted).toMatchObject({
+      ok: false,
+      failure: { code: 'launch_capacity_exceeded', reason: 'capacity' }
+    })
+    expect(store.pendingForWorktree('wt-busy')).toBe(MAX_PENDING_LAUNCHES_PER_WORKTREE)
+    // The rejection leaves the hold with the caller: release frees exactly one.
+    expect(store.releaseReservation(reservation.reservation.reservationId)).toBe(true)
+    expect(store.pendingForPrincipal(principal)).toBe(MAX_PENDING_LAUNCHES_PER_WORKTREE)
+    // Freeing a committed slot lets a fresh retry into the same worktree commit.
+    const released = store.release(store.capacitySummaryFor(principal)[0]?.launchToken ?? 'missing')
+    expect(released).toBe(true)
+    const retry = reserveOne(store, principal)
+    expect(retry.ok).toBe(true)
+    if (!retry.ok) {
+      return
+    }
+    expect(admitReservedOne(store, retry.reservation.reservationId, 'wt-busy', 'wt-busy').ok).toBe(
+      true
+    )
+  })
+
   it('held reservations count toward the per-principal cap', () => {
     const store = new AgentLaunchAdmissionStore()
     const principal: AdmissionPrincipal = { kind: 'remote', id: 'device-1' }

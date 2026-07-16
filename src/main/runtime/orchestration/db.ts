@@ -913,6 +913,12 @@ export class OrchestrationDb {
     if (!ctx) {
       return undefined
     }
+    // Why: only an active dispatch may fail. A settled row — especially a
+    // 'forgotten' one, whose task must stay 'blocked' until an explicit Retry —
+    // would otherwise flip to failed and silently return the task to 'ready'.
+    if (ctx.status !== 'pending' && ctx.status !== 'dispatched') {
+      return undefined
+    }
 
     const newFailureCount = ctx.failure_count + 1
     const newStatus: DispatchStatus = newFailureCount >= 3 ? 'circuit_broken' : 'failed'
@@ -990,9 +996,23 @@ export class OrchestrationDb {
     if (!ctx) {
       return undefined
     }
+    // Why: keep an existing launch_state_unknown failureId stable across
+    // idempotent reconciles, or dispatchForget's expectedFailureId anti-race
+    // guard would go stale on every reconcile tick.
+    let persisted = failure
+    if (ctx.agent_launch_failure) {
+      try {
+        const existing = JSON.parse(ctx.agent_launch_failure) as PersistedAgentLaunchFailure
+        if (existing.code === 'launch_state_unknown' && typeof existing.failureId === 'string') {
+          persisted = { ...failure, failureId: existing.failureId }
+        }
+      } catch {
+        // Malformed/legacy blob — replace it with the fresh card.
+      }
+    }
     this.db
       .prepare('UPDATE dispatch_contexts SET agent_launch_failure = ? WHERE id = ?')
-      .run(JSON.stringify(failure), ctxId)
+      .run(JSON.stringify(persisted), ctxId)
     return this.db.prepare('SELECT * FROM dispatch_contexts WHERE id = ?').get(ctxId) as
       | DispatchContextRow
       | undefined

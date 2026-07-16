@@ -164,7 +164,7 @@ function DeletedRow({
       <div className="min-w-0 flex-1">
         <span className="truncate text-sm font-medium text-muted-foreground">{row.label}</span>
         <p className="truncate text-xs text-muted-foreground">
-          {row.referenceCount === null
+          {row.referenceCount === null || row.referenceCount <= 0
             ? translate('auto.components.settings.AgentCatalogRowView.deleted', 'Deleted')
             : translate(
                 'auto.components.settings.AgentCatalogRowView.deletedUsedBy',

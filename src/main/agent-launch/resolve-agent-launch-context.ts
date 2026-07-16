@@ -87,7 +87,11 @@ export function buildLaunchContext(
       notices: [],
       definitionDigestSource: {
         prefix: settings.agentCmdOverrides?.[base] ?? null,
-        args: builtInArgsTemplate(base, settings)
+        args: builtInArgsTemplate(base, settings),
+        // The fingerprint otherwise sees built-in env only as a policy flag, so
+        // a changed agentDefaultEnv must land here or it would pass the
+        // admission recheck (same gap class as the per-launch-args argv digest).
+        env: builtInEnv(base, settings)
       }
     }
   }

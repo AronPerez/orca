@@ -79,29 +79,14 @@ export async function launchWorkItemDirect(args: LaunchWorkItemDirectArgs): Prom
   const itemType = githubIdentity?.type ?? item.type
   const itemNumber = githubIdentity?.number ?? item.number
 
-  // Why: resolve the requested agent identity up front so it can ride the host
-  // `agentLaunch` request (the identity must be known before the create call).
-  // The host owns command/args/env resolution and prompt delivery; the client
-  // only names the agent — parity with the new-workspace composer. Detection uses
-  // the repo's owner connection, which the created worktree inherits.
-  const detectedAgents = repoConnectionId
-    ? await store.ensureRemoteDetectedAgents(repoConnectionId)
-    : await store.ensureDetectedAgents()
-  let requestedAgent: TuiAgent | null
-  let agentOverrideUnavailable = false
-  if (agentOverride) {
-    const overrideUsable =
-      detectedAgents.includes(agentOverride) &&
-      isTuiAgentEnabled(agentOverride, settings?.disabledTuiAgents)
-    requestedAgent = overrideUsable ? agentOverride : null
-    agentOverrideUnavailable = !overrideUsable
-  } else {
-    requestedAgent = pickTuiAgent(
-      settings?.defaultTuiAgent,
-      new Set(detectedAgents),
-      settings?.disabledTuiAgents
-    )
-  }
+  // Why: agent detection shells out and can be cold/slow. Start it now, but
+  // don't let it serialize the setup/PR/draft preflights — it only has to
+  // resolve before createWorktree, because the agent identity rides the host
+  // `agentLaunch` request on the create call. Detection uses the repo's owner
+  // connection, which the created worktree inherits.
+  const detectedAgentsPromise = repoConnectionId
+    ? store.ensureRemoteDetectedAgents(repoConnectionId)
+    : store.ensureDetectedAgents()
 
   const setupResolution = await resolveDirectSetupDecision(repoId, repo, repoOwnerSettings)
   if (setupResolution.kind === 'needs-modal') {
@@ -149,6 +134,26 @@ export async function launchWorkItemDirect(args: LaunchWorkItemDirectArgs): Prom
   }
 
   const draftContent = await getDirectWorkItemDraftContent(item, repoConnectionId)
+  // Why: resolve the requested agent identity before the create call so it can
+  // ride the host `agentLaunch` request. The host owns command/args/env
+  // resolution and prompt delivery; the client only names the agent — parity
+  // with the new-workspace composer.
+  const detectedAgents = await detectedAgentsPromise
+  let requestedAgent: TuiAgent | null
+  let agentOverrideUnavailable = false
+  if (agentOverride) {
+    const overrideUsable =
+      detectedAgents.includes(agentOverride) &&
+      isTuiAgentEnabled(agentOverride, settings?.disabledTuiAgents)
+    requestedAgent = overrideUsable ? agentOverride : null
+    agentOverrideUnavailable = !overrideUsable
+  } else {
+    requestedAgent = pickTuiAgent(
+      settings?.defaultTuiAgent,
+      new Set(detectedAgents),
+      settings?.disabledTuiAgents
+    )
+  }
   // Why: the host resolves the launch and spawns the primary agent terminal, so
   // the request carries only the agent identity, the interactive prompt (host
   // applies its per-surface max), the draft-vs-submit policy, and — for recipe
@@ -200,7 +205,10 @@ export async function launchWorkItemDirect(args: LaunchWorkItemDirectArgs): Prom
       // Surface-owned agent_started fields for the host-emitted create; the host
       // derives agent_kind from the resolved receipt and fires the event itself.
       agentLaunch
-        ? { agentLaunch, agentLaunchTelemetry: { launch_source: launchSource, request_kind: 'new' } }
+        ? {
+            agentLaunch,
+            agentLaunchTelemetry: { launch_source: launchSource, request_kind: 'new' }
+          }
         : undefined
     )
     if (result.created === false) {

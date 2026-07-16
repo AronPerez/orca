@@ -1,4 +1,5 @@
 import type { TuiAgent } from '../../../src/shared/types'
+import { isCustomTuiAgentId } from '../../../src/shared/custom-tui-agent-identity'
 import type {
   AgentLaunchSelectionRequest,
   AgentLaunchSpawnRequest
@@ -35,6 +36,15 @@ export function buildInteractiveLaunchParams(
       : { kind: 'agent', agent: selectedAgentId }
     const agentLaunch: AgentLaunchSpawnRequest = { selection }
     return { agentLaunch }
+  }
+  if (isCustomTuiAgentId(selectedAgentId)) {
+    // Why: only agentLaunch admits a custom id, and the picker shows customs only
+    // for catalog-capable hosts — reaching here means the submit-time capability
+    // probe failed transiently. Fail visibly instead of silently downgrading the
+    // launch to a blank terminal.
+    throw new Error(
+      'Could not confirm this host supports custom agents. Check the connection and try again.'
+    )
   }
   return {
     ...(legacyCommand !== undefined ? { startupCommand: legacyCommand } : {}),

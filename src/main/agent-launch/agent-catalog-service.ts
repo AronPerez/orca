@@ -29,6 +29,11 @@ import {
   type AgentReferenceSummary
 } from './agent-tombstone-reference-index'
 import { registerBuiltInOwnerScanners } from './agent-catalog-owner-scanners'
+import {
+  agentCatalogMigrationBlockedError,
+  isSecurityReducingMutation,
+  type AgentCatalogMigrationBlockedError
+} from './agent-catalog-write-policy'
 import { getHostAgentSessionRecordStore } from './agent-session-record-store-host'
 import { applyAgentReferenceMutation } from './agent-reference-mutations'
 import type {
@@ -39,29 +44,6 @@ import type {
   BaseDisableImpact,
   LocalAgentReferenceSnapshot
 } from '../../shared/agent-reference-snapshot'
-
-/** Mutations that reduce risk/size and stay allowed while a payload budget is
- *  already exceeded; they must never add arbitrary user text or a reference. */
-function isSecurityReducingMutation(request: AgentCatalogMutationRequest): boolean {
-  const mutation = request.mutation
-  switch (mutation.kind) {
-    case 'delete-custom':
-      return true
-    case 'set-enabled':
-      return mutation.enabled === false
-    case 'set-default':
-      return mutation.agent === 'auto' || mutation.agent === 'blank'
-    case 'repair-corrupt':
-      return mutation.action.kind === 'discard'
-    case 'resolve-duplicate-id':
-      return mutation.rows.every((row) => row.action.kind === 'discard')
-    case 'create':
-    case 'duplicate':
-    case 'update-custom':
-    case 'update-built-in':
-      return false
-  }
-}
 
 let serviceInstance: AgentCatalogService | null = null
 let serviceStore: Store | null = null
@@ -244,9 +226,21 @@ export class AgentCatalogService {
     }
   }
 
+  /** Non-null while the profile is pinned pre-v1 by a failed backup; all
+   *  catalog/reference mutations are gated on it. */
+  private getMigrationBlockedError(): AgentCatalogMigrationBlockedError | null {
+    return agentCatalogMigrationBlockedError(this.store)
+  }
+
   mutateReferences(
     request: AgentReferenceMutationRequest
-  ): AgentReferenceMutationResult<LocalAgentReferenceSnapshot> {
+  ): AgentReferenceMutationResult<LocalAgentReferenceSnapshot> | AgentCatalogMigrationBlockedError {
+    // The failed-backup invariant is "no v1 write": reference mutations stamp
+    // agentReferenceRevision, so they are blocked alongside catalog mutations.
+    const blocked = this.getMigrationBlockedError()
+    if (blocked) {
+      return blocked
+    }
     const settings = this.store.getSettings()
     const currentReferenceRevision = settings.agentReferenceRevision ?? 1
     const application = applyAgentReferenceMutation({
@@ -305,7 +299,15 @@ export class AgentCatalogService {
     }
   }
 
-  mutate(request: AgentCatalogMutationRequest): AgentCatalogMutationResult {
+  mutate(
+    request: AgentCatalogMutationRequest
+  ): AgentCatalogMutationResult | AgentCatalogMigrationBlockedError {
+    // A failed pinned pre-v1 backup means no v1 write may land on the profile;
+    // fail closed here so authoring cannot bypass the migration invariant.
+    const blocked = this.getMigrationBlockedError()
+    if (blocked) {
+      return blocked
+    }
     const settings = this.store.getSettings()
     const currentRevision = settings.agentCatalogRevision ?? 1
     const application = applyAgentCatalogMutation({

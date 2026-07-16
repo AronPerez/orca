@@ -46,7 +46,9 @@ export function AgentCatalogManager({
                 variant="ghost"
                 size="xs"
                 onClick={onRefresh}
-                disabled={isRefreshing}
+                // Why: read-only disabling is scoped per control (no ancestor
+                // fieldset) so the catalog search box stays usable.
+                disabled={isRefreshing || readOnly}
                 className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
               >
                 <RefreshCw className={cn('size-3', isRefreshing && 'animate-spin')} />
@@ -75,7 +77,12 @@ export function AgentCatalogManager({
           )}
         </p>
       )}
-      <AgentCatalogList rows={rows} availability={availability} {...callbacks} />
+      <AgentCatalogList
+        rows={rows}
+        readOnly={readOnly}
+        availability={availability}
+        {...callbacks}
+      />
     </section>
   )
 }

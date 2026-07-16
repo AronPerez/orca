@@ -133,6 +133,41 @@ describe('buildAgentStartupPlanFromResolvedLaunch', () => {
     ).toBe(`'codex'`)
   })
 
+  it('keeps a cmd-encodable argv prompt inline on a cmd target', () => {
+    const launch = resolvedLaunch({
+      request: { platform: 'win32', shell: 'cmd', targetHomePath: 'C:\\Users\\me' }
+    })
+    const plan = buildAgentStartupPlanFromResolvedLaunch({ launch, prompt: 'fix the tests' })
+    expect(plan?.launchCommand).toBe(`"codex" "fix the tests"`)
+    expect(plan?.followupPrompt).toBeNull()
+  })
+
+  it('routes a cmd-unencodable prompt through the readiness writer, never argv', () => {
+    const launch = resolvedLaunch({
+      request: { platform: 'win32', shell: 'cmd', targetHomePath: 'C:\\Users\\me' }
+    })
+    // An embedded double quote would re-split the cmd line and execute the rest.
+    const prompt = 'say "hi" && del C:\\Windows'
+    const plan = buildAgentStartupPlanFromResolvedLaunch({ launch, prompt })
+    expect(plan?.launchCommand).toBe(`"codex"`)
+    expect(plan?.followupPrompt).toBe(prompt)
+  })
+
+  it('routes a cmd-unencodable draft prompt to the unsubmitted paste path', () => {
+    const launch = resolvedLaunch({
+      agent: 'claude',
+      request: { platform: 'win32', shell: 'cmd', targetHomePath: 'C:\\Users\\me' }
+    })
+    const plan = buildAgentStartupPlanFromResolvedLaunch({
+      launch,
+      prompt: 'coverage is 100% done',
+      promptDelivery: 'draft'
+    })
+    expect(plan?.launchCommand).toBe(`"claude"`)
+    expect(plan?.launchCommand).not.toContain('--prefill')
+    expect(plan?.draftPrompt).toBe('coverage is 100% done')
+  })
+
   it('doubles smart quotes when quoting an argv prompt for a powershell target', () => {
     const launch = resolvedLaunch({
       request: { platform: 'win32', shell: 'powershell', targetHomePath: 'C:\\Users\\me' }

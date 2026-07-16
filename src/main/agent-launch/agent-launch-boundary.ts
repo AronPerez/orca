@@ -38,6 +38,11 @@ import {
 // Re-export the boundary contract so existing importers keep a single entry.
 export * from './agent-launch-boundary-contract'
 
+// The registration reader consumes a retained record right after the
+// 'registered' settle; the bound only caps records whose reader never came, so
+// a long-lived host can't accumulate one argv+env record per launch forever.
+const MAX_RETAINED_LAUNCH_RECORDS = 64
+
 type CriticalResult =
   | { kind: 'admitted'; record: AdmittedLaunchRecord; catalogRevision: number }
   | { kind: 'failure'; failure: AgentLaunchFailure }
@@ -47,8 +52,9 @@ export class AgentLaunchBoundary {
   private readonly admissionStore: AgentLaunchAdmissionStore
   private readonly coordinator: LaunchAdmissionCoordinator
   private readonly now: () => number
-  /** Private reconciliation handoff for registered launches; U4 replaces this
-   *  with the durable operation ledger. Never serialized to clients/logs. */
+  /** Private registration handoff for registered launches, read by
+   *  registerHostSessionLaunch. Bounded (FIFO) and dropped on a 'failed'
+   *  settle so it cannot grow unbounded. Never serialized to clients/logs. */
   private readonly retained = new Map<string, AdmittedLaunchRecord>()
 
   constructor(deps: {
@@ -268,7 +274,20 @@ export class AgentLaunchBoundary {
       const record = this.admissionStore.get(launchToken)
       if (record) {
         this.retained.set(launchToken, record)
+        // FIFO-evict oldest handoffs past the bound; anything that old was
+        // never read by its registration and would otherwise leak forever.
+        while (this.retained.size > MAX_RETAINED_LAUNCH_RECORDS) {
+          const oldest = this.retained.keys().next().value
+          if (oldest === undefined) {
+            break
+          }
+          this.retained.delete(oldest)
+        }
       }
+    } else {
+      // A later 'failed' settle (e.g. exit reconciliation) ends the handoff's
+      // usefulness; drop it so failed launches never pin argv/env records.
+      this.retained.delete(launchToken)
     }
     this.admissionStore.release(launchToken)
   }

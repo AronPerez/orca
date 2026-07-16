@@ -345,6 +345,10 @@ export type SessionInfo = {
   shellState: ShellReadyState
   isAlive: boolean
   terminalHandle?: string
+  /** Host admission launch token the daemon persisted at spawn, echoed back so
+   *  crash reconciliation can rejoin a daemon-surviving terminal to its pending
+   *  launch by token. Absent for tokenless sessions and older daemons. */
+  launchToken?: string
   pid: number | null
   cwd: string | null
   cols: number

@@ -146,7 +146,8 @@ export function validateLiveRow(value: unknown, physicalIndex: number): LiveRowV
   }
 
   const env: Record<string, string> = Object.create(null) as Record<string, string>
-  for (const [key, envValue] of Object.entries(record.env as Record<string, string>)) {
+  // env may be absent on older rows; validation treats null/undefined as empty.
+  for (const [key, envValue] of Object.entries((record.env ?? {}) as Record<string, string>)) {
     env[key] = envValue
   }
   const definition: CustomTuiAgent = {

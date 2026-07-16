@@ -122,6 +122,7 @@ export function createRevisionedSnapshotSync<
     const fetch = state.fetch
     const myEpoch = state.epoch
     const wasHydrate = state.hydratePending
+    const revisionBeforeFetch = state.value?.revision ?? -1
     state.fetching = true
     void fetch().then((outcome) => {
       // Ignore a fetch whose connection was replaced/disposed/cleared mid-flight.
@@ -138,10 +139,13 @@ export function createRevisionedSnapshotSync<
         state.hydratePending = false
       }
       applyValue(hostId, state, outcome.runtimeId, outcome.value, wasHydrate)
-      // Follow-up: if the response is still older than the highest announced
-      // revision, drive one more fetch. This terminates once caught up, so a
-      // burst issues at most one follow-up beyond the first fetch.
-      drive(hostId, state)
+      // Follow-up only while making progress: a host that persistently serves
+      // a revision below highestAnnounced must not self-chain into an unbounded
+      // RPC loop. Each chained fetch must advance the revision (bounded by
+      // highestAnnounced); otherwise stand down until the next announce/hydrate.
+      if (wasHydrate || outcome.value.revision > revisionBeforeFetch) {
+        drive(hostId, state)
+      }
     })
   }
 

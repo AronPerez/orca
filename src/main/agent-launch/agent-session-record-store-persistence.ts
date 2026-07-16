@@ -67,50 +67,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Load/decode outcome. `decryptionUnavailable` marks an encrypted section the OS
+ *  cipher could not read at load (locked/late keychain): the persisted records
+ *  are intact on disk, just unreadable NOW, so write-back must be skipped —
+ *  otherwise the next durable mutation would overwrite them with the empty set. */
+export type AgentSessionRecordStoreLoadResult = {
+  records: HostSessionLaunchRecord[]
+  decryptionUnavailable: boolean
+}
+
 function decodeRecords(
   section: unknown,
   cipher: AgentSessionRecordCipher
-): HostSessionLaunchRecord[] {
+): AgentSessionRecordStoreLoadResult {
   if (!isRecord(section)) {
-    return []
+    return { records: [], decryptionUnavailable: false }
   }
   if (section.format === 'plaintext-v1' && Array.isArray(section.records)) {
-    return section.records as HostSessionLaunchRecord[]
+    return {
+      records: section.records as HostSessionLaunchRecord[],
+      decryptionUnavailable: false
+    }
   }
-  if (
-    section.format === 'electron-safe-storage-v1' &&
-    typeof section.ciphertext === 'string' &&
-    cipher.available()
-  ) {
-    // A decrypt failure (keychain reset) drops only the records, never blocks
-    // boot: those sessions then require an explicit current-settings relaunch
-    // rather than a mis-attributed replay.
+  if (section.format === 'electron-safe-storage-v1' && typeof section.ciphertext === 'string') {
+    if (!cipher.available()) {
+      // Transient: a locked/late keychain at boot. The ciphertext is still
+      // valid, so flag it rather than treating the store as empty.
+      return { records: [], decryptionUnavailable: true }
+    }
+    // A decrypt failure with an AVAILABLE cipher (keychain reset) is permanent:
+    // it drops only the records, never blocks boot — those sessions then require
+    // an explicit current-settings relaunch rather than a mis-attributed replay.
     const parsed = JSON.parse(cipher.decrypt(Buffer.from(section.ciphertext, 'base64')))
-    return Array.isArray(parsed) ? (parsed as HostSessionLaunchRecord[]) : []
+    return {
+      records: Array.isArray(parsed) ? (parsed as HostSessionLaunchRecord[]) : [],
+      decryptionUnavailable: false
+    }
   }
-  return []
+  return { records: [], decryptionUnavailable: false }
 }
 
 export function decodeAgentSessionRecordStore(
   raw: unknown,
   cipher: AgentSessionRecordCipher
-): AgentSessionRecordStoreDurableState {
+): AgentSessionRecordStoreLoadResult {
   if (!isRecord(raw) || raw.version !== 1) {
-    return { records: [] }
+    return { records: [], decryptionUnavailable: false }
   }
   try {
-    return { records: decodeRecords(raw.records, cipher) }
+    return decodeRecords(raw.records, cipher)
   } catch {
-    return { records: [] }
+    return { records: [], decryptionUnavailable: false }
   }
 }
 
 export function loadAgentSessionRecordStoreState(
   path: string,
   cipher: AgentSessionRecordCipher
-): AgentSessionRecordStoreDurableState {
+): AgentSessionRecordStoreLoadResult {
   if (!existsSync(path)) {
-    return { records: [] }
+    return { records: [], decryptionUnavailable: false }
   }
   try {
     hardenExistingSecureFile(path)
@@ -118,7 +134,7 @@ export function loadAgentSessionRecordStoreState(
   } catch {
     // A corrupt store must never block boot; start empty and let live sessions
     // rebind on their next hook.
-    return { records: [] }
+    return { records: [], decryptionUnavailable: false }
   }
 }
 
@@ -139,6 +155,12 @@ export function initHostAgentSessionRecordStorePersistence(userDataPath: string)
   const state = loadAgentSessionRecordStoreState(path, cipher)
   const store = getHostAgentSessionRecordStore()
   store.rebuildRecordsFrom(state.records)
+  if (state.decryptionUnavailable) {
+    // Fail safe: the encrypted records exist but the keychain could not read
+    // them this boot. Attaching the sink would let the next mutation rewrite the
+    // store with the empty set, permanently destroying resume records.
+    return
+  }
   store.setDurablePersistence((next) => {
     try {
       writeAgentSessionRecordStoreState(path, next, cipher)

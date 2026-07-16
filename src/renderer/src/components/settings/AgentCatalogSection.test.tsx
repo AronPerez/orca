@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { AgentCatalogSection } from './AgentCatalogSection'
 import { buildLocalCatalogSnapshot } from './agent-catalog-snapshot.fixture'
 
@@ -78,5 +78,41 @@ describe('AgentCatalogSection (connected)', () => {
     expect(screen.getByText('Loading agents…')).toBeTruthy()
     expect(await screen.findByText('Claude')).toBeTruthy()
     expect(screen.getByText('Agents')).toBeTruthy()
+  })
+
+  it('surfaces a migration-blocked mutation as a persistent read-only alert', async () => {
+    // Claude starts disabled so the toggle takes the direct (confirmation-free)
+    // enable path, which previously dropped the rejected result silently.
+    const getLocal = vi
+      .fn()
+      .mockResolvedValue(buildLocalCatalogSnapshot({ disabledAgents: ['claude'] }))
+    const mutate = vi.fn().mockResolvedValue({
+      ok: false,
+      code: 'agent_catalog_migration_blocked',
+      migrationError: 'backup failed: disk full'
+    })
+    ;(window as unknown as { api: unknown }).api = {
+      settings: {
+        agentCatalog: { getLocal, mutate },
+        onChanged: () => () => {}
+      }
+    }
+    render(<AgentCatalogSection agentCmdOverrides={{}} />)
+    fireEvent.click(await screen.findByLabelText('Enable Claude'))
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByText('Agent settings are temporarily read-only')).toBeTruthy()
+    expect(screen.getByText('backup failed: disk full')).toBeTruthy()
+    expect(mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps catalog search usable in read-only mode while controls stay disabled', async () => {
+    render(<AgentCatalogSection agentCmdOverrides={{}} readOnly />)
+    const search = (await screen.findByLabelText('Search agents')) as HTMLInputElement
+    // The search input must not sit inside any disabled fieldset scope.
+    expect(search.closest('fieldset[disabled]')).toBeNull()
+    const enableSwitch = screen.getByLabelText('Enable Claude')
+    expect(enableSwitch.closest('fieldset')?.hasAttribute('disabled')).toBe(true)
+    fireEvent.change(search, { target: { value: 'zzz-no-such-agent' } })
+    expect(screen.getByText('No agents match your search.')).toBeTruthy()
   })
 })

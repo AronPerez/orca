@@ -105,6 +105,13 @@ export function buildResolvedLaunch(params: BuildResolvedLaunchParams): Resolved
   })
 
   const fingerprintInputs = {
+    // U7 per-launch recipe args land only in argv (definitionDigestSource is
+    // built before they apply), so the resolved argv must be fingerprinted or a
+    // changed per-launch arg would pass the admission recheck and launch the
+    // original argv under a stale admission. The fingerprint canonicalizes
+    // every key, so this extra slot hashes even though the declared
+    // AdmissionFingerprintInputs type predates it.
+    argvDigest: digestObject(snapshot.argv),
     basis: params.basis,
     requestedAgent: params.requestedAgent,
     baseAgent: params.baseAgent,
@@ -132,10 +139,14 @@ export function buildResolvedLaunch(params: BuildResolvedLaunchParams): Resolved
   // stays stable between pre-create identity pinning (worktree path not yet
   // authoritative) and post-create final resolution. Path availability is
   // rechecked separately at final resolution, never folded into this digest.
-  const stableInputDigest = computeAdmissionFingerprint({
+  // argv embeds the substituted repo/worktree paths, so it stays out of the
+  // config-only digest for the same reason the path variables are nulled.
+  const stableFingerprintInputs = {
     ...fingerprintInputs,
+    argvDigest: '',
     variableValues: { repoPath: null, worktreePath: null }
-  })
+  }
+  const stableInputDigest = computeAdmissionFingerprint(stableFingerprintInputs)
 
   return {
     requestedAgent: params.requestedAgent,

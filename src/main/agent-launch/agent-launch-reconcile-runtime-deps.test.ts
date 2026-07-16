@@ -9,6 +9,7 @@ import {
 import { BackgroundAgentLaunchStore } from './background-agent-launch-store'
 import {
   buildReconcileAgentLaunchDeps,
+  hostAuthorityFromRelistedConnections,
   type LiveTerminalForToken,
   type ReconcileRuntimeDeps
 } from './agent-launch-reconcile-runtime-deps'
@@ -194,6 +195,26 @@ describe('buildReconcileAgentLaunchDeps liveness', () => {
     expect(arm.calls).toEqual(['failed'])
   })
 
+  it('settles a remote pending absent when its connection re-listed in this pass', () => {
+    const arm = spyArm()
+    const { store, deps } = buildDeps({
+      isHostAuthoritative: hostAuthorityFromRelistedConnections(new Set(['host-a'])),
+      arms: {
+        worktree: () => arm,
+        automation: () => arm,
+        orchestration: () => arm,
+        background: () => arm
+      }
+    })
+    const entry = pending({ launchToken: 'token-r' }, 'ssh:host-a')
+    store.beginPending(entry)
+
+    const outcome = reconcileOnePendingAgentLaunch(deps, entry)
+
+    expect(outcome).toEqual({ kind: 'spawn_failed' })
+    expect(arm.calls).toEqual(['failed'])
+  })
+
   it('routes a background pending to the background store keyed by attempt id', () => {
     const background = new BackgroundAgentLaunchStore({ now: () => 1000 })
     background.create({
@@ -225,5 +246,31 @@ describe('buildReconcileAgentLaunchDeps liveness', () => {
     expect(outcome).toEqual({ kind: 'spawn_failed' })
     expect(background.get('attempt-7')?.state).toBe('failed')
     expect(background.get('attempt-7')?.failure?.code).toBe('spawn_failed')
+  })
+})
+
+describe('hostAuthorityFromRelistedConnections', () => {
+  const authority = hostAuthorityFromRelistedConnections(new Set(['host-a', 'runtime-ssh-env-1']))
+
+  it('always speaks for local and WSL hosts (they execute on this machine)', () => {
+    expect(authority('local')).toBe(true)
+    expect(authority('wsl:Ubuntu')).toBe(true)
+    // Even a pass with no remote listings speaks for the local machine.
+    expect(hostAuthorityFromRelistedConnections(new Set())('wsl:Ubuntu')).toBe(true)
+  })
+
+  it('speaks for an SSH host only when its connection re-listed in this pass', () => {
+    expect(authority('ssh:host-a')).toBe(true)
+    expect(authority('ssh:host-b')).toBe(false)
+    expect(hostAuthorityFromRelistedConnections(new Set())('ssh:host-a')).toBe(false)
+  })
+
+  it('maps a runtime host to its runtime-owned SSH connection', () => {
+    expect(authority('runtime:env-1')).toBe(true)
+    expect(authority('runtime:env-2')).toBe(false)
+  })
+
+  it('never speaks for a malformed host id', () => {
+    expect(authority('ssh:' as AgentLaunchExecutionHostId)).toBe(false)
   })
 })

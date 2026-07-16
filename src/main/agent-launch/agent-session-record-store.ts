@@ -22,6 +22,11 @@ import type {
   AgentLaunchExecutionHostId,
   AgentLaunchSnapshot
 } from '../../shared/agent-launch-host-contract'
+import { isTuiAgent } from '../../shared/tui-agent-config'
+import {
+  isWellFormedLaunchSnapshot,
+  isWellFormedLegacyLaunchConfig
+} from './agent-session-record-rehydrate-validation'
 import {
   getAgentSessionOwnershipKey,
   isResumableTuiAgent,
@@ -327,20 +332,36 @@ export class AgentSessionRecordStore {
       if (
         typeof record?.worktreeId !== 'string' ||
         !record.worktreeId ||
+        !isTuiAgent(record.requestedAgent) ||
         !isResumableTuiAgent(record.baseAgent) ||
         !providerSession
       ) {
         continue
       }
+      // A present-but-corrupt replay payload is stripped (record kept) so resume
+      // returns the in-band invalid_launch_snapshot rather than throwing.
+      const snapshotOk =
+        record.launchSnapshot === undefined || isWellFormedLaunchSnapshot(record.launchSnapshot)
+      const legacyOk =
+        record.legacyLaunchConfig === undefined ||
+        isWellFormedLegacyLaunchConfig(record.legacyLaunchConfig)
+      const rehydrated: HostSessionLaunchRecord =
+        snapshotOk && legacyOk
+          ? record
+          : {
+              ...record,
+              launchSnapshot: snapshotOk ? record.launchSnapshot : undefined,
+              legacyLaunchConfig: legacyOk ? record.legacyLaunchConfig : undefined
+            }
       const ownershipKey = getAgentSessionOwnershipKey({
-        worktreeId: record.worktreeId,
-        baseAgent: record.baseAgent,
+        worktreeId: rehydrated.worktreeId,
+        baseAgent: rehydrated.baseAgent,
         providerSessionId: providerSession.id
       })
-      this.records.set(ownershipKey, record)
-      this.vaultIndex.add(ownershipKey, record)
-      if (record.launchToken) {
-        this.ownershipByToken.set(record.launchToken, ownershipKey)
+      this.records.set(ownershipKey, rehydrated)
+      this.vaultIndex.add(ownershipKey, rehydrated)
+      if (rehydrated.launchToken) {
+        this.ownershipByToken.set(rehydrated.launchToken, ownershipKey)
       }
     }
   }

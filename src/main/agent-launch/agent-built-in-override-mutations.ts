@@ -42,18 +42,12 @@ export function applyUpdateBuiltIn(
   if (typeof mutation.changes.args === 'string' && mutation.changes.args.length > 8192) {
     return { ok: false, code: 'invalid_agent_field', field: 'args', reason: 'bounds' }
   }
+  // Built-in env applies the full custom-agent env rules: reserved ORCA_*
+  // names (host attribution/control namespace) and case collisions are as
+  // impersonation-prone for a built-in as for a custom derivative.
   const envIssues = validateCustomAgentEnv(mutation.changes.env)
-  // Built-in env keeps the shipped permissive shape except hard safety
-  // bounds; reserved/prototype checks still apply to new writes.
-  const blocking = envIssues.find(
-    (issue) =>
-      issue.reason === 'prototype_key' ||
-      issue.reason === 'control_char' ||
-      issue.reason === 'env_total_bounds' ||
-      issue.reason === 'bounds'
-  )
-  if (blocking) {
-    return fieldError(blocking)
+  if (envIssues.length > 0) {
+    return fieldError(envIssues[0])
   }
   const agent = mutation.agent
   const nextCmdOverrides = { ...settings.agentCmdOverrides }
@@ -68,11 +62,17 @@ export function applyUpdateBuiltIn(
   } else {
     nextArgs[agent] = mutation.changes.args
   }
+  // Persist a null-prototype copy of the validated entries (own keys only),
+  // never the raw incoming record.
+  const validatedEnv: Record<string, string> = Object.create(null) as Record<string, string>
+  for (const [key, value] of Object.entries(mutation.changes.env ?? {})) {
+    validatedEnv[key] = value
+  }
   const nextEnv = { ...settings.agentDefaultEnv }
-  if (Object.keys(mutation.changes.env).length === 0) {
+  if (Object.keys(validatedEnv).length === 0) {
     delete nextEnv[agent]
   } else {
-    nextEnv[agent] = { ...mutation.changes.env }
+    nextEnv[agent] = validatedEnv
   }
   return {
     ok: true,

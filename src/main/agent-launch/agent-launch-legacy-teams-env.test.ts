@@ -66,6 +66,17 @@ describe('stripLegacyReplayEnv — non-team config', () => {
       MY_TOKEN: 'keep'
     })
   })
+
+  it('carries an own __proto__ key through as plain data for downstream rejection', () => {
+    // JSON/IPC deserialization can produce an own '__proto__' env key; it must
+    // reach validateCustomAgentEnv's prototype_key check instead of vanishing
+    // into (or polluting) the accumulator prototype.
+    const env = JSON.parse('{"__proto__": "poison", "MY_TOKEN": "keep"}') as Record<string, string>
+    const cleaned = stripLegacyReplayEnv(env, 'posix')
+    expect(Object.getPrototypeOf(cleaned)).toBeNull()
+    expect(Object.prototype.hasOwnProperty.call(cleaned, '__proto__')).toBe(true)
+    expect(cleaned.MY_TOKEN).toBe('keep')
+  })
 })
 
 describe('stripLegacyReplayEnv — captured team config', () => {

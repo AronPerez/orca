@@ -83,4 +83,18 @@ describe('AgentCatalogRowView deleted row', () => {
     fireEvent.click(screen.getByText('Review references'))
     expect(callbacks.onReviewReferences).toHaveBeenCalledWith(row)
   })
+
+  it('shows plain "Deleted" when the readable reference count is zero', () => {
+    const row: AgentCatalogRow = {
+      kind: 'deleted',
+      id: 'custom-agent:codex:gone' as CustomTuiAgentId,
+      baseAgent: 'codex',
+      label: 'Retired',
+      referenceCount: 0,
+      searchSummary: ''
+    }
+    render(<AgentCatalogRowView row={row} {...noopCallbacks()} />)
+    expect(screen.getByText('Deleted')).toBeTruthy()
+    expect(screen.queryByText(/still used by/)).toBeNull()
+  })
 })
