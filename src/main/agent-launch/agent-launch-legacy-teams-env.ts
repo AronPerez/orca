@@ -47,6 +47,15 @@ export function stripLegacyReplayEnv(
   const isTeam = isCapturedAgentTeamsConfig(env)
   const shimDir = env.ORCA_AGENT_TEAMS_SHIM_DIR?.trim() || null
   const delimiter = pathDelimiterForShell(shell)
+  // Windows env keys are case-insensitive, so a Windows-captured `Path`/`Term`
+  // must be matched case-folded — an exact-case check lets the shim-poisoned
+  // `Path` skip the strip and replay verbatim (poisoning fails in the unsafe dir).
+  const isWindowsShell = shell === 'cmd' || shell === 'powershell'
+  const generatedTeamOnlyLower = new Set(
+    [...GENERATED_TEAM_ONLY_KEYS].map((generatedKey) => generatedKey.toLowerCase())
+  )
+  const matchesGeneratedTeamOnly = (key: string, lower: string): boolean =>
+    isWindowsShell ? generatedTeamOnlyLower.has(lower) : GENERATED_TEAM_ONLY_KEYS.has(key)
   // Null prototype: an own '__proto__' key (JSON/IPC can produce one) must
   // survive as data so validateCustomAgentEnv rejects it downstream, instead of
   // being silently swallowed by the Object.prototype.__proto__ setter.
@@ -58,10 +67,10 @@ export function stripLegacyReplayEnv(
     if (lower.startsWith('orca_') || key === 'TMUX' || key === 'TMUX_PANE') {
       continue
     }
-    if (isTeam && GENERATED_TEAM_ONLY_KEYS.has(key)) {
+    if (isTeam && matchesGeneratedTeamOnly(key, lower)) {
       continue
     }
-    if (key === 'PATH' && isTeam) {
+    if (isTeam && (key === 'PATH' || (isWindowsShell && lower === 'path'))) {
       const tail = resolveUserPathTail(value, shimDir, delimiter)
       if (tail) {
         cleaned.PATH = tail

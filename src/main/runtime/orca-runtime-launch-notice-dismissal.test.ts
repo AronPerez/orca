@@ -125,6 +125,56 @@ describe('OrcaRuntimeService.dismissLaunchNotice', () => {
     expect(setWorkspaceSession).not.toHaveBeenCalled()
   })
 
+  it('clears the live pty record too, so a republish cannot resurrect the notice (L4-m7)', async () => {
+    const { runtime } = makeRuntime(makeSession(noticeState()))
+    const internals = runtime as unknown as {
+      ptysById: Map<
+        string,
+        { worktreeId: string; launchNotices: PersistedLaunchNoticeState | null }
+      >
+    }
+    const pty = { worktreeId: WORKTREE_ID, launchNotices: noticeState() }
+    internals.ptysById.set('pty-notice', pty)
+
+    await runtime.dismissLaunchNotice(`id:${WORKTREE_ID}`, {
+      tabId: TAB_ID,
+      launchToken: TOKEN,
+      code: 'disabled_custom_fallback'
+    })
+    expect(pty.launchNotices?.notices).toEqual([{ code: 'env_withheld', label: 'My Claude' }])
+
+    await runtime.dismissLaunchNotice(`id:${WORKTREE_ID}`, {
+      tabId: TAB_ID,
+      launchToken: TOKEN,
+      code: 'env_withheld'
+    })
+    expect(pty.launchNotices).toBeNull()
+  })
+
+  it('dismisses a pty-record-only notice (host-spawned background terminal) (L4-m7)', async () => {
+    // No session tab carries the notice — only the live pty record does, as for
+    // a host-spawned background terminal. Dismissal must still succeed.
+    const { runtime, setWorkspaceSession } = makeRuntime(makeSession(undefined))
+    const internals = runtime as unknown as {
+      ptysById: Map<
+        string,
+        { worktreeId: string; launchNotices: PersistedLaunchNoticeState | null }
+      >
+    }
+    const pty = { worktreeId: WORKTREE_ID, launchNotices: noticeState() }
+    internals.ptysById.set('pty-notice', pty)
+
+    const result = await runtime.dismissLaunchNotice(`id:${WORKTREE_ID}`, {
+      tabId: TAB_ID,
+      launchToken: TOKEN,
+      code: 'disabled_custom_fallback'
+    })
+    expect(result).toEqual({ ok: true, changed: true })
+    expect(pty.launchNotices?.notices).toEqual([{ code: 'env_withheld', label: 'My Claude' }])
+    // The session tab never carried the notice, so no session write happens.
+    expect(setWorkspaceSession).not.toHaveBeenCalled()
+  })
+
   it('fails closed on a foreign token without mutating', async () => {
     const { runtime, setWorkspaceSession, getSession } = makeRuntime(makeSession(noticeState()))
 

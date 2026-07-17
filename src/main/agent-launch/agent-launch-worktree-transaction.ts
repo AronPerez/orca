@@ -21,6 +21,7 @@ import type {
 } from '../../shared/agent-launch-contract'
 import type { TuiAgent } from '../../shared/types'
 import type { AgentLaunchBoundary, ExecuteAgentLaunchResult } from './agent-launch-boundary'
+import type { AdmissionPrincipal } from './agent-launch-admission-store'
 import type { AgentLaunchOperationStore } from './agent-launch-operation-store'
 
 /** Public pending metadata the caller writes onto WorktreeMeta. The private
@@ -66,6 +67,9 @@ export type WorktreeAgentLaunchTransactionParams = {
   clientMutationId: string | null
   requestedAgent: TuiAgent
   intent: AgentLaunchIntentKind
+  /** Admission principal holding the reservation, persisted into the pending
+   *  snapshot so a restart rebuilds capacity counters into the right bucket. */
+  principal: AdmissionPrincipal
   priorFailureId?: string
   /** Stage-2 resolution: re-resolve with authoritative paths + pinned identity,
    *  recheck the digest, and convert the held reservation. Releases the
@@ -151,6 +155,7 @@ export async function runWorktreeAgentLaunchTransaction(
     payloadDigest: params.payloadDigest,
     launchToken: receipt.launchToken,
     intent: params.intent,
+    principal: params.principal,
     snapshot
   })
   deps.persistPending({
@@ -165,8 +170,10 @@ export async function runWorktreeAgentLaunchTransaction(
     terminalId = spawned.terminalId
   } catch {
     deps.boundary.settleAgentLaunch(receipt.launchToken, 'failed')
-    deps.operationStore.clearPending(receipt.launchToken)
-    return persistedFailure(
+    // Settled ledger entry (inside persistedFailure) BEFORE clearPending: a
+    // crash between the two durable writes must never lose both the pending
+    // attribution and the settled entry — either alone reconciles/replays.
+    const failed = persistedFailure(
       deps,
       params,
       {
@@ -176,13 +183,15 @@ export async function runWorktreeAgentLaunchTransaction(
       },
       nowFn
     )
+    deps.operationStore.clearPending(receipt.launchToken)
+    return failed
   }
 
-  // Registered: move attribution into the boundary's retained handoff, clear the
-  // pending (public + private), and append the settled `launched` ledger entry.
+  // Registered: move attribution into the boundary's retained handoff, append
+  // the settled `launched` ledger entry, then clear the pending (private +
+  // public). Settled-before-clear so a crash between the durable writes leaves
+  // at least one record of the launch (recordSettled replay is idempotent).
   deps.boundary.settleAgentLaunch(receipt.launchToken, 'registered')
-  deps.operationStore.clearPending(receipt.launchToken)
-  deps.clearPublicPending()
   deps.operationStore.recordSettled({
     operationId: params.operationId,
     idempotencyKey: params.idempotencyKey,
@@ -193,5 +202,7 @@ export async function runWorktreeAgentLaunchTransaction(
     failureId: null,
     settledAt: nowFn()
   })
+  deps.operationStore.clearPending(receipt.launchToken)
+  deps.clearPublicPending()
   return { status: 'launched', receipt, terminalId }
 }

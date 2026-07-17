@@ -5,6 +5,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OrcaRuntimeService } from './orca-runtime'
 import { resolveTerminalAgentLaunch } from './terminal-agent-launch-resolution'
+import { buildClaudeAgentTeamsLaunchPlan } from './claude-agent-teams-shim-env'
+import { getHostAgentLaunchBoundary } from '../agent-launch/agent-launch-boundary-host'
 
 vi.mock('electron', () => ({
   BrowserWindow: { fromId: vi.fn(() => null) },
@@ -16,6 +18,18 @@ vi.mock('electron', () => ({
 vi.mock('./terminal-agent-launch-resolution', () => ({
   resolveTerminalAgentLaunch: vi.fn()
 }))
+
+// Partial mock: default passthrough so the launch tests keep real plan
+// building; the pre-registration-throw test overrides it per call.
+vi.mock('./claude-agent-teams-shim-env', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return {
+    ...actual,
+    buildClaudeAgentTeamsLaunchPlan: vi.fn(
+      actual.buildClaudeAgentTeamsLaunchPlan as typeof buildClaudeAgentTeamsLaunchPlan
+    )
+  }
+})
 
 const resolveMock = vi.mocked(resolveTerminalAgentLaunch)
 
@@ -77,6 +91,43 @@ describe('createTerminal host-resolved agentLaunch', () => {
     }
     expect(result.ptyId).toBe('pty-1')
     expect(result.agentLaunch).toEqual({ status: 'launched', receipt: RECEIPT })
+  })
+
+  it('settles the admitted token failed when plan assembly throws BEFORE spawn (L4-m6)', async () => {
+    resolveMock.mockResolvedValue({
+      kind: 'resolved',
+      admissionToken: 'tok-strand',
+      receipt: { ...RECEIPT, launchToken: 'tok-strand' },
+      fields: {
+        command: 'claude --tui',
+        launchConfig: { agentArgs: '', agentEnv: {} },
+        launchAgent: 'claude',
+        launchToken: 'tok-strand'
+      }
+    })
+    // A throw in the agent-teams plan build (between admission and spawn) used
+    // to strand the admitted token; only the spawn promise had a settle catch.
+    vi.mocked(buildClaudeAgentTeamsLaunchPlan).mockRejectedValueOnce(new Error('shim dir boom'))
+    const settle = vi.spyOn(getHostAgentLaunchBoundary(), 'settleAgentLaunch')
+    const runtime = new OrcaRuntimeService()
+    stubLaunchScope(runtime)
+    const spawn = vi.fn().mockResolvedValue({ id: 'pty-1' })
+    runtime.setPtyController({
+      spawn,
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+
+    await expect(
+      runtime.createTerminal('id:wt-1', {
+        agentLaunch: { selection: { kind: 'agent', agent: 'claude' }, prompt: 'hi' }
+      })
+    ).rejects.toThrow('shim dir boom')
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(settle).toHaveBeenCalledWith('tok-strand', 'failed')
+    settle.mockRestore()
   })
 
   it('creates no PTY and returns the failure arm for a pre-spawn typed failure', async () => {

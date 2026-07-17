@@ -600,3 +600,83 @@ describe('pre-v1 migration gate', () => {
     expect(state.settings).toBe(before)
   })
 })
+
+describe('reference payload budget (L1-#2)', () => {
+  function sourceControlAiWith(
+    instructions: Partial<Record<'commitMessage' | 'pullRequest' | 'branchName', string>>
+  ): GlobalSettings['sourceControlAi'] {
+    return {
+      enabled: true,
+      agentId: null,
+      actions: {},
+      selectedModelByAgent: {},
+      selectedThinkingByModel: {},
+      customAgentCommand: '',
+      instructionsByOperation: instructions
+    } as GlobalSettings['sourceControlAi']
+  }
+
+  function serviceWith(settings: GlobalSettings): {
+    service: AgentCatalogService
+    state: StoreStubState
+  } {
+    const state: StoreStubState = { settings, repos: [], automations: [] }
+    return { service: new AgentCatalogService(makeStoreStub(state)), state }
+  }
+
+  it('rejects a growing write that pushes the reference snapshot past 512 KiB', () => {
+    const { service, state } = serviceWith(
+      baseSettings({
+        sourceControlAi: sourceControlAiWith({ commitMessage: 'x'.repeat(600_000) })
+      })
+    )
+    const before = state.settings
+    const result = service.mutateReferences({
+      expectedReferenceRevision: 1,
+      mutation: {
+        kind: 'source-control-update',
+        changes: { customAgentCommand: 'generate-with-huge-profile' }
+      }
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'agent_reference_payload_too_large',
+      referenceRevision: 1
+    })
+    // A rejected budget check performs no write.
+    expect(state.settings).toBe(before)
+  })
+
+  it('still commits a shrinking write while the snapshot is over budget', () => {
+    const { service, state } = serviceWith(
+      baseSettings({
+        sourceControlAi: sourceControlAiWith({
+          commitMessage: 'x'.repeat(600_000),
+          pullRequest: 'y'.repeat(600_000)
+        })
+      })
+    )
+    const result = service.mutateReferences({
+      expectedReferenceRevision: 1,
+      mutation: {
+        kind: 'source-control-update',
+        changes: {
+          instructionsByOperation: { commitMessage: '', pullRequest: 'y'.repeat(600_000) }
+        }
+      }
+    })
+    // Still > 512 KiB after the write, but smaller than before: the user must be
+    // able to edit an over-budget profile back under budget.
+    expect(result.ok).toBe(true)
+    expect(state.settings.sourceControlAi?.instructionsByOperation?.commitMessage).toBe('')
+  })
+
+  it('keeps a small write under budget flowing normally', () => {
+    const { service } = serviceWith(baseSettings())
+    const result = service.mutateReferences({
+      expectedReferenceRevision: 1,
+      mutation: { kind: 'source-control-update', changes: { customAgentCommand: 'ok' } }
+    })
+    expect(result.ok).toBe(true)
+  })
+})

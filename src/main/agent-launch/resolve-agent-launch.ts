@@ -18,7 +18,7 @@ import type { AgentLaunchNotice, AgentLaunchRequestError } from '../../shared/ag
 import { resolveSelection } from './resolve-agent-selection'
 import { buildLaunchContext } from './resolve-agent-launch-context'
 import { assembleCommand } from './resolve-agent-command'
-import { prepareVariableValues } from './resolve-agent-variables'
+import { interpolateVariables, prepareVariableValues } from './resolve-agent-variables'
 import { clientOfIntent } from './resolve-agent-env-admission'
 import { checkCommandTooLong, checkEnvPayloadTooLarge } from './agent-launch-payload-caps'
 import { buildResolvedLaunch, type LaunchTarget } from './resolve-agent-launch-result'
@@ -117,8 +117,13 @@ function replayFromSnapshot(
     }
   }
   // Confidential transport is a current gate that constrains replay: captured
-  // env never crosses hosts on an authenticated-but-plaintext channel.
-  if (Object.keys(env).length > 0 && request.transportConfidentialityAvailable === false) {
+  // env never crosses hosts on an authenticated-but-plaintext channel. A remote
+  // target must prove confidentiality (=== true); an unset capability on a remote
+  // surface fails closed rather than replaying env over a possibly-plaintext link.
+  const replayConfidentialityUnproven =
+    request.transportConfidentialityAvailable === false ||
+    (request.isRemote && request.transportConfidentialityAvailable === undefined)
+  if (Object.keys(env).length > 0 && replayConfidentialityUnproven) {
     return {
       ok: false,
       failure: {
@@ -142,6 +147,31 @@ function replayFromSnapshot(
       return { ok: false, failure: { code: 'invalid_launch_snapshot' } }
     }
     resumeArgvSuffix = resumeArgv.slice(1)
+  }
+  // A resume suffix (provider session id / transcript path) carrying a
+  // cmd-unencodable char would re-split the cmd command line (injection). It is
+  // essential to a resume so it can't be dropped like a prompt — fail closed.
+  if (
+    resumeArgvSuffix &&
+    target.shell === 'cmd' &&
+    resumeArgvSuffix.some((element) => CMD_UNENCODABLE_CHAR_RE.test(element))
+  ) {
+    return { ok: false, failure: { code: 'invalid_launch_snapshot' } }
+  }
+  // Replay must re-run the caps: a shell change since capture (e.g. powershell→cmd
+  // on win32) can lower the command-line/env ceiling below what the captured argv
+  // plus resume suffix now encodes, and that must surface as the typed cap failure
+  // rather than an opaque writer error at spawn.
+  const replayArgv = (resumeArgvSuffix
+    ? [...snapshot.argv, ...resumeArgvSuffix]
+    : [...snapshot.argv]) as unknown as typeof snapshot.argv
+  const replayCommandCap = checkCommandTooLong(replayArgv, target.shell)
+  if (replayCommandCap) {
+    return { ok: false, failure: replayCommandCap }
+  }
+  const replayEnvCap = checkEnvPayloadTooLarge(replayArgv, env, target)
+  if (replayEnvCap) {
+    return { ok: false, failure: replayEnvCap }
   }
   const definitionNotice = snapshotDefinitionChangedNotice(comparisonInput)
   const notices: AgentLaunchNotice[] = []
@@ -205,8 +235,14 @@ export function resolveAgentLaunch(
 
   // Env may cross to a different terminal host only inside an authenticated,
   // confidential channel; it never downgrades to plaintext or silently drops
-  // values. Env-free launches may continue over a non-confidential channel.
-  if (Object.keys(context.env).length > 0 && request.transportConfidentialityAvailable === false) {
+  // values. Env-free launches may continue over a non-confidential channel. A
+  // remote target must PROVE confidentiality (=== true): an unset capability on a
+  // remote surface fails closed rather than shipping env over a possibly-plaintext
+  // channel; local targets are trusted when the field is absent.
+  const confidentialityUnproven =
+    request.transportConfidentialityAvailable === false ||
+    (request.isRemote && request.transportConfidentialityAvailable === undefined)
+  if (Object.keys(context.env).length > 0 && confidentialityUnproven) {
     return {
       ok: false,
       failure: {
@@ -235,6 +271,16 @@ export function resolveAgentLaunch(
     return { ok: false, failure: command.failure }
   }
 
+  // Env values support the same {repoPath}/{worktreePath} tokens as argv (the
+  // authoring UI offers them as insert targets and the requirement scan already
+  // treats an env-only reference as required). Substitute them here — the raw map
+  // was flowing verbatim into the spawn env, so `FOO={worktreePath}` launched with
+  // the literal token. Interpolation is idempotent on values without tokens.
+  const resolvedEnv: Record<string, string> = {}
+  for (const key of Object.keys(context.env)) {
+    resolvedEnv[key] = interpolateVariables(context.env[key], values)
+  }
+
   // Stock-name detection gates only stock catalog argv with no accepted user PATH
   // override; configured/custom prefixes and custom PATH env cannot be evaluated
   // by name detection and proceed to preflight/spawn.
@@ -251,7 +297,7 @@ export function resolveAgentLaunch(
   if (commandCap) {
     return { ok: false, failure: commandCap }
   }
-  const envCap = checkEnvPayloadTooLarge(command.argv, context.env, target)
+  const envCap = checkEnvPayloadTooLarge(command.argv, resolvedEnv, target)
   if (envCap) {
     return { ok: false, failure: envCap }
   }
@@ -264,7 +310,7 @@ export function resolveAgentLaunch(
       baseAgent: context.baseAgent,
       displayLabel: context.displayLabel,
       argv: command.argv,
-      env: context.env,
+      env: resolvedEnv,
       envPolicy: context.envPolicy,
       referenced: command.referenced,
       values,

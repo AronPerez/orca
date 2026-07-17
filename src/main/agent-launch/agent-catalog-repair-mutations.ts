@@ -24,6 +24,12 @@ import type { MutationContext } from './agent-catalog-mutations'
  *  not remount on unrelated revisions. They are never persisted, synced, or
  *  logged, and resolve only with the exact current catalog revision. */
 export class AgentCatalogRepairTokenRegistry {
+  // Record keys churn with every content/position change of a corrupt row and
+  // the old keys are never queried again, so the registry is a small LRU:
+  // without eviction it grows by one entry per historical corrupt-row state
+  // for the life of the process.
+  private static readonly MAX_ENTRIES = 256
+
   private readonly tokensByRecordKey = new Map<string, string>()
 
   private recordKey(row: CorruptCatalogRow): string {
@@ -37,6 +43,9 @@ export class AgentCatalogRepairTokenRegistry {
     const key = this.recordKey(row)
     const existing = this.tokensByRecordKey.get(key)
     if (existing) {
+      // Re-insert so currently-live records stay at the recent end of the map.
+      this.tokensByRecordKey.delete(key)
+      this.tokensByRecordKey.set(key, existing)
       return existing
     }
     const token = createHash('sha256')
@@ -44,6 +53,13 @@ export class AgentCatalogRepairTokenRegistry {
       .digest('hex')
       .slice(0, 32)
     this.tokensByRecordKey.set(key, token)
+    while (this.tokensByRecordKey.size > AgentCatalogRepairTokenRegistry.MAX_ENTRIES) {
+      const oldest = this.tokensByRecordKey.keys().next().value
+      if (oldest === undefined) {
+        break
+      }
+      this.tokensByRecordKey.delete(oldest)
+    }
     return token
   }
 

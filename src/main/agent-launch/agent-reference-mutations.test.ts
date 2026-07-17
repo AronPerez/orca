@@ -358,3 +358,130 @@ describe('commit-message and source-control field-level rule', () => {
     expect(Object.keys(actions)).toEqual([])
   })
 })
+
+describe('quick-command persisted-as-sent bounds (L1-#3)', () => {
+  it('rejects the save that would exceed the 40-command cap instead of silently dropping it', () => {
+    const commands = Array.from({ length: 40 }, (_, index) =>
+      agentQuickCommand({ id: `qc-${index}`, label: `Cmd ${index}` })
+    )
+    const settings = settingsWith({ terminalQuickCommands: commands })
+    const result = apply(settings, {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ id: 'qc-overflow' })
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_reference_field',
+      owner: 'quick-command',
+      field: 'count',
+      reason: 'bounds'
+    })
+  })
+
+  it('still saves an update to an existing command at the 40-command cap', () => {
+    const commands = Array.from({ length: 40 }, (_, index) =>
+      agentQuickCommand({ id: `qc-${index}`, label: `Cmd ${index}` })
+    )
+    const settings = settingsWith({ terminalQuickCommands: commands })
+    const result = apply(settings, {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ id: 'qc-3', label: 'Renamed' })
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects labels, ids, prompts, and terminal commands past the normalization truncation caps', () => {
+    const settings = settingsWith()
+    const longLabel = apply(settings, {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ label: 'x'.repeat(81) })
+    })
+    expect(longLabel).toMatchObject({ ok: false, field: 'label', reason: 'bounds' })
+
+    const longId = apply(settings, {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ id: 'x'.repeat(81) })
+    })
+    expect(longId).toMatchObject({ ok: false, field: 'label', reason: 'bounds' })
+
+    const longPrompt = apply(settings, {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ prompt: 'x'.repeat(6001) })
+    })
+    expect(longPrompt).toMatchObject({ ok: false, field: 'prompt', reason: 'bounds' })
+
+    const longCommand = apply(settings, {
+      kind: 'quick-command-save',
+      command: {
+        id: 'qc-term',
+        label: 'Term',
+        action: 'terminal-command' as const,
+        command: 'x'.repeat(4001),
+        appendEnter: true
+      }
+    })
+    expect(longCommand).toMatchObject({ ok: false, field: 'command', reason: 'bounds' })
+
+    // Boundary values persist as sent.
+    const atCap = apply(settings, {
+      kind: 'quick-command-save',
+      command: agentQuickCommand({ label: 'x'.repeat(80), prompt: 'y'.repeat(6000) })
+    })
+    expect(atCap.ok).toBe(true)
+  })
+})
+
+describe('malformed mutation payloads return typed errors (L1-#6)', () => {
+  it('rejects null commit-message changes without throwing', () => {
+    const result = apply(settingsWith(), {
+      kind: 'commit-message-update',
+      changes: null as unknown as Record<string, never>
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_reference_field',
+      owner: 'commit-message',
+      reason: 'bounds'
+    })
+  })
+
+  it('rejects null source-control changes and a non-record actions map without throwing', () => {
+    const nullChanges = apply(settingsWith(), {
+      kind: 'source-control-update',
+      changes: null as unknown as Record<string, never>
+    })
+    expect(nullChanges).toMatchObject({
+      ok: false,
+      code: 'invalid_reference_field',
+      owner: 'source-control-recipe',
+      reason: 'bounds'
+    })
+
+    const stringActions = apply(settingsWith(), {
+      kind: 'source-control-update',
+      changes: { actions: 'garbage' } as unknown as Partial<
+        NonNullable<GlobalSettings['sourceControlAi']>
+      >
+    })
+    expect(stringActions).toMatchObject({
+      ok: false,
+      code: 'invalid_reference_field',
+      owner: 'source-control-recipe',
+      reason: 'bounds'
+    })
+  })
+
+  it('rejects a non-array reorder payload without throwing', () => {
+    const settings = settingsWith({ terminalQuickCommands: [agentQuickCommand()] })
+    const result = apply(settings, {
+      kind: 'quick-commands-reorder',
+      orderedIds: 'qc-1' as unknown as string[]
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_reference_field',
+      owner: 'quick-command',
+      reason: 'conflict'
+    })
+  })
+})

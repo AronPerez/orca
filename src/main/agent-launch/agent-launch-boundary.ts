@@ -311,6 +311,13 @@ export class AgentLaunchBoundary {
     return this.admissionStore.capacitySummaryFor(principal)
   }
 
+  /** Boot-time rehydrate of the admission capacity that durable pending launches
+   *  held before a restart, so caps keep counting launch_state_unknown launches
+   *  and Forget's release frees a real slot. Never called mid-flight. */
+  rebuildAdmissionFrom(records: Iterable<AdmittedLaunchRecord>): void {
+    this.admissionStore.rebuildFrom(records)
+  }
+
   private async runPreparation(
     args: ExecuteAgentLaunchArgs,
     original: ResolvedAgentLaunch

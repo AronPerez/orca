@@ -325,8 +325,16 @@ export class Coordinator {
       this.opts.onLog(`Task ${taskId} circuit broken after repeated failures`)
       this.db.updateTaskStatus(taskId, 'failed', `Circuit broken: ${msg.subject}`)
       this.state.failedTasks.push(taskId)
+    } else if (updated) {
+      this.opts.onLog(`Task ${taskId} will be retried (failure ${updated.failure_count}/3)`)
     } else {
-      this.opts.onLog(`Task ${taskId} will be retried (failure ${updated?.failure_count ?? 0}/3)`)
+      // Why: failDispatch no-ops on a settled row (in particular 'forgotten',
+      // which must stay blocked pending an explicit Retry) — logging a bogus
+      // "will be retried (failure 0/3)" here would misreport a stay-blocked
+      // no-op as a retry that is never going to happen.
+      this.opts.onLog(
+        `Task ${taskId} escalation ignored: dispatch ${dispatch.id} is already settled`
+      )
     }
   }
 

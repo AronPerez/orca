@@ -17,7 +17,9 @@ vi.mock('../../../ai-vault/session-scanner', () => ({
 import {
   AI_VAULT_METHODS,
   AiVaultListSessionsParams,
-  AiVaultPrepareSessionResumeParams
+  AiVaultPrepareSessionResumeParams,
+  AiVaultResumeCommandParams,
+  AiVaultResumeDetailsParams
 } from './ai-vault'
 import {
   configureAiVaultSessionSources,
@@ -264,6 +266,35 @@ describe('aiVault.listSessions handler + shared cache', () => {
     await runtime.listAiVaultSessions({})
     const options = scanAiVaultSessions.mock.calls[0]?.[0] as AiVaultScanOptions
     expect(options.additionalCodexSessionsDirs).toContain('/ctor/codex/home/sessions')
+  })
+})
+
+// Regression for L4-m12: filePath is trusted-desktop-IPC-only (the 'copy'
+// vaultResume path); these two RPC-only params must drop it at the schema
+// boundary rather than admitting the wider AgentLaunchVaultResumeEntrySchema
+// shape.
+describe('aiVault resumeCommand/resumeDetails params schema', () => {
+  const baseEntry = { executionHostId: 'local', agent: 'claude', sessionId: 'sess-1' }
+
+  it('drops a client-supplied filePath on resumeCommand params', () => {
+    const parsed = AiVaultResumeCommandParams.safeParse({
+      entry: { ...baseEntry, filePath: '/attacker/controlled.jsonl' }
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.entry).not.toHaveProperty('filePath')
+  })
+
+  it('drops a client-supplied filePath on resumeDetails params', () => {
+    const parsed = AiVaultResumeDetailsParams.safeParse({
+      entry: { ...baseEntry, filePath: '/attacker/controlled.jsonl' }
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.entry).not.toHaveProperty('filePath')
+  })
+
+  it('still accepts the entry with no filePath at all', () => {
+    expect(AiVaultResumeCommandParams.safeParse({ entry: baseEntry }).success).toBe(true)
+    expect(AiVaultResumeDetailsParams.safeParse({ entry: baseEntry }).success).toBe(true)
   })
 })
 

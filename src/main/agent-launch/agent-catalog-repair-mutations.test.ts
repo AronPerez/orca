@@ -312,3 +312,83 @@ describe('resolve-duplicate-id', () => {
     expect((result as { patch?: unknown }).patch).toBeUndefined()
   })
 })
+
+describe('resolve-duplicate-id covering a base-mismatch corrupt row (L1-#4)', () => {
+  const id = customId('codex')
+
+  it('resolves a group whose second record is corrupt (base mismatch) in one repair', () => {
+    const settings = settingsWith({
+      customTuiAgents: [
+        liveAgent({ id, label: 'One' }),
+        // Same id, but persisted baseAgent disagrees with the id's base.
+        { ...liveAgent({ id, label: 'Two' }), baseAgent: 'claude' } as CustomTuiAgent
+      ]
+    })
+    const registry = new AgentCatalogRepairTokenRegistry()
+    const rows = corruptRowsOf(settings)
+    // Both records must surface as duplicate_id group members or repair loops.
+    const groupRows = rows.filter(
+      (row) => row.id === id && row.issues.some((issue) => issue.reason === 'duplicate_id')
+    )
+    expect(groupRows).toHaveLength(2)
+
+    const result = apply({
+      settings,
+      repairTokens: registry,
+      mutation: {
+        kind: 'resolve-duplicate-id',
+        duplicateId: id,
+        rows: [
+          {
+            repairToken: registry.tokenFor(groupRows[0]),
+            action: {
+              kind: 'keep-for-existing-references',
+              repairedDraft: draft({ label: 'Kept' })
+            }
+          },
+          { repairToken: registry.tokenFor(groupRows[1]), action: { kind: 'discard' } }
+        ]
+      }
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    const live = result.patch.customTuiAgents ?? []
+    expect(live).toHaveLength(1)
+    expect(live[0]).toMatchObject({ id, label: 'Kept', baseAgent: 'codex' })
+  })
+})
+
+describe('repair-token registry eviction (L1-#8)', () => {
+  function corruptRowWith(index: number) {
+    return {
+      label: null,
+      issues: [{ field: 'identity' as const, reason: 'empty' as const }],
+      rawBytes: 10,
+      physicalIndex: index,
+      raw: { id: `bad-${index}` }
+    }
+  }
+
+  it('caps the registry instead of growing one entry per historical corrupt-row state', () => {
+    const registry = new AgentCatalogRepairTokenRegistry()
+    for (let i = 0; i < 1000; i += 1) {
+      registry.tokenFor(corruptRowWith(i))
+    }
+    const size = (registry as unknown as { tokensByRecordKey: Map<string, string> })
+      .tokensByRecordKey.size
+    expect(size).toBeLessThanOrEqual(256)
+  })
+
+  it('keeps recently re-requested tokens stable across unrelated churn', () => {
+    const registry = new AgentCatalogRepairTokenRegistry()
+    const pinned = corruptRowWith(0)
+    const pinnedToken = registry.tokenFor(pinned)
+    for (let i = 1; i < 300; i += 1) {
+      registry.tokenFor(corruptRowWith(i))
+      // Re-request as snapshots would on every revision; recency keeps it live.
+      expect(registry.tokenFor(pinned)).toBe(pinnedToken)
+    }
+  })
+})

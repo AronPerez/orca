@@ -35,6 +35,10 @@ export type PendingAgentLaunchSnapshot = {
   /** The launch's original intent, preserved so a reconciled failure carries the
    *  true intent rather than assuming a default. */
   intent: AgentLaunchIntentKind
+  /** Admission principal that holds this launch's capacity slot, persisted so a
+   *  restart can rebuild the admission counters into the right cap bucket.
+   *  Optional for pre-existing durable entries; absent rebuilds as local. */
+  principal?: AdmissionPrincipal
   snapshot: AgentLaunchSnapshot
 }
 
@@ -123,6 +127,12 @@ export function isCanonicalLowercaseUuid(value: string): boolean {
 
 export class AgentLaunchOperationStore {
   private readonly pendingByToken = new Map<string, PendingAgentLaunchSnapshot>()
+  // Tokens whose spawn is running in THIS process right now (beginPending →
+  // settle). The reconciler must skip them: the PTY registers its launch token
+  // only after spawn resolves, so mid-spawn the token looks absent and a full
+  // re-list would false-settle spawn_failed while the real spawn succeeds.
+  // Process-lifetime only — a rehydrated pending after a crash is NOT in-flight.
+  private readonly inFlightSpawnTokens = new Set<string>()
   private readonly settledByScope = new Map<string, SettledAgentLaunchOperation[]>()
   // Main-private terminal -> receipt attribution recorded once the PTY registers.
   // A settled `launched` replay reissues this client-safe receipt without the
@@ -167,9 +177,18 @@ export class AgentLaunchOperationStore {
 
   beginPending(entry: PendingAgentLaunchSnapshot): void {
     this.pendingByToken.set(entry.launchToken, entry)
+    // beginPending is only ever called immediately before the spawn it guards,
+    // so the token is in-flight until the transaction settles (clearPending).
+    this.inFlightSpawnTokens.add(entry.launchToken)
     // Durable BEFORE the spawn/writer: a crash mid-spawn must leave the private
     // snapshot+token on disk so reconciliation can re-attribute the terminal.
     this.persistDurable()
+  }
+
+  /** Whether this process is actively spawning the token's PTY right now.
+   *  Reconcile passes must not settle these (see inFlightSpawnTokens). */
+  isSpawnInFlight(launchToken: string): boolean {
+    return this.inFlightSpawnTokens.has(launchToken)
   }
 
   getPending(launchToken: string): PendingAgentLaunchSnapshot | null {
@@ -203,6 +222,7 @@ export class AgentLaunchOperationStore {
   /** Drop the in-flight snapshot once the operation settles (registered,
    *  failed, forgotten, or authoritatively reconciled). */
   clearPending(launchToken: string): boolean {
+    this.inFlightSpawnTokens.delete(launchToken)
     const deleted = this.pendingByToken.delete(launchToken)
     if (deleted) {
       this.persistDurable()
@@ -253,6 +273,9 @@ export class AgentLaunchOperationStore {
    *  attribute a terminal that outlived a main crash. */
   rebuildPendingFrom(entries: Iterable<PendingAgentLaunchSnapshot>): void {
     this.pendingByToken.clear()
+    // inFlightSpawnTokens is intentionally untouched: it only ever holds tokens
+    // this process is spawning right now (empty at boot rehydrate, and a
+    // mid-process recovery merge must not drop a live spawn's guard).
     for (const entry of entries) {
       this.pendingByToken.set(entry.launchToken, entry)
     }

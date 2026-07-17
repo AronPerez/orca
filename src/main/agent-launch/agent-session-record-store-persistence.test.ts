@@ -14,9 +14,11 @@ vi.mock('electron', () => ({
   }
 }))
 
-import type { HostSessionLaunchRecord } from './agent-session-record-store'
+import { AgentSessionRecordStore, type HostSessionLaunchRecord } from './agent-session-record-store'
+import type { AgentSessionOwnershipKey } from '../../shared/agent-session-resume'
 import {
   agentSessionRecordStorePath,
+  initAgentSessionRecordStorePersistence,
   decodeAgentSessionRecordStore,
   encodeAgentSessionRecordStore,
   loadAgentSessionRecordStoreState,
@@ -50,9 +52,17 @@ const snapshot: AgentLaunchSnapshot = {
   }
 }
 
+const RECORD_OWNERSHIP: AgentSessionOwnershipKey = {
+  worktreeId: 'wt-1',
+  baseAgent: 'claude',
+  providerSessionId: 'sess-1'
+}
+
 const record: HostSessionLaunchRecord = {
   worktreeId: 'wt-1',
-  requestedAgent: 'custom-agent:claude:reviewer',
+  // UUID-form custom id: rebuildRecordsFrom validates identities at rehydrate,
+  // and the lazy-merge test routes this record back through that validation.
+  requestedAgent: 'custom-agent:claude:00000000-0000-4000-8000-0000000000a1',
   baseAgent: 'claude',
   providerSession: { key: 'session_id', id: 'sess-1' },
   launchSnapshot: snapshot,
@@ -147,5 +157,54 @@ describe('agent-session-record-store persistence file I/O', () => {
     // The file itself is untouched — a later boot with the keychain unlocked
     // still recovers the records.
     expect(loadAgentSessionRecordStoreState(path, reversibleCipher(true)).records).toEqual([record])
+  })
+
+  it('re-attaches the sink lazily after a locked-keychain boot so later forgets stick (L2-#5)', () => {
+    const path = agentSessionRecordStorePath(dir)
+    writeAgentSessionRecordStoreState(path, { records: [record] }, reversibleCipher(true))
+
+    // Boot with a locked keychain that unlocks later in the session.
+    let available = false
+    const lateCipher: AgentSessionRecordCipher = {
+      available: () => available,
+      encrypt: (plaintext) => Buffer.from(`enc:${plaintext}`, 'utf-8'),
+      decrypt: (ciphertext) => ciphertext.toString('utf-8').replace(/^enc:/, '')
+    }
+    const store = new AgentSessionRecordStore()
+    initAgentSessionRecordStorePersistence(store, path, lateCipher)
+    expect(store.resolveByOwnershipKey(RECORD_OWNERSHIP)).toBeNull()
+
+    // Mutation while still locked: the write-back is skipped, the ciphertext
+    // (and its records) survives untouched.
+    store.register({
+      worktreeId: 'wt-2',
+      requestedAgent: 'claude',
+      baseAgent: 'claude',
+      launchSnapshot: snapshot,
+      launchToken: 'tok-live'
+    })
+    store.bindProviderSessionByToken('tok-live', { key: 'session_id', id: 'sess-live' })
+    expect(loadAgentSessionRecordStoreState(path, reversibleCipher(true)).records).toEqual([record])
+
+    // Keychain unlocks: the next mutation merges the on-disk records under the
+    // live ones and re-attaches the write-back sink.
+    available = true
+    store.register({
+      worktreeId: 'wt-3',
+      requestedAgent: 'claude',
+      baseAgent: 'claude',
+      launchSnapshot: snapshot,
+      launchToken: 'tok-3'
+    })
+    store.bindProviderSessionByToken('tok-3', { key: 'session_id', id: 'sess-3' })
+    expect(store.resolveByOwnershipKey(RECORD_OWNERSHIP)).not.toBeNull()
+
+    // Forget now sticks durably: the merged record deletes on disk too.
+    expect(store.forget(RECORD_OWNERSHIP)).toBe(true)
+    const persisted = loadAgentSessionRecordStoreState(path, reversibleCipher(true)).records
+    expect(persisted.map((entry) => entry.providerSession.id).sort()).toEqual([
+      'sess-3',
+      'sess-live'
+    ])
   })
 })

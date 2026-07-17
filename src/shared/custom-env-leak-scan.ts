@@ -15,6 +15,7 @@ export function scanForCustomEnvLeak(
 ): CustomEnvLeak[] {
   const terms = forbiddenTerms.filter((term) => term.length > 0)
   const leaks: CustomEnvLeak[] = []
+  const seen = new WeakSet<object>()
   const visit = (value: unknown, path: string): void => {
     if (typeof value === 'string') {
       for (const term of terms) {
@@ -24,8 +25,25 @@ export function scanForCustomEnvLeak(
       }
       return
     }
+    // Visit each object once: a cyclic graph or shared reference would otherwise
+    // recurse until the stack overflows.
+    if (value !== null && typeof value === 'object') {
+      if (seen.has(value)) {
+        return
+      }
+      seen.add(value)
+    }
     if (Array.isArray(value)) {
       value.forEach((item, index) => visit(item, `${path}[${index}]`))
+      return
+    }
+    if (value instanceof Set) {
+      // A forbidden term can hide as a Set member (e.g. a serialized allowlist).
+      let index = 0
+      for (const item of value) {
+        visit(item, `${path}<set:${index}>`)
+        index += 1
+      }
       return
     }
     if (value instanceof Map) {

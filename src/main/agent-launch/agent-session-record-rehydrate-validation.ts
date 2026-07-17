@@ -5,8 +5,16 @@
 // invalid_launch_snapshot instead of throwing.
 
 import type { AgentLaunchSnapshot } from '../../shared/agent-launch-host-contract'
-import type { SleepingAgentLaunchConfig } from '../../shared/agent-session-resume'
+import {
+  getAgentSessionOwnershipKey,
+  isResumableTuiAgent,
+  normalizeAgentProviderSession,
+  providerSessionKeyForResumableBase,
+  type SleepingAgentLaunchConfig
+} from '../../shared/agent-session-resume'
 import { isBuiltInTuiAgent, isTuiAgent } from '../../shared/tui-agent-config'
+// Type-only import: erased at runtime, so no import cycle with the store.
+import type { HostSessionLaunchRecord } from './agent-session-record-store'
 
 const SNAPSHOT_MODES: ReadonlySet<unknown> = new Set(['built-in', 'custom', 'safe-fallback'])
 const CAPTURED_ENV_POLICIES: ReadonlySet<unknown> = new Set(['full', 'withheld', 'none'])
@@ -57,4 +65,51 @@ export function isWellFormedLegacyLaunchConfig(value: unknown): value is Sleepin
     typeof config.agentArgs === 'string' &&
     isStringRecord(config.agentEnv)
   )
+}
+
+/** Validate + normalize one persisted record for rehydrate: drop it (null) on a
+ *  missing/incompatible provider session or a non-resumable/invalid identity, else
+ *  return the normalized record and its ownership key. A corrupt replay payload is
+ *  stripped (record kept) so resume returns the in-band invalid_launch_snapshot
+ *  rather than throwing. */
+export function rehydrateSessionRecord(
+  record: HostSessionLaunchRecord
+): { ownershipKey: string; record: HostSessionLaunchRecord } | null {
+  const providerSession = normalizeAgentProviderSession(record?.providerSession)
+  if (
+    typeof record?.worktreeId !== 'string' ||
+    !record.worktreeId ||
+    !isTuiAgent(record.requestedAgent) ||
+    !isResumableTuiAgent(record.baseAgent) ||
+    !providerSession ||
+    // Enforce the same providerSession.key ↔ base compatibility bind() requires: a
+    // mismatched persisted pair would replay the wrong provider's resume flags.
+    providerSession.key !== providerSessionKeyForResumableBase(record.baseAgent)
+  ) {
+    return null
+  }
+  const snapshotOk =
+    record.launchSnapshot === undefined || isWellFormedLaunchSnapshot(record.launchSnapshot)
+  const legacyOk =
+    record.legacyLaunchConfig === undefined ||
+    isWellFormedLegacyLaunchConfig(record.legacyLaunchConfig)
+  // Persisted JSON is untrusted shape: store the NORMALIZED provider session and
+  // coerce the unvalidated scalar fields so downstream reads never see a non-string
+  // token or a non-numeric timestamp.
+  const launchToken = typeof record.launchToken === 'string' ? record.launchToken : undefined
+  const rehydrated: HostSessionLaunchRecord = {
+    ...record,
+    providerSession,
+    launchSnapshot: snapshotOk ? record.launchSnapshot : undefined,
+    legacyLaunchConfig: legacyOk ? record.legacyLaunchConfig : undefined,
+    launchToken,
+    registeredAt: Number.isFinite(record.registeredAt) ? record.registeredAt : 0,
+    updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : 0
+  }
+  const ownershipKey = getAgentSessionOwnershipKey({
+    worktreeId: rehydrated.worktreeId,
+    baseAgent: rehydrated.baseAgent,
+    providerSessionId: providerSession.id
+  })
+  return { ownershipKey, record: rehydrated }
 }

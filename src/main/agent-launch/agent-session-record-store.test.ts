@@ -127,6 +127,41 @@ describe('AgentSessionRecordStore lifecycle', () => {
     expect(persistCalls).toBe(1)
   })
 
+  it('re-binds a ROTATED provider session id under the new ownership key (L2-#4 rebind)', () => {
+    // Claude /clear mints a NEW session id in the same pane. The launch token
+    // already bound and consumed staging, so the rotated hook must re-key the
+    // launch — otherwise resume misses the live session forever.
+    const store = new AgentSessionRecordStore()
+    registerAndBind(store)
+
+    const rotated = store.bindProviderSessionByToken('token-a', {
+      key: 'session_id',
+      id: 'sess-2'
+    })
+    expect(rotated?.providerSession.id).toBe('sess-2')
+    const rotatedKey: AgentSessionOwnershipKey = { ...OWNERSHIP, providerSessionId: 'sess-2' }
+    expect(store.resolveByOwnershipKey(rotatedKey)?.launchSnapshot).toEqual(snapshot())
+    // The prior session's record survives (its transcript is still a valid
+    // resume target) but no longer claims the token.
+    expect(store.resolveByOwnershipKey(OWNERSHIP)).not.toBeNull()
+    expect(store.resolveByOwnershipKey(OWNERSHIP)?.launchToken).toBeUndefined()
+
+    // A rollback after rotation removes only the token's CURRENT record.
+    store.rollbackByToken('token-a')
+    expect(store.resolveByOwnershipKey(rotatedKey)).toBeNull()
+    expect(store.resolveByOwnershipKey(OWNERSHIP)).not.toBeNull()
+  })
+
+  it('a rotated hook with an unchanged id or incompatible key stays a null no-op', () => {
+    const store = new AgentSessionRecordStore()
+    registerAndBind(store)
+    expect(store.bindProviderSessionByToken('token-a', SESSION)).toBeNull()
+    expect(
+      store.bindProviderSessionByToken('token-a', { key: 'conversation_id', id: 'conv-9' })
+    ).toBeNull()
+    expect(store.resolveByOwnershipKey(OWNERSHIP)?.launchToken).toBe('token-a')
+  })
+
   it('rollback after bind removes the durable record so a failed spawn strands nothing', () => {
     const store = new AgentSessionRecordStore()
     registerAndBind(store)
@@ -367,5 +402,43 @@ describe('AgentSessionRecordStore durable persistence', () => {
         providerSessionId: 'sess-2'
       })
     ).toBeNull()
+  })
+
+  it('rehydrate enforces the providerSession.key ↔ base bind check and normalizes scalars (L2-#7)', () => {
+    const store = new AgentSessionRecordStore()
+    store.rebuildRecordsFrom([
+      {
+        worktreeId: 'wt-1',
+        requestedAgent: 'claude',
+        baseAgent: 'claude',
+        // Wrong key type for a claude base (bind() would reject this pair);
+        // it must be dropped at rehydrate, not replayed with wrong flags.
+        providerSession: { key: 'conversation_id', id: 'conv-1' },
+        registeredAt: 1,
+        updatedAt: 1
+      },
+      {
+        worktreeId: 'wt-1',
+        requestedAgent: 'claude',
+        baseAgent: 'claude',
+        // Whitespace id normalizes; junk token/timestamps coerce.
+        providerSession: { key: 'session_id', id: '  sess-1  ' },
+        launchToken: 42 as unknown as string,
+        registeredAt: 'yesterday' as unknown as number,
+        updatedAt: Number.NaN
+      }
+    ])
+    expect(
+      store.resolveByOwnershipKey({
+        worktreeId: 'wt-1',
+        baseAgent: 'claude',
+        providerSessionId: 'conv-1'
+      })
+    ).toBeNull()
+    const record = store.resolveByOwnershipKey(OWNERSHIP)
+    expect(record?.providerSession).toEqual({ key: 'session_id', id: 'sess-1' })
+    expect(record?.launchToken).toBeUndefined()
+    expect(record?.registeredAt).toBe(0)
+    expect(record?.updatedAt).toBe(0)
   })
 })

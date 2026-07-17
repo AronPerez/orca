@@ -55,12 +55,30 @@ export function admitCustomEnv(
   return { env: copyEnv(configuredEnv), policy: 'full', withheld: false }
 }
 
+const ORCA_ENV_KEY_PREFIX = /^orca_/i
+
+/** Drop any `orca_*` key (case-insensitively). Built-in default env comes from a
+ *  hand-editable `settings.agentDefaultEnv` that skips the custom-agent write-time
+ *  validation, so without this it could smuggle Orca-generated attribution/hook/
+ *  teams keys into a launch and spoof pane/hook identity. */
+function stripOrcaEnvKeys(env: Readonly<Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const key of Object.keys(env)) {
+    if (ORCA_ENV_KEY_PREFIX.test(key)) {
+      continue
+    }
+    out[key] = env[key]
+  }
+  return out
+}
+
 /** Built-in launches keep their existing per-agent default env (yolo/env
  *  defaults), always full — the paired-sync gate is a custom-agent concept. */
 export function admitBuiltInEnv(configuredEnv: Readonly<Record<string, string>>): EnvAdmission {
-  const hasEntries = Object.keys(configuredEnv).length > 0
+  const filtered = stripOrcaEnvKeys(configuredEnv)
+  const hasEntries = Object.keys(filtered).length > 0
   return {
-    env: hasEntries ? copyEnv(configuredEnv) : emptyEnv(),
+    env: hasEntries ? copyEnv(filtered) : emptyEnv(),
     policy: hasEntries ? 'full' : 'none',
     withheld: false
   }

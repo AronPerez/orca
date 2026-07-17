@@ -308,6 +308,56 @@ describe('Coordinator', () => {
     expect(result.failedTasks).toContain(task.id)
   })
 
+  // Regression for L4-m14: a stale escalation arriving after Forget must not
+  // log "will be retried" — failDispatch no-ops on a settled 'forgotten' row,
+  // so the task stays blocked and no retry is ever going to happen.
+  it('logs a distinct no-op for an escalation against an already-forgotten dispatch', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = createMockRuntime()
+    runtime.terminals = [{ handle: 'term_a', worktreeId: 'wt1', connected: true, writable: true }]
+
+    const task = db.createTask({ spec: 'stranded work' })
+    const logs: string[] = []
+
+    const coordinator = new Coordinator(db, runtime, {
+      spec: 'go',
+      coordinatorHandle: 'coord',
+      pollIntervalMs: 50,
+      onLog: (msg) => logs.push(msg)
+    })
+
+    const runPromise = coordinator.run()
+
+    await new Promise((r) => {
+      setTimeout(r, 100)
+    })
+
+    const dispatch = db.getActiveDispatchForTerminal('term_a')
+    expect(dispatch).toBeDefined()
+    // Forget the dispatch out-of-band, as orchestration.dispatchForget would —
+    // the task moves to 'blocked' pending an explicit Retry.
+    db.forgetDispatch(dispatch!.id)
+    expect(db.getTask(task.id)?.status).toBe('blocked')
+
+    db.insertMessage({
+      from: 'term_a',
+      to: 'coord',
+      subject: 'late escalation after forget',
+      type: 'escalation',
+      payload: JSON.stringify({ taskId: task.id })
+    })
+
+    await new Promise((r) => {
+      setTimeout(r, 100)
+    })
+
+    coordinator.stop()
+    await runPromise
+
+    expect(logs.some((l) => l.includes('will be retried'))).toBe(false)
+    expect(logs.some((l) => l.includes('already settled'))).toBe(true)
+  })
+
   it('reports failed when dispatch send failures circuit-break in the DB', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = createMockRuntime()

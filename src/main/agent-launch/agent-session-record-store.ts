@@ -22,11 +22,7 @@ import type {
   AgentLaunchExecutionHostId,
   AgentLaunchSnapshot
 } from '../../shared/agent-launch-host-contract'
-import { isTuiAgent } from '../../shared/tui-agent-config'
-import {
-  isWellFormedLaunchSnapshot,
-  isWellFormedLegacyLaunchConfig
-} from './agent-session-record-rehydrate-validation'
+import { rehydrateSessionRecord } from './agent-session-record-rehydrate-validation'
 import {
   getAgentSessionOwnershipKey,
   isResumableTuiAgent,
@@ -111,6 +107,10 @@ export class AgentSessionRecordStore {
   // launchToken -> ownership key of the record it bound to, so a spawn-failure
   // rollback of an already-bound launch removes its durable record too.
   private readonly ownershipByToken = new Map<string, string>()
+  // Ownership keys explicitly forgotten since the last rebuild, so a deferred
+  // locked-keychain recovery merge cannot resurrect a record the owner already
+  // forgot in this process.
+  private readonly forgottenSinceRebuild = new Set<string>()
   private readonly now: () => number
   private onDurableMutation: ((state: AgentSessionRecordStoreDurableState) => void) | null = null
 
@@ -191,7 +191,12 @@ export class AgentSessionRecordStore {
   ): HostSessionLaunchRecord | null {
     const staged = this.staging.get(launchToken)
     if (!staged) {
-      return null
+      // Session ROTATION: the token already bound, then the provider minted a
+      // new session id in the same pane (e.g. Claude /clear). Re-bind the same
+      // launch under the new ownership key, keeping the snapshot; the prior
+      // record stays — its transcript is still an independently valid resume
+      // target. A repeat hook for the already-bound id stays a null no-op.
+      return this.rebindRotatedProviderSession(launchToken, providerSession)
     }
     if (
       !isResumableTuiAgent(staged.baseAgent) ||
@@ -228,6 +233,54 @@ export class AgentSessionRecordStore {
     // cheap no-op (no duplicate durable write); rollback still finds the bound
     // record via the ownership index.
     this.staging.delete(launchToken)
+    this.persistDurable()
+    return record
+  }
+
+  /** Re-key an already-bound launch to a ROTATED provider session id. The
+   *  bound record's own base drives the key exactly like the first bind; an
+   *  incompatible provider key or an unchanged session id is a null no-op. */
+  private rebindRotatedProviderSession(
+    launchToken: string,
+    providerSession: AgentProviderSessionMetadata
+  ): HostSessionLaunchRecord | null {
+    const boundKey = this.ownershipByToken.get(launchToken)
+    const bound = boundKey ? this.records.get(boundKey) : undefined
+    if (
+      !boundKey ||
+      !bound ||
+      bound.launchToken !== launchToken ||
+      bound.providerSession.id === providerSession.id ||
+      providerSession.key !== providerSessionKeyForResumableBase(bound.baseAgent)
+    ) {
+      return null
+    }
+    const ownershipKey = getAgentSessionOwnershipKey({
+      worktreeId: bound.worktreeId,
+      baseAgent: bound.baseAgent,
+      providerSessionId: providerSession.id
+    })
+    const record: HostSessionLaunchRecord = {
+      ...bound,
+      providerSession,
+      updatedAt: this.now()
+    }
+    const replaced = this.records.get(ownershipKey)
+    if (replaced) {
+      this.vaultIndex.remove(ownershipKey, replaced)
+      if (replaced.launchToken && replaced.launchToken !== launchToken) {
+        this.ownershipByToken.delete(replaced.launchToken)
+      }
+    }
+    // The token now attributes the NEWEST session; the prior record keeps its
+    // key but drops the token claim so a rollback cannot delete the wrong one.
+    const { launchToken: _dropped, ...priorWithoutToken } = bound
+    this.vaultIndex.remove(boundKey, bound)
+    this.records.set(boundKey, priorWithoutToken)
+    this.vaultIndex.add(boundKey, priorWithoutToken)
+    this.records.set(ownershipKey, record)
+    this.vaultIndex.add(ownershipKey, record)
+    this.ownershipByToken.set(launchToken, ownershipKey)
     this.persistDurable()
     return record
   }
@@ -315,11 +368,37 @@ export class AgentSessionRecordStore {
 
   /** Owner-authorized forget: drop the durable record entirely. */
   forget(key: AgentSessionOwnershipKey): boolean {
-    const deleted = this.deleteDurableRecord(getAgentSessionOwnershipKey(key))
+    const ownershipKey = getAgentSessionOwnershipKey(key)
+    const deleted = this.deleteDurableRecord(ownershipKey)
     if (deleted) {
+      this.forgottenSinceRebuild.add(ownershipKey)
       this.persistDurable()
     }
     return deleted
+  }
+
+  /** Merge late-decrypted on-disk records UNDER the live in-memory ones (a
+   *  fresh bind wins its ownership key), excluding keys forgotten since boot so
+   *  a locked-keychain recovery merge cannot resurrect a forgotten session. */
+  mergeRehydratedRecords(records: Iterable<HostSessionLaunchRecord>): void {
+    const incoming = [...records].filter((record) => {
+      const providerSession = normalizeAgentProviderSession(record?.providerSession)
+      if (!providerSession || typeof record?.worktreeId !== 'string') {
+        // Malformed entries are dropped by rebuildRecordsFrom regardless.
+        return true
+      }
+      if (!isResumableTuiAgent(record.baseAgent)) {
+        return true
+      }
+      return !this.forgottenSinceRebuild.has(
+        getAgentSessionOwnershipKey({
+          worktreeId: record.worktreeId,
+          baseAgent: record.baseAgent,
+          providerSessionId: providerSession.id
+        })
+      )
+    })
+    this.rebuildRecordsFrom([...incoming, ...this.records.values()])
   }
 
   /** Rehydrate durable records at startup. Not routed through the sink. */
@@ -327,41 +406,16 @@ export class AgentSessionRecordStore {
     this.records.clear()
     this.vaultIndex.clear()
     this.ownershipByToken.clear()
+    this.forgottenSinceRebuild.clear()
     for (const record of records) {
-      const providerSession = normalizeAgentProviderSession(record?.providerSession)
-      if (
-        typeof record?.worktreeId !== 'string' ||
-        !record.worktreeId ||
-        !isTuiAgent(record.requestedAgent) ||
-        !isResumableTuiAgent(record.baseAgent) ||
-        !providerSession
-      ) {
+      const rehydrated = rehydrateSessionRecord(record)
+      if (!rehydrated) {
         continue
       }
-      // A present-but-corrupt replay payload is stripped (record kept) so resume
-      // returns the in-band invalid_launch_snapshot rather than throwing.
-      const snapshotOk =
-        record.launchSnapshot === undefined || isWellFormedLaunchSnapshot(record.launchSnapshot)
-      const legacyOk =
-        record.legacyLaunchConfig === undefined ||
-        isWellFormedLegacyLaunchConfig(record.legacyLaunchConfig)
-      const rehydrated: HostSessionLaunchRecord =
-        snapshotOk && legacyOk
-          ? record
-          : {
-              ...record,
-              launchSnapshot: snapshotOk ? record.launchSnapshot : undefined,
-              legacyLaunchConfig: legacyOk ? record.legacyLaunchConfig : undefined
-            }
-      const ownershipKey = getAgentSessionOwnershipKey({
-        worktreeId: rehydrated.worktreeId,
-        baseAgent: rehydrated.baseAgent,
-        providerSessionId: providerSession.id
-      })
-      this.records.set(ownershipKey, rehydrated)
-      this.vaultIndex.add(ownershipKey, rehydrated)
-      if (rehydrated.launchToken) {
-        this.ownershipByToken.set(rehydrated.launchToken, ownershipKey)
+      this.records.set(rehydrated.ownershipKey, rehydrated.record)
+      this.vaultIndex.add(rehydrated.ownershipKey, rehydrated.record)
+      if (rehydrated.record.launchToken) {
+        this.ownershipByToken.set(rehydrated.record.launchToken, rehydrated.ownershipKey)
       }
     }
   }

@@ -7,6 +7,7 @@
 import type { CommitMessageAiSettings, TerminalQuickCommand } from './types'
 import type { SourceControlAiSettings } from './source-control-ai-types'
 import type { AgentProjectionStatus } from './agent-catalog-snapshot'
+import type { AgentLaunchIntentKind } from './agent-launch-contract'
 
 export type AgentReferenceSnapshot = {
   version: 1
@@ -72,15 +73,10 @@ export type AgentReferenceMutationRequest = {
   mutation: AgentReferenceMutation
 }
 
-/** Serializable launch-intent kind persisted in records; the richer LaunchIntent
- *  union lives beside the main resolver and is never an RPC parameter. */
-export type AgentLaunchIntentKind =
-  | 'interactive'
-  | 'cli'
-  | 'automation'
-  | 'background'
-  | 'orchestration'
-  | 'resume'
+// Re-exported so existing importers of this module keep working; the
+// canonical definition lives in agent-launch-contract.ts (L8-#2 — this was
+// previously a second, independently-maintained copy of the same union).
+export type { AgentLaunchIntentKind }
 
 /** Persisted-owner kinds; maps one-to-one onto the tombstone reference index. */
 export type AgentReferenceOwnerKind =

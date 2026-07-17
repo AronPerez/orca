@@ -21,6 +21,15 @@ export function applyUpdateBuiltIn(
   if (!isBuiltInTuiAgent(mutation.agent)) {
     return { ok: false, code: 'invalid_agent_field', reason: 'identity_mismatch' }
   }
+  // IPC validates only the request envelope; malformed changes payloads must
+  // fail typed instead of throwing on the field accesses below.
+  const changes: unknown = mutation.changes
+  if (typeof changes !== 'object' || changes === null || Array.isArray(changes)) {
+    return { ok: false, code: 'invalid_agent_field', reason: 'bounds' }
+  }
+  if (typeof mutation.changes.args !== 'string') {
+    return { ok: false, code: 'invalid_agent_field', field: 'args', reason: 'bounds' }
+  }
   // Built-in prefixes keep multi-token wrapper compatibility, so only
   // control characters and bounds are save-rejected here; operator tokens
   // fail at launch with a repairable error instead of being reinterpreted.
@@ -39,7 +48,7 @@ export function applyUpdateBuiltIn(
       }
     }
   }
-  if (typeof mutation.changes.args === 'string' && mutation.changes.args.length > 8192) {
+  if (mutation.changes.args.length > 8192) {
     return { ok: false, code: 'invalid_agent_field', field: 'args', reason: 'bounds' }
   }
   // Built-in env applies the full custom-agent env rules: reserved ORCA_*

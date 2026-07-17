@@ -54,16 +54,23 @@ export const AiVaultPrepareSessionResumeParams = z.object({
   executionHostId: z.string().optional()
 })
 
+// L4-m12: `filePath` is trusted-desktop-IPC-only (the 'copy' vaultResume path);
+// every runtime/paired RPC surface omits it and the host re-derives it from its
+// own fresh entry. AgentLaunchVaultResumeEntrySchema still admits it (needed by
+// the desktop 'copy' path), so these two RPC-only params drop it explicitly
+// rather than just relying on the comment above to keep callers honest.
+const AiVaultResumeRpcEntrySchema = AgentLaunchVaultResumeEntrySchema.omit({ filePath: true })
+
 // Host-owned 'copy' vault-resume: the client echoes a discovered entry's identity
 // (filePath omitted on this untrusted surface — the host re-derives it) and the
 // runtime re-validates it against its own fresh scan before returning the
 // assembled command string. Unknown/mismatch → in-band invalid_launch_snapshot.
 export const AiVaultResumeCommandParams = z.object({
-  entry: AgentLaunchVaultResumeEntrySchema
+  entry: AiVaultResumeRpcEntrySchema
 })
 
 export const AiVaultResumeDetailsParams = z.object({
-  entry: AgentLaunchVaultResumeEntrySchema
+  entry: AiVaultResumeRpcEntrySchema
 })
 
 export const AI_VAULT_METHODS: RpcMethod[] = [

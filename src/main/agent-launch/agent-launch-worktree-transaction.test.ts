@@ -122,6 +122,7 @@ function params(
     clientMutationId: null,
     requestedAgent: 'claude',
     intent: 'interactive',
+    principal: { kind: 'local' },
     execute,
     ...extra
   }
@@ -215,6 +216,73 @@ describe('runWorktreeAgentLaunchTransaction', () => {
       expect(outcome.failure.code).toBe('spawn_failed')
     }
     expect(persistFailure).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks the token spawn-in-flight for the whole beginPending→settle window', async () => {
+    // Regression (L4-M2): a reconcile pass firing while the spawn is running
+    // must be able to skip this token — the PTY registers it only after spawn
+    // resolves, so mid-spawn it looks absent and would false-settle.
+    const { deps, operationStore } = makeDeps({})
+    let inFlightDuringSpawn: boolean | null = null
+    deps.spawn = vi.fn(async () => {
+      inFlightDuringSpawn = operationStore.isSpawnInFlight('tok-1')
+      return { terminalId: 'term-1' }
+    })
+    await runWorktreeAgentLaunchTransaction(
+      deps,
+      params(async () => ({ ok: true, plan: PLAN, receipt: RECEIPT }))
+    )
+    expect(inFlightDuringSpawn).toBe(true)
+    expect(operationStore.isSpawnInFlight('tok-1')).toBe(false)
+  })
+
+  it('clears the in-flight mark when the spawn throws', async () => {
+    const spawn = vi.fn(async () => {
+      throw new Error('pty boom')
+    })
+    const { deps, operationStore } = makeDeps({ spawn })
+    await runWorktreeAgentLaunchTransaction(
+      deps,
+      params(async () => ({ ok: true, plan: PLAN, receipt: RECEIPT }))
+    )
+    expect(operationStore.isSpawnInFlight('tok-1')).toBe(false)
+  })
+
+  it('writes the settled ledger entry BEFORE clearing the pending snapshot (both arms)', async () => {
+    // Regression (L3b-#9): a crash between the two durable writes must never
+    // lose both the pending attribution and the settled entry.
+    const order: string[] = []
+    const { deps, operationStore } = makeDeps({})
+    const recordSettled = operationStore.recordSettled.bind(operationStore)
+    operationStore.recordSettled = ((entry) => {
+      order.push(`recordSettled:${entry.status}`)
+      return recordSettled(entry)
+    }) as typeof operationStore.recordSettled
+    const clearPending = operationStore.clearPending.bind(operationStore)
+    operationStore.clearPending = ((token) => {
+      order.push('clearPending')
+      return clearPending(token)
+    }) as typeof operationStore.clearPending
+
+    await runWorktreeAgentLaunchTransaction(
+      deps,
+      params(async () => ({ ok: true, plan: PLAN, receipt: RECEIPT }))
+    )
+    expect(order).toEqual(['recordSettled:launched', 'clearPending'])
+
+    order.length = 0
+    deps.spawn = vi.fn(async () => {
+      throw new Error('pty boom')
+    })
+    await runWorktreeAgentLaunchTransaction(
+      deps,
+      params(async () => ({
+        ok: true,
+        plan: PLAN,
+        receipt: { ...RECEIPT, launchToken: 'tok-2' }
+      }))
+    )
+    expect(order).toEqual(['recordSettled:failed', 'clearPending'])
   })
 
   it('performs no owner-state write on a request error', async () => {

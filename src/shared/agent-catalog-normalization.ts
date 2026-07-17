@@ -139,6 +139,21 @@ export function normalizeAgentCatalog(
       }
       continue
     }
+    // A corrupt row (e.g. base mismatch) that still carries a duplicated id must
+    // join the duplicate group, or resolve-duplicate-id can never cover it and
+    // the group repair loops forever.
+    const corruptId = row.row.id
+    if (
+      corruptId !== undefined &&
+      duplicateIds.has(corruptId) &&
+      !row.row.issues.some((issue) => issue.reason === 'duplicate_id')
+    ) {
+      corruptRows.push({
+        ...row.row,
+        issues: [...row.row.issues, { field: 'identity', reason: 'duplicate_id' }]
+      })
+      continue
+    }
     corruptRows.push(row.row)
   }
 

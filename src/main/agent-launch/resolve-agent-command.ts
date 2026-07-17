@@ -177,6 +177,24 @@ function buildPrefix(
         }
       }
     }
+    // The legacy prefix tokenizer only rejects `& | ; < >` + control chars, so on
+    // cmd a `%NAME%`/`!DELAYED!`/`^`/`"` in a prefix token would reach the writer
+    // and trigger cmd expansion — fail closed like every other cmd-quoted band.
+    if (shell === 'cmd') {
+      for (const token of tokenized.tokens) {
+        if (CMD_UNENCODABLE_CHAR_RE.test(token)) {
+          return {
+            ok: false,
+            failure: {
+              code: 'invalid_agent_args',
+              field: 'commandOverride',
+              reason: 'cmd_metachar',
+              shell: 'cmd'
+            }
+          }
+        }
+      }
+    }
     if (tokenized.tokens.length > 0) {
       const expanded = expandTilde(tokenized.tokens[0], shell, targetHomePath)
       if (!expanded.ok) {
@@ -216,24 +234,28 @@ export function assembleCommand(input: AssembleCommandInput): AssembleCommandRes
     return recipeArgs
   }
 
-  const scanTexts = [
+  const argvScanTexts = [
     ...(input.commandOverride ? [canonicalizeCommandOverride(input.commandOverride)] : []),
     ...args.tokens,
-    ...recipeArgs.tokens,
-    ...input.envValues
+    ...recipeArgs.tokens
   ]
-  const referenced = collectReferencedVariables(scanTexts)
+  // Env values are required if they reference a variable, so they count toward the
+  // missing-variable scan; but they are delivered in the process environment block
+  // (not the cmd command line), so they are excluded from the cmd-metachar guard.
+  const referenced = collectReferencedVariables([...argvScanTexts, ...input.envValues])
+  const argvReferenced = collectReferencedVariables(argvScanTexts)
   const missing = firstMissingVariable(referenced, input.values)
   if (missing) {
     return { ok: false, failure: { code: 'missing_variable', variable: missing } }
   }
 
-  // A referenced variable value carrying a cmd-unencodable char fails closed on
-  // either the custom or legacy built-in path before any writer runs.
+  // A variable value carrying a cmd-unencodable char that reaches the cmd command
+  // line fails closed before any writer runs. Env-only references are exempt: the
+  // environment block encodes %/!/^/" faithfully, unlike the double-quoted argv.
   if (input.shell === 'cmd') {
     for (const name of LAUNCH_VARIABLE_ORDER) {
       const value = input.values[name]
-      if (referenced.has(name) && value && CMD_UNENCODABLE_CHAR_RE.test(value)) {
+      if (argvReferenced.has(name) && value && CMD_UNENCODABLE_CHAR_RE.test(value)) {
         return {
           ok: false,
           failure: { code: 'invalid_agent_args', reason: 'cmd_metachar', shell: 'cmd' }

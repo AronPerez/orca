@@ -1696,6 +1696,67 @@ describe('orchestration RPC methods', () => {
         settleSpy.mockRestore()
       }
     })
+
+    // Regression for L4-m13: a crash between db.forgetDispatch and the
+    // op-store settle leaves the DB row 'forgotten' but the op-store pending
+    // (and its reservation) still held. A retried Forget must hit the
+    // idempotent early-return path AND still settle the op-store, not skip it.
+    it('settles a still-pending op-store entry on the idempotent replay path', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const dispatchCtx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(dispatchCtx.id, strandedFailure)
+
+      const operationStore = getHostAgentLaunchOperationStore()
+      operationStore.beginPending({
+        operationId: 'op-dispatch-2',
+        idempotencyKey: 'idem-dispatch-2',
+        scope: dispatchCtx.id,
+        clientMutationId: null,
+        payloadDigest: 'digest-dispatch-2',
+        launchToken: 'token-dispatch-2',
+        intent: 'orchestration',
+        snapshot: {
+          version: 1,
+          requestedAgent: 'claude',
+          baseAgent: 'claude',
+          displayLabel: 'Claude',
+          mode: 'built-in',
+          argv: ['claude'],
+          agentEnv: {},
+          capturedEnvPolicy: 'none',
+          target: {
+            platform: 'darwin',
+            execution: 'native',
+            shell: 'posix',
+            isRemote: true,
+            executionHostId: 'ssh:host'
+          }
+        }
+      })
+      // Simulate the crash: the DB row is already 'forgotten' via the raw DB
+      // call, but the op-store pending above was never settled.
+      db.forgetDispatch(dispatchCtx.id)
+      expect(db.getDispatchContextById(dispatchCtx.id)?.status).toBe('forgotten')
+
+      const settleSpy = vi.spyOn(getHostAgentLaunchBoundary(), 'settleAgentLaunch')
+      try {
+        const result = (await call('orchestration.dispatchForget', {
+          task: task.id
+        })) as { dispatch: { status: string } | null }
+
+        // Idempotent path still returns the forgotten dispatch...
+        expect(result.dispatch?.status).toBe('forgotten')
+        // ...but this retry is what finally released the stranded reservation.
+        expect(operationStore.getPending('token-dispatch-2')).toBeNull()
+        expect(operationStore.settledForScope(dispatchCtx.id)).toMatchObject([
+          { operationId: 'op-dispatch-2', status: 'forgotten', terminalId: null, failureId: null }
+        ])
+        expect(settleSpy).toHaveBeenCalledWith('token-dispatch-2', 'failed')
+      } finally {
+        settleSpy.mockRestore()
+      }
+    })
   })
 
   describe('orchestration.dispatchShowRaw', () => {

@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { safeStorage } from 'electron'
 import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secure-file'
 import type {
+  AgentSessionRecordStore,
   AgentSessionRecordStoreDurableState,
   HostSessionLaunchRecord
 } from './agent-session-record-store'
@@ -152,21 +153,50 @@ export function writeAgentSessionRecordStoreState(
 export function initHostAgentSessionRecordStorePersistence(userDataPath: string): void {
   const path = agentSessionRecordStorePath(userDataPath)
   const cipher = electronSafeStorageCipher()
+  initAgentSessionRecordStorePersistence(getHostAgentSessionRecordStore(), path, cipher)
+}
+
+/** Cipher-injected core of the boot wiring, split out so the locked-keychain
+ *  recovery path is unit-testable without Electron. */
+export function initAgentSessionRecordStorePersistence(
+  store: AgentSessionRecordStore,
+  path: string,
+  cipher: AgentSessionRecordCipher
+): void {
   const state = loadAgentSessionRecordStoreState(path, cipher)
-  const store = getHostAgentSessionRecordStore()
   store.rebuildRecordsFrom(state.records)
-  if (state.decryptionUnavailable) {
-    // Fail safe: the encrypted records exist but the keychain could not read
-    // them this boot. Attaching the sink would let the next mutation rewrite the
-    // store with the empty set, permanently destroying resume records.
+  const attachWriteBackSink = (): void => {
+    store.setDurablePersistence((next) => {
+      try {
+        writeAgentSessionRecordStoreState(path, next, cipher)
+      } catch {
+        // A failed persist must not break an in-flight bind; the in-memory store
+        // stays authoritative and the next mutation retries the write.
+      }
+    })
+  }
+  if (!state.decryptionUnavailable) {
+    attachWriteBackSink()
     return
   }
-  store.setDurablePersistence((next) => {
+  // Locked/late keychain at boot: the ciphertext on disk is intact but
+  // unreadable NOW. A plain write-back sink would overwrite it with the empty
+  // in-memory set on the first mutation, so instead attach a recovery sink that
+  // re-probes the cipher on each durable mutation. Once decryption works, the
+  // on-disk records are merged UNDER the in-memory ones (fresh binds win their
+  // ownership keys), the write-back sink takes over, and later forgets stick
+  // instead of resurrecting from ciphertext next boot.
+  store.setDurablePersistence(() => {
+    if (!cipher.available()) {
+      return
+    }
     try {
-      writeAgentSessionRecordStoreState(path, next, cipher)
+      const onDisk = loadAgentSessionRecordStoreState(path, cipher)
+      store.mergeRehydratedRecords(onDisk.records)
+      attachWriteBackSink()
+      writeAgentSessionRecordStoreState(path, store.durableState(), cipher)
     } catch {
-      // A failed persist must not break an in-flight bind; the in-memory store
-      // stays authoritative and the next mutation retries the write.
+      // Keep the recovery sink armed; the next mutation retries.
     }
   })
 }

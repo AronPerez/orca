@@ -6,6 +6,10 @@ import {
   getClientWorktreeCreateCandidate,
   isRetryableWorktreeCreateConflict
 } from '../../../src/shared/new-workspace/worktree-create-retry-policy'
+import type {
+  AgentLaunchFailureCode,
+  AgentLaunchRequestError
+} from '../../../src/shared/agent-launch-contract'
 import { WORKTREE_CREATE_TIMEOUT_MS } from './workspace-create-timeout'
 
 // Why: server-side collision checks (branch already exists locally / on a remote
@@ -31,6 +35,33 @@ export type CreateWorktreeWithNameRetryArgs = {
   maxAttempts?: number
   // Injected in tests; production mints a fresh idempotency key per candidate.
   mintMutationId?: () => string
+}
+
+// worktree.create's RPC-success envelope is a union: the created arm carries
+// `worktree`, while a pre-create agent-launch rejection (tombstoned/disabled
+// custom agent, capacity, etc.) is `{ created: false, agentLaunchResult }` with
+// no worktree at all — see NotCreatedWorktreeResult in src/shared/types.ts.
+type WorktreeCreateSuccess = { worktree: { id: string } }
+type WorktreeCreateRejection = {
+  agentLaunchResult:
+    | { status: 'failed'; failure: { code: AgentLaunchFailureCode } }
+    | { status: 'rejected'; requestError: AgentLaunchRequestError }
+}
+
+function isWorktreeCreateRejection(
+  result: WorktreeCreateSuccess | WorktreeCreateRejection
+): result is WorktreeCreateRejection {
+  return !('worktree' in result)
+}
+
+// Maps the typed pre-create rejection to a user-facing message, mirroring how
+// the mobile vault-resume family (ai-vault-resume-outcome.ts) reads a typed
+// outcome instead of assuming the success shape.
+function describeWorktreeCreateRejection(rejection: WorktreeCreateRejection): string {
+  if (rejection.agentLaunchResult.status === 'failed') {
+    return `Couldn't start the agent (${rejection.agentLaunchResult.failure.code}).`
+  }
+  return `Couldn't create the workspace (${rejection.agentLaunchResult.requestError.code}).`
 }
 
 // Creates a worktree, retrying with a numeric suffix on a name-collision error.
@@ -63,7 +94,14 @@ export async function createWorktreeWithNameRetry(
       supportsIdempotentCutoverRetry
     )
     if (response.ok) {
-      const result = (response as RpcSuccess).result as { worktree: { id: string } }
+      const result = (response as RpcSuccess).result as
+        | WorktreeCreateSuccess
+        | WorktreeCreateRejection
+      // A pre-create rejection is not a name collision, so re-suffixing and
+      // retrying can never fix it — surface it immediately instead of looping.
+      if (isWorktreeCreateRejection(result)) {
+        return { error: describeWorktreeCreateRejection(result) }
+      }
       return { worktreeId: result.worktree.id, name: candidateName }
     }
     lastError = response.error.message

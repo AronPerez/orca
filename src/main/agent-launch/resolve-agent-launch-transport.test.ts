@@ -90,6 +90,25 @@ describe('secure env transport gating', () => {
     expect(outcome.ok).toBe(true)
   })
 
+  it('fails env-bearing resolution on a remote target when confidentiality is unproven', () => {
+    // A remote surface that never threaded the capability must fail closed rather
+    // than ship env over a possibly-plaintext channel; only `=== true` allows it.
+    const outcome = resolveAgentLaunch(
+      requestOf({
+        selection: { kind: 'agent', agent: AGENT_ID },
+        isRemote: true,
+        executionHostId: 'ssh:host-1'
+      }),
+      envBearingCatalog(),
+      settingsOf()
+    )
+    expect(outcome.ok).toBe(false)
+    if (outcome.ok || !('failure' in outcome)) {
+      return
+    }
+    expect(outcome.failure.code).toBe('secure_env_transport_unavailable')
+  })
+
   it('gates snapshot replay carrying captured env the same way', () => {
     const confidential = resolveAgentLaunch(
       requestOf({

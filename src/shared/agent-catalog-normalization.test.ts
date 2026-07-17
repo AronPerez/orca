@@ -59,3 +59,33 @@ describe('duplicate-id rows keep their persisted physical index', () => {
     expect(remaining).toEqual([repairRequired, shadowed])
   })
 })
+
+describe('corrupt rows sharing a duplicated id join the duplicate group (L1-#4)', () => {
+  it('flags a base-mismatch corrupt row with duplicate_id alongside its valid sibling', () => {
+    const duplicateId = customId('codex', UUID_A)
+    const valid = liveAgent({ id: duplicateId, label: 'One' })
+    // Valid id syntax, but the persisted baseAgent disagrees with the id's base:
+    // corrupt-kind, not repair-required.
+    const baseMismatch = {
+      ...liveAgent({ id: duplicateId, label: 'Two' }),
+      baseAgent: 'claude' as const
+    }
+
+    const { catalog } = normalizeAgentCatalog({
+      customTuiAgents: [valid, baseMismatch],
+      deletedCustomTuiAgents: [],
+      disabledTuiAgents: [],
+      defaultTuiAgent: 'auto'
+    })
+
+    const groupRows = catalog.corruptRows.filter(
+      (row) => row.id === duplicateId && row.issues.some((issue) => issue.reason === 'duplicate_id')
+    )
+    // Both physical records carry duplicate_id, so resolve-duplicate-id can
+    // cover the whole group instead of looping on the mismatch row.
+    expect(groupRows.map((row) => row.physicalIndex).sort()).toEqual([0, 1])
+    const mismatchRow = groupRows.find((row) => row.physicalIndex === 1)
+    expect(mismatchRow?.issues.map((issue) => issue.reason)).toContain('identity_mismatch')
+    expect(catalog.liveById.has(duplicateId)).toBe(false)
+  })
+})

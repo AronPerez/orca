@@ -69,6 +69,37 @@ describe('command override assembly', () => {
   })
 })
 
+describe('env value interpolation', () => {
+  it('substitutes {worktreePath}/{repoPath} tokens in admitted env values', () => {
+    const outcome = resolveCustom(
+      {
+        env: { LOG_DIR: '{worktreePath}/logs', REPO: '{repoPath}', PLAIN: 'keep' },
+        syncEnv: true
+      },
+      { variables: { worktreePath: '/wt/x', repoPath: '/repo/y' } }
+    )
+    if (!outcome.ok) {
+      throw new Error(`expected launch, got ${JSON.stringify(outcome)}`)
+    }
+    expect(outcome.launch.agentEnv).toMatchObject({
+      LOG_DIR: '/wt/x/logs',
+      REPO: '/repo/y',
+      PLAIN: 'keep'
+    })
+  })
+
+  it('still requires a variable referenced only in an env value', () => {
+    const outcome = resolveCustom(
+      { env: { LOG_DIR: '{worktreePath}/logs' }, syncEnv: true },
+      { variables: {} }
+    )
+    expect(failureOf(outcome)).toMatchObject({
+      code: 'missing_variable',
+      variable: 'worktreePath'
+    })
+  })
+})
+
 describe('legacy built-in prefix', () => {
   it('rejects whitespace-delimited operator syntax as invalid_command_override', () => {
     const outcome = resolveAgentLaunch(

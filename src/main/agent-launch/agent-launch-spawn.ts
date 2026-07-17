@@ -22,7 +22,10 @@ import type {
   ResolvedAgentLaunch
 } from '../../shared/agent-launch-host-contract'
 import type { AgentProviderSessionMetadata } from '../../shared/agent-session-resume'
-import type { AgentLaunchSpawnRequest } from '../../shared/agent-launch-spawn-request'
+import type {
+  AgentLaunchSourceRecord,
+  AgentLaunchSpawnRequest
+} from '../../shared/agent-launch-spawn-request'
 import { isSourceControlActionId } from '../../shared/source-control-ai-actions'
 import { resolveSourceControlActionRecipe } from '../../shared/source-control-ai'
 import { normalizeCatalogFromSettings } from './agent-catalog-projections'
@@ -66,6 +69,10 @@ export type AgentLaunchSpawnInput = {
    *  absent falls back to the global recipe. */
   recipeRepo?: Pick<Repo, 'sourceControlAi'> | null
   scope: string
+  /** Target worktree for the per-worktree admission cap (G6). The scope already
+   *  IS the worktree for interactive worktree launches; unattended launches
+   *  scope by run/dispatch/attempt id and must name the worktree here. */
+  worktreeId?: string | null
   principal: AdmissionPrincipal
   persistedSnapshot?: AgentLaunchSnapshot
   /** Provider session for a resume/fork replay; drives the resolver's resume-argv
@@ -77,6 +84,33 @@ export type AgentLaunchSpawnResolution =
   | { ok: true; plan: AgentStartupPlan; receipt: AgentLaunchReceipt }
   | { ok: false; failure: AgentLaunchFailure }
   | { ok: false; requestError: AgentLaunchRequestError }
+
+/** The only sourceRecord owner a CLIENT-authored request may claim: the recipe
+ *  id is host-validated (isSourceControlActionId, else untrusted_reference).
+ *  Every other owner ('workspace', 'session', …) is host-constructed by the
+ *  retry/resume ingestion paths from state the host already verified — a client
+ *  echoing one would forge persisted fallback authority for a tombstoned or
+ *  disabled id, bypassing the untrusted_reference gate. */
+const CLIENT_CLAIMABLE_SOURCE_RECORD_OWNERS: ReadonlySet<AgentLaunchSourceRecord['owner']> =
+  new Set(['source-control-recipe'])
+
+/** Strip unverifiable persisted authority from a client-authored request BEFORE
+ *  resolution, per the request schema's header: the host constructs authority
+ *  from authenticated context, never from this payload. Apply at every seam
+ *  where client JSON enters the launch pipeline; host-constructed requests
+ *  (retry/resume) do not pass through this. */
+export function sanitizeClientAgentLaunchSourceRecord(
+  request: AgentLaunchSpawnRequest
+): AgentLaunchSpawnRequest {
+  if (
+    !request.sourceRecord ||
+    CLIENT_CLAIMABLE_SOURCE_RECORD_OWNERS.has(request.sourceRecord.owner)
+  ) {
+    return request
+  }
+  const { sourceRecord: _dropped, ...rest } = request
+  return rest
+}
 
 /** Derive the reference authority host-side from the requested selection and any
  *  host-verified saved owner. A live selection cannot forge persisted fallback
@@ -204,6 +238,7 @@ export async function resolveAgentLaunchSpawn(
 
   return deps.boundary.executeAgentLaunch({
     scope: input.scope,
+    ...(input.worktreeId !== undefined ? { worktreeId: input.worktreeId } : {}),
     principal: input.principal,
     resolve,
     prompt: input.request.prompt ?? '',

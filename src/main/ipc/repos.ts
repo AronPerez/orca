@@ -31,6 +31,10 @@ import { DEFAULT_REPO_BADGE_COLOR } from '../../shared/constants'
 import { normalizeRepoBadgeColor } from '../../shared/repo-badge-color'
 import { sanitizeRepoIcon } from '../../shared/repo-icon'
 import { normalizeRepoSourceControlAiOverrides } from '../../shared/source-control-ai'
+import type { RepoSourceControlAiOverrides } from '../../shared/source-control-ai-types'
+import type { SourceControlActionId } from '../../shared/source-control-ai-actions'
+import { normalizeAgentCatalog } from '../../shared/custom-tui-agents'
+import { decideAgentField } from '../agent-launch/agent-reference-field-decision'
 import {
   isRuntimePathAbsolute,
   normalizeRuntimePathForComparison,
@@ -1092,6 +1096,63 @@ async function runNestedRepoScanForIpc(
   }
 }
 
+/** Repo action overrides are persisted agent references, so they follow the
+ *  field-level stale-reference write rule the global owners enforce: a *changed*
+ *  agentId must be a currently enabled live identity, or a client could mint a
+ *  permanent tombstone reference (via the source-control-recipe owner scanner)
+ *  or clobber a stored id with an unknown/tombstoned/disabled one. Invalid
+ *  changes preserve the stored value — this handler's strip-don't-throw rule —
+ *  so the rest of the update still persists. */
+function sanitizeRepoActionOverrideAgentReferences(
+  overrides: RepoSourceControlAiOverrides,
+  storedRepoOverrides: Repo['sourceControlAi'] | undefined,
+  settings: ReturnType<Store['getSettings']>
+): void {
+  const actionOverrides = overrides.actionOverrides
+  if (!actionOverrides) {
+    return
+  }
+  const catalog = normalizeAgentCatalog({
+    customTuiAgents: settings.customTuiAgents,
+    deletedCustomTuiAgents: settings.deletedCustomTuiAgents,
+    disabledTuiAgents: settings.disabledTuiAgents,
+    defaultTuiAgent: settings.defaultTuiAgent
+  }).catalog
+  const storedActionOverrides =
+    normalizeRepoSourceControlAiOverrides(storedRepoOverrides)?.actionOverrides
+  for (const actionId of Object.keys(actionOverrides) as SourceControlActionId[]) {
+    const row = actionOverrides[actionId]
+    if (!row || !Object.prototype.hasOwnProperty.call(row, 'agentId')) {
+      continue
+    }
+    const storedRow = storedActionOverrides?.[actionId]
+    const storedAgent =
+      storedRow && Object.prototype.hasOwnProperty.call(storedRow, 'agentId')
+        ? storedRow.agentId
+        : undefined
+    const decision = decideAgentField({
+      incoming: row.agentId,
+      stored: storedAgent ?? null,
+      catalog,
+      allowCustomSentinel: true
+    })
+    if (decision.ok) {
+      continue
+    }
+    if (storedAgent !== undefined) {
+      row.agentId = storedAgent
+      continue
+    }
+    delete row.agentId
+    if (Object.keys(row).length === 0) {
+      delete actionOverrides[actionId]
+    }
+  }
+  if (Object.keys(actionOverrides).length === 0) {
+    delete overrides.actionOverrides
+  }
+}
+
 export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): void {
   // Remove previously registered handlers so we can re-register on macOS app re-activation (new window).
   ipcMain.removeHandler('repos:list')
@@ -2040,6 +2101,11 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
         if (normalizedSourceControlAi === undefined) {
           delete updates.sourceControlAi
         } else {
+          sanitizeRepoActionOverrideAgentReferences(
+            normalizedSourceControlAi,
+            store.getRepo(args.repoId)?.sourceControlAi,
+            store.getSettings()
+          )
           updates.sourceControlAi = normalizedSourceControlAi
         }
       }

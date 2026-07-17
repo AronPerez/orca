@@ -2,21 +2,23 @@
 // commit-message agent choice, Source Control AI settings). Enforces the
 // field-level stale-reference write rule so unrelated edits save while a proven
 // stale reference is preserved, and a *changed* agent must be a currently
-// effectively enabled live identity.
+// effectively enabled live identity. Quick-command owner cases live in
+// agent-reference-quick-command-mutations.ts.
 
-import type {
-  CommitMessageAiSettings,
-  GlobalSettings,
-  TerminalQuickCommand,
-  TuiAgent
-} from '../../shared/types'
+import type { CommitMessageAiSettings, GlobalSettings, TuiAgent } from '../../shared/types'
 import type { SourceControlAiSettings } from '../../shared/source-control-ai-types'
 import type { AgentReferenceMutationRequest } from '../../shared/agent-reference-snapshot'
-import { CUSTOM_AGENT_ID } from '../../shared/commit-message-agent-spec'
-import { isBuiltInTuiAgent } from '../../shared/tui-agent-config'
 import type { AgentCatalog } from '../../shared/custom-tui-agents'
-import { supportsTerminalAgentQuickCommand } from '../../shared/terminal-quick-commands'
 import { decideAgentField } from './agent-reference-field-decision'
+import {
+  applyQuickCommandDelete,
+  applyQuickCommandSave,
+  applyQuickCommandsReorder
+} from './agent-reference-quick-command-mutations'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 export type AgentReferenceMutationError = {
   ok: false
@@ -56,114 +58,23 @@ export function applyAgentReferenceMutation(
   const mutation = request.mutation
 
   switch (mutation.kind) {
-    case 'quick-command-save': {
-      const incoming = mutation.command
-      if (
-        !incoming ||
-        typeof incoming !== 'object' ||
-        typeof incoming.id !== 'string' ||
-        incoming.id.length === 0 ||
-        typeof incoming.label !== 'string'
-      ) {
+    case 'quick-command-save':
+      return applyQuickCommandSave(mutation, settings, catalog, newReferenceRevision)
+    case 'quick-command-delete':
+      return applyQuickCommandDelete(mutation.id, settings, newReferenceRevision)
+    case 'quick-commands-reorder':
+      return applyQuickCommandsReorder(mutation, settings, newReferenceRevision)
+    case 'commit-message-update': {
+      // IPC validates only the envelope; null/array changes would throw on the
+      // `in` checks below instead of returning a typed error.
+      if (!isRecord(mutation.changes)) {
         return {
           ok: false,
           code: 'invalid_reference_field',
-          owner: 'quick-command',
+          owner: 'commit-message',
           reason: 'bounds'
         }
       }
-      const commands = settings.terminalQuickCommands ?? []
-      const existing = commands.find((command) => command.id === incoming.id)
-      let toStore: TerminalQuickCommand = incoming
-      if (incoming.action === 'agent-prompt') {
-        const storedAgent =
-          existing && existing.action === 'agent-prompt' ? existing.agent : undefined
-        const decision = decideAgentField({
-          incoming: incoming.agent,
-          stored: storedAgent,
-          catalog,
-          allowCustomSentinel: false
-        })
-        if (!decision.ok) {
-          return {
-            ok: false,
-            code: 'invalid_agent_reference',
-            owner: 'quick-command',
-            field: 'agent',
-            reason: decision.reason
-          }
-        }
-        // An agent-prompt quick command cannot exist without an agent: an
-        // omitted field keeps the stored reference; there is nothing to clear to.
-        const agent = decision.value === undefined ? storedAgent : decision.value
-        if (agent === null || agent === undefined || agent === CUSTOM_AGENT_ID) {
-          return {
-            ok: false,
-            code: 'invalid_agent_reference',
-            owner: 'quick-command',
-            field: 'agent',
-            reason: 'unknown_agent'
-          }
-        }
-        // Base capability must hold at save time: normalization silently drops
-        // stdin-after-start rows later, so an incapable base must fail the save
-        // rather than return ok while the command vanishes. A stale custom id
-        // whose base cannot be proven stays preserved per the field-level rule.
-        const capabilityBase = isBuiltInTuiAgent(agent)
-          ? agent
-          : catalog.liveById.get(agent)?.baseAgent
-        if (capabilityBase !== undefined && !supportsTerminalAgentQuickCommand(capabilityBase)) {
-          return {
-            ok: false,
-            code: 'invalid_agent_reference',
-            owner: 'quick-command',
-            field: 'agent',
-            reason: 'unknown_agent'
-          }
-        }
-        toStore = { ...incoming, agent }
-      }
-      const next = existing
-        ? commands.map((command) => (command.id === incoming.id ? toStore : command))
-        : [...commands, toStore]
-      return {
-        ok: true,
-        patch: { terminalQuickCommands: next, agentReferenceRevision: newReferenceRevision },
-        newReferenceRevision
-      }
-    }
-    case 'quick-command-delete': {
-      const commands = settings.terminalQuickCommands ?? []
-      const next = commands.filter((command) => command.id !== mutation.id)
-      return {
-        ok: true,
-        patch: { terminalQuickCommands: next, agentReferenceRevision: newReferenceRevision },
-        newReferenceRevision
-      }
-    }
-    case 'quick-commands-reorder': {
-      const commands = settings.terminalQuickCommands ?? []
-      const byId = new Map(commands.map((command) => [command.id, command]))
-      if (
-        mutation.orderedIds.length !== commands.length ||
-        mutation.orderedIds.some((id) => !byId.has(id)) ||
-        new Set(mutation.orderedIds).size !== mutation.orderedIds.length
-      ) {
-        return {
-          ok: false,
-          code: 'invalid_reference_field',
-          owner: 'quick-command',
-          reason: 'conflict'
-        }
-      }
-      const next = mutation.orderedIds.map((id) => byId.get(id) as TerminalQuickCommand)
-      return {
-        ok: true,
-        patch: { terminalQuickCommands: next, agentReferenceRevision: newReferenceRevision },
-        newReferenceRevision
-      }
-    }
-    case 'commit-message-update': {
       const stored = settings.commitMessageAi
       const decision = decideAgentField({
         incoming: 'agentId' in mutation.changes ? mutation.changes.agentId : undefined,
@@ -195,6 +106,22 @@ export function applyAgentReferenceMutation(
       }
     }
     case 'source-control-update': {
+      // Same envelope-only IPC gap as commit-message-update: reject non-record
+      // changes (and a non-record actions map, whose Object.entries would
+      // otherwise iterate string indices into persisted rows) with typed errors.
+      if (
+        !isRecord(mutation.changes) ||
+        (mutation.changes.actions !== undefined &&
+          mutation.changes.actions !== null &&
+          !isRecord(mutation.changes.actions))
+      ) {
+        return {
+          ok: false,
+          code: 'invalid_reference_field',
+          owner: 'source-control-recipe',
+          reason: 'bounds'
+        }
+      }
       const stored = settings.sourceControlAi
       const decision = decideAgentField({
         incoming: 'agentId' in mutation.changes ? mutation.changes.agentId : undefined,

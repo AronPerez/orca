@@ -4,12 +4,17 @@ import { LogicalClientCutoverError } from '../transport/stable-logical-rpc-clien
 import { createWorktreeWithNameRetry } from './worktree-create-retry'
 
 type Attempt = { method: string; params: Record<string, unknown> }
+type ScriptedOutcome =
+  | { id: string }
+  | { errorMessage: string }
+  | { throws: unknown }
+  | { result: unknown }
 
-// A client whose per-call outcome is scripted: return an id, a server error
-// message, or throw (transport-level rejection, e.g. a connection-migration
-// cutover). Records every call so tests can assert on the clientMutationId.
+// A client whose per-call outcome is scripted: return a worktree id or custom
+// RPC-success result, return a server error, or throw a transport rejection.
+// Records every call so tests can assert on the clientMutationId.
 function scriptedClient(
-  outcomes: Array<{ id: string } | { errorMessage: string } | { throws: unknown }>,
+  outcomes: ScriptedOutcome[],
   attempts: Attempt[]
 ): RpcClient {
   let call = 0
@@ -28,6 +33,9 @@ function scriptedClient(
           error: { code: 'x', message: outcome.errorMessage },
           _meta: { runtimeId: 'r' }
         }
+      }
+      if ('result' in outcome) {
+        return { id: '1', ok: true, result: outcome.result, _meta: { runtimeId: 'r' } }
       }
       return {
         id: '1',
@@ -77,6 +85,63 @@ describe('createWorktreeWithNameRetry', () => {
     expect(result).toEqual({ worktreeId: 'wt-1', name: 'otter' })
     expect(attempts).toHaveLength(1)
     expect(attempts[0]!.params).toMatchObject({ name: 'otter', clientMutationId: 'key-1' })
+  })
+
+  // Why: a pre-create agent-launch failure is an RPC success without a
+  // worktree. It must surface the typed outcome instead of dereferencing
+  // `worktree.id` or retrying under a new name.
+  it('surfaces a failed agentLaunchResult without retrying', async () => {
+    const attempts: Attempt[] = []
+    const client = scriptedClient(
+      [
+        {
+          result: {
+            created: false,
+            agentLaunchResult: {
+              status: 'failed',
+              failure: { code: 'custom_agent_disabled' }
+            }
+          }
+        }
+      ],
+      attempts
+    )
+    const result = await createWorktreeWithNameRetry({
+      client,
+      baseName: 'feature',
+      buildParams: (name) => ({ name }),
+      supportsIdempotentCutoverRetry: true,
+      mintMutationId: () => 'key-failed'
+    })
+    expect(result).toEqual({ error: "Couldn't start the agent (custom_agent_disabled)." })
+    expect(attempts).toHaveLength(1)
+  })
+
+  it('surfaces a rejected agentLaunchResult without retrying', async () => {
+    const attempts: Attempt[] = []
+    const client = scriptedClient(
+      [
+        {
+          result: {
+            created: false,
+            agentLaunchResult: {
+              status: 'rejected',
+              requestError: { code: 'untrusted_reference' }
+            }
+          }
+        }
+      ],
+      attempts
+    )
+    const result = await createWorktreeWithNameRetry({
+      client,
+      baseName: 'feature',
+      buildParams: (name) => ({ name }),
+      supportsIdempotentCutoverRetry: true,
+      mintMutationId: () => 'key-rejected'
+    })
+    expect(result).toEqual({ error: "Couldn't create the workspace (untrusted_reference)." })
+    expect(attempts).toHaveLength(1)
   })
 
   it('retries a connection-migration cutover with the SAME key, then succeeds', async () => {

@@ -1,6 +1,7 @@
 import { AlertTriangle, Wrench } from 'lucide-react'
 import { AgentIcon } from '@/lib/agent-catalog'
 import { Button } from '../ui/button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
 import { SettingsSwitch } from './SettingsFormControls'
@@ -20,6 +21,36 @@ export type AgentCatalogRowCallbacks = {
 /** An action rendered disabled with a hover reason instead of live, used while a
  *  later intra-unit landing still owns its dialog. Absent means the action is live. */
 export type AgentCatalogActionDisabled = { disabledReason: string }
+
+/** Surface a disabled action's reason through a focus-reachable Tooltip rather
+ *  than the native `title` attr (STYLEGUIDE: `title` isn't reliably announced by
+ *  assistive tech and isn't focusable). A disabled button emits no pointer/focus
+ *  events, so the span wrapper carries them for keyboard and screen-reader users. */
+function DisabledReason({
+  reason,
+  children
+}: {
+  reason: string | undefined
+  children: React.ReactNode
+}): React.JSX.Element {
+  if (!reason) {
+    return <>{children}</>
+  }
+  return (
+    <TooltipProvider delayDuration={250}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0} className="inline-flex outline-none">
+            {children}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" sideOffset={6} className="max-w-[280px] leading-relaxed">
+          {reason}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
 
 export type AgentCatalogActionAvailability = {
   builtInEdit?: AgentCatalogActionDisabled
@@ -134,17 +165,18 @@ function RepairRow({
           )}
         </p>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="xs"
-        disabled={Boolean(disabled)}
-        title={disabled?.disabledReason}
-        onClick={() => onRepair(row)}
-      >
-        <Wrench className="size-3.5" />
-        {translate('auto.components.settings.AgentCatalogRowView.repair', 'Repair')}
-      </Button>
+      <DisabledReason reason={disabled?.disabledReason}>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          disabled={Boolean(disabled)}
+          onClick={() => onRepair(row)}
+        >
+          <Wrench className="size-3.5" />
+          {translate('auto.components.settings.AgentCatalogRowView.repair', 'Repair')}
+        </Button>
+      </DisabledReason>
     </div>
   )
 }
@@ -173,19 +205,20 @@ function DeletedRow({
               )}
         </p>
       </div>
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        disabled={Boolean(disabled)}
-        title={disabled?.disabledReason}
-        onClick={() => onReviewReferences(row)}
-      >
-        {translate(
-          'auto.components.settings.AgentCatalogRowView.reviewReferences',
-          'Review references'
-        )}
-      </Button>
+      <DisabledReason reason={disabled?.disabledReason}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          disabled={Boolean(disabled)}
+          onClick={() => onReviewReferences(row)}
+        >
+          {translate(
+            'auto.components.settings.AgentCatalogRowView.reviewReferences',
+            'Review references'
+          )}
+        </Button>
+      </DisabledReason>
     </div>
   )
 }

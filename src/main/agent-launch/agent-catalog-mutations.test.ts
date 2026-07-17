@@ -703,3 +703,98 @@ describe('update-built-in', () => {
     expect(collision).toMatchObject({ ok: false, reason: 'case_collision' })
   })
 })
+
+describe('update-custom tombstone prune (L1-#8)', () => {
+  it('persists the prune in the same write when an update takes a freed tombstone label', () => {
+    const live = liveAgent({ label: 'Old Name' })
+    const freed: DeletedCustomTuiAgent = {
+      id: customId('codex', UUID_B),
+      baseAgent: 'codex',
+      label: 'Freed Label',
+      deletedAt: 1
+    }
+    const result = apply({
+      settings: settingsWith({ customTuiAgents: [live], deletedCustomTuiAgents: [freed] }),
+      countTombstoneReferences: () => 0,
+      mutation: {
+        kind: 'update-custom',
+        id: live.id,
+        changes: { label: 'Freed Label', commandOverride: null, args: '', env: {}, syncEnv: false }
+      }
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    // The label check passed against the pruned view, so the prune must land in
+    // the same patch or the freed label would coexist with its tombstone.
+    expect(result.patch.deletedCustomTuiAgents).toEqual([])
+    expect(result.prunedTombstoneIds).toEqual([freed.id])
+  })
+
+  it('retains referenced tombstones and still rejects their labels', () => {
+    const live = liveAgent({ label: 'Old Name' })
+    const kept: DeletedCustomTuiAgent = {
+      id: customId('codex', UUID_B),
+      baseAgent: 'codex',
+      label: 'Kept Label',
+      deletedAt: 1
+    }
+    const result = apply({
+      settings: settingsWith({ customTuiAgents: [live], deletedCustomTuiAgents: [kept] }),
+      countTombstoneReferences: () => 1,
+      mutation: {
+        kind: 'update-custom',
+        id: live.id,
+        changes: { label: 'Kept Label', commandOverride: null, args: '', env: {}, syncEnv: false }
+      }
+    })
+    expect(result).toMatchObject({ ok: false, code: 'duplicate_agent_label' })
+  })
+})
+
+describe('update-built-in malformed payloads (L1-#6)', () => {
+  it('returns a typed error for null changes instead of throwing', () => {
+    const result = apply({
+      mutation: {
+        kind: 'update-built-in',
+        agent: 'codex',
+        changes: null as unknown as { commandOverride: null; args: string; env: {} }
+      }
+    })
+    expect(result).toMatchObject({ ok: false, code: 'invalid_agent_field', reason: 'bounds' })
+  })
+
+  it('returns a typed error when args is missing or not a string instead of throwing', () => {
+    const missingArgs = apply({
+      mutation: {
+        kind: 'update-built-in',
+        agent: 'codex',
+        changes: { commandOverride: null, env: {} } as unknown as {
+          commandOverride: null
+          args: string
+          env: {}
+        }
+      }
+    })
+    expect(missingArgs).toMatchObject({
+      ok: false,
+      code: 'invalid_agent_field',
+      field: 'args',
+      reason: 'bounds'
+    })
+
+    const numberArgs = apply({
+      mutation: {
+        kind: 'update-built-in',
+        agent: 'codex',
+        changes: { commandOverride: null, args: 42, env: {} } as unknown as {
+          commandOverride: null
+          args: string
+          env: {}
+        }
+      }
+    })
+    expect(numberArgs).toMatchObject({ ok: false, field: 'args', reason: 'bounds' })
+  })
+})

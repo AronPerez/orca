@@ -196,6 +196,17 @@ export class AutomationService {
     if (isFinalAutomationRunStatus(run.status)) {
       return run
     }
+    // Why: a non-final status alone doesn't mean stranded — a `dispatched` run
+    // has a confirmed terminal and may have an agent actively working. Only the
+    // reconciler's `launch_state_unknown` marker (agent-launch-reconciliation,
+    // written via automationReconcilePersistence.markUnknown) proves Orca
+    // genuinely lost track of the launch outcome. Mirrors the same gate
+    // agent-launch-worktree-forget.ts applies to worktree/background launches,
+    // closing the hole where any authenticated remote client could force-fail a
+    // healthy run with just a runId.
+    if (run.agentLaunchFailure?.code !== 'launch_state_unknown') {
+      throw new Error(`Automation run ${runId} is not stranded in an unknown launch state.`)
+    }
     // Clear the dispatch token so a late renderer/headless completion for this
     // run is rejected instead of resurrecting the forgotten run.
     clearAutomationDispatchTokens(run.automationId, run.id)

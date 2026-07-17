@@ -151,3 +151,38 @@ describe('migrateAgentCatalogSchema', () => {
     expect(outcome.settingsPatch.agentReferenceRevision).toBe(1)
   })
 })
+
+describe('corrupted schema-version stamp (L1-#8)', () => {
+  it('repairs a malformed stamp without re-running the null->auto default remap', () => {
+    for (const corruptedStamp of [1.5, 'one', Number.NaN, -1, true]) {
+      const outcome = migrateAgentCatalogSchema({
+        settings: {
+          agentCatalogSchemaVersion: corruptedStamp as never,
+          // A repair-generated null default written after v1 must stay null.
+          defaultTuiAgent: null,
+          agentCatalogRevision: 7,
+          agentReferenceRevision: 3
+        },
+        preV1RawContents: '{}',
+        createBackup: () => {
+          throw new Error('a corrupted post-v1 stamp must not re-run the pre-v1 backup step')
+        }
+      })
+      expect(outcome.settingsPatch.defaultTuiAgent).toBeUndefined()
+      expect('defaultTuiAgent' in outcome.settingsPatch).toBe(false)
+      expect(outcome.settingsPatch.agentCatalogSchemaVersion).toBe(1)
+      expect(outcome.didMigrate).toBe(true)
+      expect(outcome.backupError).toBeUndefined()
+    }
+  })
+
+  it('still treats an explicit integer 0 stamp as pre-v1', () => {
+    const outcome = migrateAgentCatalogSchema({
+      settings: { agentCatalogSchemaVersion: 0, defaultTuiAgent: null },
+      preV1RawContents: '{}',
+      createBackup: () => ({ ok: true, created: true })
+    })
+    expect(outcome.settingsPatch.defaultTuiAgent).toBe('auto')
+    expect(outcome.settingsPatch.agentCatalogSchemaVersion).toBe(1)
+  })
+})

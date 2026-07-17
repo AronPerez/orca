@@ -9,6 +9,7 @@ import {
   builtInDraftFromSettings,
   createEnvRow,
   draftFromEditableFields,
+  duplicateEnvKeyIssues,
   emptyDraft,
   isBaseSelectableMode,
   previewArgsTokens,
@@ -88,6 +89,38 @@ describe('serializeEnvRows', () => {
       ['', 'orphan'],
       ['B', '2']
     ])
+  })
+})
+
+describe('duplicateEnvKeyIssues', () => {
+  it('reports a duplicate at the serialized index, not the raw array index', () => {
+    // A fully-blank row before the duplicate makes raw and serialized indices
+    // diverge; the editor renders per-row errors against the serialized index, so
+    // a raw index here would block Save while showing the error on no row.
+    const issues = duplicateEnvKeyIssues([
+      createEnvRow({ key: 'A', value: '1' }),
+      createEnvRow(),
+      createEnvRow({ key: 'A', value: '2' })
+    ])
+    expect(issues).toEqual([{ field: 'env', reason: 'case_collision', envEntryIndex: 1 }])
+  })
+
+  it('flags a repeated blank key so its collapsed value is not silently dropped', () => {
+    const issues = duplicateEnvKeyIssues([
+      createEnvRow({ key: '', value: '1' }),
+      createEnvRow({ key: '', value: '2' })
+    ])
+    expect(issues).toEqual([{ field: 'env', reason: 'case_collision', envEntryIndex: 1 }])
+  })
+
+  it('does not flag distinct keys or a single blank-key row', () => {
+    expect(
+      duplicateEnvKeyIssues([
+        createEnvRow({ key: 'A', value: '1' }),
+        createEnvRow({ key: 'B', value: '2' }),
+        createEnvRow({ key: '', value: 'orphan' })
+      ])
+    ).toEqual([])
   })
 })
 

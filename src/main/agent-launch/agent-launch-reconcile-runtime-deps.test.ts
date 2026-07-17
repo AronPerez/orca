@@ -133,6 +133,31 @@ describe('buildReconcileAgentLaunchDeps liveness', () => {
     expect(arm.calls).toEqual(['failed'])
   })
 
+  it('treats a live token with an UNRESOLVABLE worktree as attributed, never absent', () => {
+    // Regression (L2-#6): a re-listed SSH session whose worktree inference
+    // failed is invisible to ptysById but its token match is identity proof.
+    // It must settle launched — not absent/spawn_failed (duplicate Retry) and
+    // not unattributed/invalid_launch_snapshot (false theft class).
+    const arm = spyArm()
+    const { store, deps } = buildDeps({
+      liveTerminalByToken: () => ({ ptyId: 'ssh-term-1', worktreeId: null }),
+      isHostAuthoritative: () => true,
+      arms: {
+        worktree: () => arm,
+        automation: () => arm,
+        orchestration: () => arm,
+        background: () => arm
+      }
+    })
+    const entry = pending({}, 'ssh:host-a')
+    store.beginPending(entry)
+
+    const outcome = reconcileOnePendingAgentLaunch(deps, entry)
+
+    expect(outcome).toEqual({ kind: 'launched' })
+    expect(arm.calls).toEqual(['launched'])
+  })
+
   it('settles a non-live local pending as absent → spawn_failed (host is authoritative)', () => {
     const arm = spyArm()
     const { store, deps } = buildDeps({

@@ -81,6 +81,10 @@ export type WorktreeAgentLaunchContext = {
   intent: LaunchIntent
   descriptor: AgentLaunchHostDescriptor
   scope: string
+  /** Target worktree for the per-worktree admission cap (G6). Set on the
+   *  stage-2/execute context — the create path knows its worktree only after
+   *  git — and on retry contexts, where scope may be an attempt id instead. */
+  worktreeId?: string | null
   principal: AdmissionPrincipal
 }
 
@@ -163,6 +167,14 @@ export async function executeWorktreeAgentLaunch(
   })
   return deps.boundary.executeReservedAgentLaunch({
     scope: context.scope,
+    // Stage 2 holds the authoritative worktree; a background intent names it
+    // even when the caller did not thread context.worktreeId explicitly.
+    worktreeId:
+      context.worktreeId !== undefined
+        ? context.worktreeId
+        : context.intent.kind === 'background'
+          ? context.intent.worktreeId
+          : null,
     principal: context.principal,
     resolve,
     prompt: context.request.prompt ?? '',

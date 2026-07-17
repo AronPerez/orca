@@ -1727,6 +1727,19 @@ describe('Store', () => {
     const store = await createStore()
     store.addRepo(makeRepo())
     const customAgentId = 'custom-agent:claude:11111111-1111-4111-8111-111111111111'
+    // Creating with a custom id requires a live catalog entry (L1-#5).
+    store.updateSettings({
+      customTuiAgents: [
+        {
+          id: customAgentId,
+          baseAgent: 'claude',
+          label: 'My Claude',
+          args: '',
+          env: {},
+          syncEnv: false
+        }
+      ]
+    })
     const automation = store.createAutomation({
       name: 'Nightly',
       prompt: 'Run checks',
@@ -1758,6 +1771,74 @@ describe('Store', () => {
     expect(switched.agentId).toBe('codex')
     expect(switched.name).toBe('Renamed')
     expect(switched.prompt).toBe('Run checks')
+  })
+
+  it('rejects creating an automation with an unknown, tombstoned, or disabled agent (L1-#5)', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const base = {
+      name: 'Nightly',
+      prompt: 'Run checks',
+      projectId: 'r1',
+      workspaceMode: 'new_per_run' as const,
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2026-05-13T00:00:00Z').getTime()
+    }
+    const unknownCustom = 'custom-agent:claude:22222222-2222-4222-8222-222222222222' as const
+
+    expect(() => store.createAutomation({ ...base, agentId: unknownCustom })).toThrow(
+      /not available/
+    )
+
+    store.updateSettings({
+      deletedCustomTuiAgents: [
+        { id: unknownCustom, baseAgent: 'claude', label: 'Gone', deletedAt: 1 }
+      ]
+    })
+    expect(() => store.createAutomation({ ...base, agentId: unknownCustom })).toThrow(
+      /not available/
+    )
+
+    store.updateSettings({ disabledTuiAgents: ['codex'] })
+    expect(() => store.createAutomation({ ...base, agentId: 'codex' })).toThrow(/not available/)
+
+    // An enabled built-in still creates.
+    expect(store.createAutomation({ ...base, agentId: 'claude' }).agentId).toBe('claude')
+  })
+
+  it('preserves the stored agent id when an update targets an unknown or disabled identity (L1-#5)', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const liveCustom = 'custom-agent:codex:33333333-3333-4333-8333-333333333333' as const
+    store.updateSettings({
+      customTuiAgents: [
+        { id: liveCustom, baseAgent: 'codex', label: 'Codex 2', args: '', env: {}, syncEnv: false }
+      ]
+    })
+    const automation = store.createAutomation({
+      name: 'Nightly',
+      prompt: 'Run checks',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2026-05-13T00:00:00Z').getTime()
+    })
+
+    // Well-formed but never-cataloged custom id: preserved, not persisted.
+    const unknownCustom = 'custom-agent:claude:44444444-4444-4444-8444-444444444444' as const
+    expect(store.updateAutomation(automation.id, { agentId: unknownCustom }).agentId).toBe('claude')
+
+    // A live enabled custom id applies.
+    expect(store.updateAutomation(automation.id, { agentId: liveCustom }).agentId).toBe(liveCustom)
+
+    // Disabling the base makes a *change back to it* invalid, while the stored
+    // (now-stale) id is preserved by the field-level no-op rule.
+    store.updateSettings({ disabledTuiAgents: ['codex'] })
+    expect(store.updateAutomation(automation.id, { agentId: 'codex' }).agentId).toBe(liveCustom)
+    expect(store.updateAutomation(automation.id, { agentId: liveCustom }).agentId).toBe(liveCustom)
   })
 
   it('persists session reuse only for existing-workspace automations', async () => {
@@ -1939,6 +2020,19 @@ describe('Store', () => {
 
   it('persists a structured launch failure additively while retaining the generic error', async () => {
     const store = await createStore()
+    // Creating with a custom id requires a live catalog entry (L1-#5).
+    store.updateSettings({
+      customTuiAgents: [
+        {
+          id: 'custom-agent:codex:11111111-1111-4111-8111-111111111111',
+          baseAgent: 'codex',
+          label: 'My Codex',
+          args: '',
+          env: {},
+          syncEnv: false
+        }
+      ]
+    })
     const automation = store.createAutomation({
       name: 'Nightly',
       prompt: 'Run checks',

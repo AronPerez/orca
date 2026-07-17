@@ -62,6 +62,7 @@ import type {
   TerminalPaneLayoutNode,
   TerminalLayoutSnapshot,
   TerminalTab,
+  TuiAgent,
   WorkspaceSessionPatch,
   WorkspaceSessionState
 } from '../shared/types'
@@ -208,7 +209,8 @@ import {
   SOURCE_CONTROL_TEXT_ACTION_IDS
 } from '../shared/source-control-ai-actions'
 import { normalizeDisabledTuiAgents } from '../shared/tui-agent-selection'
-import { isTuiAgent } from '../shared/tui-agent-config'
+import { isBuiltInTuiAgent, isTuiAgent } from '../shared/tui-agent-config'
+import { normalizeAgentCatalog } from '../shared/agent-catalog-normalization'
 import {
   DEFAULT_TUI_AGENT_ARGS,
   DEFAULT_TUI_AGENT_ENV,
@@ -4508,7 +4510,34 @@ export class Store {
       .sort((left, right) => right.createdAt - left.createdAt)
   }
 
+  /** An automation's agentId is a persisted launch reference: a newly written id
+   *  must resolve to a currently enabled live identity (enabled built-in, or
+   *  live custom whose own id and base are enabled). Unknown/tombstoned ids
+   *  would persist a reference that can never launch and pin its tombstone. */
+  private isLaunchableAutomationAgent(agentId: TuiAgent): boolean {
+    const settings = this.state.settings
+    const catalog = normalizeAgentCatalog({
+      customTuiAgents: settings.customTuiAgents,
+      deletedCustomTuiAgents: settings.deletedCustomTuiAgents,
+      disabledTuiAgents: settings.disabledTuiAgents,
+      defaultTuiAgent: settings.defaultTuiAgent
+    }).catalog
+    if (isBuiltInTuiAgent(agentId)) {
+      return !catalog.disabledAgents.has(agentId)
+    }
+    const live = catalog.liveById.get(agentId)
+    if (!live) {
+      return false
+    }
+    return !catalog.disabledAgents.has(agentId) && !catalog.disabledAgents.has(live.baseAgent)
+  }
+
   createAutomation(input: AutomationCreateInput): Automation {
+    if (!this.isLaunchableAutomationAgent(input.agentId)) {
+      throw new Error(
+        'The selected agent is not available. Choose an enabled agent for this automation.'
+      )
+    }
     const repo = this.state.repos.find((entry) => entry.id === input.projectId)
     const now = Date.now()
     const executionTargetType = repo?.connectionId ? 'ssh' : 'local'
@@ -4572,9 +4601,14 @@ export class Store {
         updates.name !== undefined ? updates.name.trim() || 'Untitled automation' : current.name,
       // A legacy client that can't represent a custom agent id may send agentId
       // null/undefined/malformed; the `...updates` spread would silently clobber a
-      // stored custom id and drop its tombstone reference. Only a well-formed id
-      // (built-in or custom syntax) applies; anything else preserves the stored id.
-      agentId: isTuiAgent(updates.agentId) ? updates.agentId : current.agentId,
+      // stored custom id and drop its tombstone reference. Field-level rule: the
+      // exact stored id (even stale) is a no-op, and a *changed* id must resolve
+      // to an enabled live identity; anything else preserves the stored id.
+      agentId:
+        isTuiAgent(updates.agentId) &&
+        (updates.agentId === current.agentId || this.isLaunchableAutomationAgent(updates.agentId))
+          ? updates.agentId
+          : current.agentId,
       precheck: Object.hasOwn(updates, 'precheck')
         ? normalizeAutomationPrecheck(updates.precheck)
         : normalizeAutomationPrecheck(current.precheck),

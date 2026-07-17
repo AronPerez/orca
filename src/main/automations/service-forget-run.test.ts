@@ -11,6 +11,7 @@ import type { Repo } from '../../shared/types'
 import type { AutomationRunStatus } from '../../shared/automations-types'
 import { AutomationService } from './service'
 import type { HeadlessAutomationDispatcher } from './headless-dispatch'
+import { mintPersistedAutomationLaunchFailure } from './automation-launch-failure-stamp'
 
 const testState = { dir: '' }
 
@@ -33,7 +34,12 @@ async function createStore() {
 const REPO: Repo = { id: 'r1', path: '/repo', displayName: 'test', badgeColor: '#fff', addedAt: 1 }
 
 async function seedRunInStatus(
-  status: AutomationRunStatus
+  status: AutomationRunStatus,
+  // Why: only a run the reconciler has flagged `launch_state_unknown` is
+  // actually stranded (service.ts's forgetAutomationRun gate); tests that mean
+  // to exercise a genuinely-stranded run opt in explicitly, so a "healthy"
+  // dispatching/dispatched run (the default) stays the no-marker case.
+  opts: { stranded?: boolean } = {}
 ): Promise<{ store: Awaited<ReturnType<typeof createStore>>; runId: string }> {
   const store = await createStore()
   store.addRepo(REPO)
@@ -53,7 +59,12 @@ async function seedRunInStatus(
     runId: run.id,
     status,
     workspaceId: automation.workspaceId,
-    error: null
+    error: null,
+    ...(opts.stranded
+      ? {
+          agentLaunchFailure: mintPersistedAutomationLaunchFailure({ code: 'launch_state_unknown' })
+        }
+      : {})
   })
   return { store, runId: run.id }
 }
@@ -68,7 +79,7 @@ describe('AutomationService.forgetAutomationRun (U6)', () => {
   })
 
   it('forgets a run stranded in dispatching: dispatch_failed + forgottenAt, no spawn', async () => {
-    const { store, runId } = await seedRunInStatus('dispatching')
+    const { store, runId } = await seedRunInStatus('dispatching', { stranded: true })
     const send = vi.fn()
     const headlessDispatcher = vi.fn<HeadlessAutomationDispatcher>()
     const service = new AutomationService(store, { tickMs: 60_000, headlessDispatcher })
@@ -85,7 +96,7 @@ describe('AutomationService.forgetAutomationRun (U6)', () => {
   })
 
   it('forgets a headless run stranded in dispatched too', async () => {
-    const { store, runId } = await seedRunInStatus('dispatched')
+    const { store, runId } = await seedRunInStatus('dispatched', { stranded: true })
     const service = new AutomationService(store, { tickMs: 60_000 })
 
     const forgotten = service.forgetAutomationRun(runId)
@@ -95,7 +106,7 @@ describe('AutomationService.forgetAutomationRun (U6)', () => {
   })
 
   it('never re-dispatches a forgotten run — the second Forget is an idempotent no-op', async () => {
-    const { store, runId } = await seedRunInStatus('dispatching')
+    const { store, runId } = await seedRunInStatus('dispatching', { stranded: true })
     const service = new AutomationService(store, { tickMs: 60_000 })
 
     const first = service.forgetAutomationRun(runId)
@@ -121,5 +132,26 @@ describe('AutomationService.forgetAutomationRun (U6)', () => {
     const service = new AutomationService(store, { tickMs: 60_000 })
 
     expect(() => service.forgetAutomationRun('nope')).toThrow()
+  })
+
+  // Regression for L4-M4: a non-final status alone (in particular `dispatched`,
+  // which only means the terminal was confirmed created) must not be enough to
+  // Forget — any authenticated remote client could otherwise force-fail a run
+  // whose agent is actively working with nothing but its runId. Only the
+  // reconciler's launch_state_unknown marker makes a run stranded.
+  it('rejects Forget on a healthy dispatched run with no launch_state_unknown marker', async () => {
+    const { store, runId } = await seedRunInStatus('dispatched')
+    const service = new AutomationService(store, { tickMs: 60_000 })
+
+    expect(() => service.forgetAutomationRun(runId)).toThrow(/not stranded/)
+    expect(store.listAutomationRuns()[0]?.status).toBe('dispatched')
+  })
+
+  it('rejects Forget on a healthy dispatching run with no launch_state_unknown marker', async () => {
+    const { store, runId } = await seedRunInStatus('dispatching')
+    const service = new AutomationService(store, { tickMs: 60_000 })
+
+    expect(() => service.forgetAutomationRun(runId)).toThrow(/not stranded/)
+    expect(store.listAutomationRuns()[0]?.status).toBe('dispatching')
   })
 })

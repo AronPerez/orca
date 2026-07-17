@@ -17,11 +17,16 @@ import { join } from 'node:path'
 import { safeStorage } from 'electron'
 import { hardenExistingSecureFile, writeSecureJsonFile } from '../../shared/secure-file'
 import type {
+  AgentLaunchOperationStore,
   AgentLaunchOperationStoreDurableState,
   PendingAgentLaunchSnapshot,
   SettledAgentLaunchOperation
 } from './agent-launch-operation-store'
+import type { AdmittedLaunchRecord } from './agent-launch-admission-store'
 import { getHostAgentLaunchOperationStore } from './agent-launch-operation-store-host'
+import { getHostAgentLaunchBoundary } from './agent-launch-boundary-host'
+import { getHostBackgroundAgentLaunchStore } from './background-agent-launch-store-host'
+import { initHostBackgroundAgentLaunchStorePersistence } from './background-agent-launch-store-persistence'
 
 const STORE_FILENAME = 'agent-launch-operations.json'
 
@@ -99,58 +104,91 @@ function isPendingAgentLaunchSnapshotShape(value: unknown): value is PendingAgen
   )
 }
 
+function isAdmissionPrincipalShape(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false
+  }
+  return value.kind === 'local' || (value.kind === 'remote' && typeof value.id === 'string')
+}
+
 function validPendingSnapshots(entries: unknown[]): PendingAgentLaunchSnapshot[] {
-  return entries.filter(isPendingAgentLaunchSnapshotShape)
+  // A malformed principal is stripped rather than dropping the whole snapshot:
+  // crash-recovery attribution matters more than the capacity bucket, and a
+  // missing principal rebuilds as local.
+  return entries.filter(isPendingAgentLaunchSnapshotShape).map((entry) => {
+    if (entry.principal === undefined || isAdmissionPrincipalShape(entry.principal)) {
+      return entry
+    }
+    const { principal: _dropped, ...rest } = entry
+    return rest
+  })
+}
+
+/** Load/decode outcome. `decryptionUnavailable` marks an encrypted pending
+ *  section the OS cipher could not read at load (locked/late keychain): the
+ *  snapshots are intact on disk, just unreadable NOW, so the write-back sink
+ *  must not attach — otherwise the first mutation after boot would overwrite
+ *  the crash-recovery snapshots with the empty in-memory set. */
+export type AgentLaunchOperationStoreLoadResult = AgentLaunchOperationStoreDurableState & {
+  decryptionUnavailable: boolean
 }
 
 function decodePending(
   pending: unknown,
   cipher: AgentLaunchOperationCipher
-): PendingAgentLaunchSnapshot[] {
+): { snapshots: PendingAgentLaunchSnapshot[]; decryptionUnavailable: boolean } {
   if (!isRecord(pending)) {
-    return []
+    return { snapshots: [], decryptionUnavailable: false }
   }
   if (pending.format === 'plaintext-v1' && Array.isArray(pending.snapshots)) {
-    return validPendingSnapshots(pending.snapshots)
+    return { snapshots: validPendingSnapshots(pending.snapshots), decryptionUnavailable: false }
   }
-  if (
-    pending.format === 'electron-safe-storage-v1' &&
-    typeof pending.ciphertext === 'string' &&
-    cipher.available()
-  ) {
-    // A decrypt failure (keychain reset) drops only the pending map, never the
-    // whole file: reconciliation then treats those launches conservatively
-    // rather than mis-attributing, and the settled ledger stays intact.
+  if (pending.format === 'electron-safe-storage-v1' && typeof pending.ciphertext === 'string') {
+    if (!cipher.available()) {
+      // Transient: a locked/late keychain at boot. The ciphertext is still
+      // valid, so flag it rather than treating the store as empty.
+      return { snapshots: [], decryptionUnavailable: true }
+    }
+    // A decrypt failure with an AVAILABLE cipher (keychain reset) drops only the
+    // pending map, never the whole file: reconciliation then treats those
+    // launches conservatively rather than mis-attributing, and the settled
+    // ledger stays intact.
     const decrypted = cipher.decrypt(Buffer.from(pending.ciphertext, 'base64'))
     const parsed = JSON.parse(decrypted)
-    return Array.isArray(parsed) ? validPendingSnapshots(parsed) : []
+    return {
+      snapshots: Array.isArray(parsed) ? validPendingSnapshots(parsed) : [],
+      decryptionUnavailable: false
+    }
   }
-  return []
+  return { snapshots: [], decryptionUnavailable: false }
 }
 
 export function decodeAgentLaunchOperationStore(
   raw: unknown,
   cipher: AgentLaunchOperationCipher
-): AgentLaunchOperationStoreDurableState {
+): AgentLaunchOperationStoreLoadResult {
   if (!isRecord(raw) || raw.version !== 1) {
-    return { pending: [], settled: [] }
+    return { pending: [], settled: [], decryptionUnavailable: false }
   }
   const settled = Array.isArray(raw.settled) ? (raw.settled as SettledAgentLaunchOperation[]) : []
-  let pending: PendingAgentLaunchSnapshot[]
   try {
-    pending = decodePending(raw.pending, cipher)
+    const pending = decodePending(raw.pending, cipher)
+    return {
+      pending: pending.snapshots,
+      settled,
+      decryptionUnavailable: pending.decryptionUnavailable
+    }
   } catch {
-    pending = []
+    return { pending: [], settled, decryptionUnavailable: false }
   }
-  return { pending, settled }
 }
 
 export function loadAgentLaunchOperationStoreState(
   path: string,
   cipher: AgentLaunchOperationCipher
-): AgentLaunchOperationStoreDurableState {
+): AgentLaunchOperationStoreLoadResult {
   if (!existsSync(path)) {
-    return { pending: [], settled: [] }
+    return { pending: [], settled: [], decryptionUnavailable: false }
   }
   try {
     hardenExistingSecureFile(path)
@@ -158,7 +196,7 @@ export function loadAgentLaunchOperationStoreState(
   } catch {
     // A corrupt ledger must never block boot; start empty and let the create/
     // retry path rebuild idempotency state from scratch.
-    return { pending: [], settled: [] }
+    return { pending: [], settled: [], decryptionUnavailable: false }
   }
 }
 
@@ -170,24 +208,122 @@ export function writeAgentLaunchOperationStoreState(
   writeSecureJsonFile(path, encodeAgentLaunchOperationStore(state, cipher))
 }
 
-/** Boot-time wiring: rehydrate the durable state, then attach the write-back
- *  sink so every later mutation is persisted. Called once from the main-process
- *  startup after the user data dir is stable. The startup reconcile trigger that
- *  consumes rehydrated pending snapshots lands with its first producer; the data
- *  is made durable here regardless. */
-export function initHostAgentLaunchOperationStorePersistence(userDataPath: string): void {
-  const path = agentLaunchOperationStorePath(userDataPath)
-  const cipher = electronSafeStorageCipher()
+/** Reconstruct the admission records the rehydrated pending snapshots hold
+ *  capacity for, so a restart keeps counting launch_state_unknown launches
+ *  against the per-host/per-principal caps and Forget's release finds them. */
+export function admittedLaunchRecordsFromPendingSnapshots(
+  pending: readonly PendingAgentLaunchSnapshot[],
+  deps: {
+    /** Background launches scope by attempt id; the attempt names the worktree. */
+    worktreeIdForBackgroundScope: (attemptId: string) => string | null
+    now: () => number
+  }
+): AdmittedLaunchRecord[] {
+  return pending.map((entry) => ({
+    launchToken: entry.launchToken,
+    // Entries persisted before the principal field default to local: a
+    // wrong-bucket count still holds capacity and releases by token.
+    principal: entry.principal ?? { kind: 'local' },
+    intent: entry.intent,
+    scope: entry.scope,
+    worktreeId:
+      entry.intent === 'interactive' || entry.intent === 'cli' || entry.intent === 'resume'
+        ? entry.scope
+        : entry.intent === 'background'
+          ? deps.worktreeIdForBackgroundScope(entry.scope)
+          : null,
+    // The fingerprint only guards the admission-time recheck and is never
+    // re-read after commit; admittedAt only orders capacity-recovery rows.
+    // Neither is persisted, so rebuild with stand-ins.
+    fingerprint: entry.payloadDigest,
+    snapshot: entry.snapshot,
+    admittedAt: deps.now()
+  }))
+}
+
+/** Cipher-injected core of the boot wiring, split out so the locked-keychain
+ *  recovery path and the admission rebuild are unit-testable without Electron. */
+export function initAgentLaunchOperationStorePersistence(
+  store: AgentLaunchOperationStore,
+  path: string,
+  cipher: AgentLaunchOperationCipher,
+  deps: {
+    rebuildAdmission: (records: AdmittedLaunchRecord[]) => void
+    worktreeIdForBackgroundScope: (attemptId: string) => string | null
+    now?: () => number
+  }
+): void {
   const state = loadAgentLaunchOperationStoreState(path, cipher)
-  const store = getHostAgentLaunchOperationStore()
   store.rebuildSettledFrom(state.settled)
   store.rebuildPendingFrom(state.pending)
-  store.setDurablePersistence((next) => {
+  // Re-take the capacity these rehydrated launches held before the restart;
+  // Forget/reconcile then release the exact slot instead of no-opping.
+  deps.rebuildAdmission(
+    admittedLaunchRecordsFromPendingSnapshots(state.pending, {
+      worktreeIdForBackgroundScope: deps.worktreeIdForBackgroundScope,
+      now: deps.now ?? Date.now
+    })
+  )
+  const attachWriteBackSink = (): void => {
+    store.setDurablePersistence((next) => {
+      try {
+        writeAgentLaunchOperationStoreState(path, next, cipher)
+      } catch {
+        // A failed persist must not break the in-flight launch; the in-memory
+        // store stays authoritative and the next mutation retries the write.
+      }
+    })
+  }
+  if (!state.decryptionUnavailable) {
+    attachWriteBackSink()
+    return
+  }
+  // Locked/late keychain at boot: the encrypted pending snapshots are intact on
+  // disk but unreadable NOW. A plain write-back sink would overwrite them with
+  // the empty in-memory map on the first mutation, so attach a recovery sink
+  // that re-probes the cipher per durable mutation and, once decryption works,
+  // merges the on-disk state under the in-memory one before taking over.
+  store.setDurablePersistence(() => {
+    if (!cipher.available()) {
+      return
+    }
     try {
-      writeAgentLaunchOperationStoreState(path, next, cipher)
+      const onDisk = loadAgentLaunchOperationStoreState(path, cipher)
+      const live = store.durableState()
+      // Maps key pendings by token and the ledger replaces by operationId in
+      // settledAt order, so disk-first + live-second prefers the live state.
+      const liveTokens = new Set(live.pending.map((entry) => entry.launchToken))
+      store.rebuildPendingFrom([
+        ...onDisk.pending.filter((entry) => !liveTokens.has(entry.launchToken)),
+        ...live.pending
+      ])
+      store.rebuildSettledFrom([...onDisk.settled, ...live.settled])
+      attachWriteBackSink()
+      writeAgentLaunchOperationStoreState(path, store.durableState(), cipher)
     } catch {
-      // A failed persist must not break the in-flight launch; the in-memory
-      // store stays authoritative and the next mutation retries the write.
+      // Keep the recovery sink armed; the next mutation retries.
     }
   })
+}
+
+/** Boot-time wiring: rehydrate the durable state (operation ledger + pending
+ *  snapshots, the background attempt store, and the admission capacity those
+ *  pendings hold), then attach the write-back sink so every later mutation is
+ *  persisted. Called once from the main-process startup after the user data dir
+ *  is stable. */
+export function initHostAgentLaunchOperationStorePersistence(userDataPath: string): void {
+  // The background attempt store rehydrates first so the admission rebuild
+  // below can resolve background scopes (attempt ids) to their worktrees.
+  // Chained here because this is the one durable launch-bookkeeping boot seam.
+  initHostBackgroundAgentLaunchStorePersistence(userDataPath)
+  initAgentLaunchOperationStorePersistence(
+    getHostAgentLaunchOperationStore(),
+    agentLaunchOperationStorePath(userDataPath),
+    electronSafeStorageCipher(),
+    {
+      rebuildAdmission: (records) => getHostAgentLaunchBoundary().rebuildAdmissionFrom(records),
+      worktreeIdForBackgroundScope: (attemptId) =>
+        getHostBackgroundAgentLaunchStore().get(attemptId)?.worktreeId ?? null
+    }
+  )
 }

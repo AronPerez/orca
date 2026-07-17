@@ -82,13 +82,29 @@ export function migrateAgentCatalogSchema(args: {
   createBackup: () => PinnedBackupResult
 }): AgentCatalogSchemaMigrationOutcome {
   const settings = args.settings
-  const currentVersion = normalizeRevision(settings?.agentCatalogSchemaVersion, 0)
+  // Loaded settings come from parsed JSON, so the stamp may hold any shape.
+  const rawVersion: unknown = settings?.agentCatalogSchemaVersion
+  // A present-but-malformed stamp can only follow a v1 write (hand-edit or
+  // corruption). Treating it as pre-v1 would re-run the one-time null->auto
+  // default remap and overwrite a repair-generated null, so repair the stamp
+  // instead of re-migrating.
+  const stampCorrupted =
+    rawVersion !== undefined &&
+    rawVersion !== null &&
+    !(typeof rawVersion === 'number' && Number.isInteger(rawVersion) && rawVersion >= 0)
+  const currentVersion = stampCorrupted
+    ? AGENT_CATALOG_SCHEMA_VERSION
+    : normalizeRevision(rawVersion, 0)
   if (currentVersion >= AGENT_CATALOG_SCHEMA_VERSION) {
     // Revisions must remain monotonic non-negative integers even if hand-edited.
     const catalogRevision = normalizeRevision(settings?.agentCatalogRevision, 1)
     const referenceRevision = normalizeRevision(settings?.agentReferenceRevision, 1)
     const patch: Partial<GlobalSettings> = {}
     let didMigrate = false
+    if (stampCorrupted) {
+      patch.agentCatalogSchemaVersion = AGENT_CATALOG_SCHEMA_VERSION
+      didMigrate = true
+    }
     if (settings?.agentCatalogRevision !== catalogRevision) {
       patch.agentCatalogRevision = catalogRevision
       didMigrate = true

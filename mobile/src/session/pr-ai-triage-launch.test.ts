@@ -53,6 +53,19 @@ describe('createTerminalAndSendPrompt', () => {
     expect(client.sendRequest).toHaveBeenCalledTimes(1)
   })
 
+  // Regression for L4-m11: a pre-spawn agentLaunch failure (tombstoned/disabled
+  // agent, capacity, ...) is an RPC success with no `tab` key. This must surface
+  // the typed failure code, not the generic "invalid response" message.
+  it('throws with the typed failure code on a pre-spawn agentLaunch failure', async () => {
+    const client = clientReturning(
+      success({ agentLaunch: { status: 'failed', failure: { code: 'custom_agent_disabled' } } })
+    )
+    await expect(createTerminalAndSendPrompt(client, 'wt-1', 'p')).rejects.toThrow(
+      "Couldn't start the agent (custom_agent_disabled)."
+    )
+    expect(client.sendRequest).toHaveBeenCalledTimes(1)
+  })
+
   it('throws when terminal.send returns a failure', async () => {
     const client = clientReturning(createdTerminal, failure('send failed'))
     await expect(createTerminalAndSendPrompt(client, 'wt-1', 'p')).rejects.toThrow('send failed')

@@ -30,6 +30,10 @@ import {
 } from './agent-tombstone-reference-index'
 import { registerBuiltInOwnerScanners } from './agent-catalog-owner-scanners'
 import {
+  buildAgentReferenceSnapshot,
+  measureAgentReferenceProjection
+} from './agent-reference-snapshot-projection'
+import {
   agentCatalogMigrationBlockedError,
   isSecurityReducingMutation,
   type AgentCatalogMigrationBlockedError
@@ -182,27 +186,12 @@ export class AgentCatalogService {
     return this.store.getSettings().agentReferenceRevision ?? 1
   }
 
-  private buildReferenceSnapshot(): AgentReferenceSnapshot {
-    const settings = this.store.getSettings()
-    return {
-      version: 1,
-      revision: settings.agentReferenceRevision ?? 1,
-      terminalQuickCommands: settings.terminalQuickCommands ?? [],
-      ...(settings.commitMessageAi ? { commitMessageAi: settings.commitMessageAi } : {}),
-      ...(settings.sourceControlAi ? { sourceControlAi: settings.sourceControlAi } : {})
-    }
-  }
-
-  private measureReferenceProjection(): { bytes: number; tooLarge: boolean } {
-    const bytes = utf8ByteLength(JSON.stringify(this.buildReferenceSnapshot()))
-    return { bytes, tooLarge: bytes > 524_288 }
-  }
-
   /** Remote (runtime RPC) reference snapshot; typed projection error when over
    *  the 512 KiB frame budget. */
   getRemoteReferenceSnapshot(): AgentReferenceSnapshot | AgentReferenceProjectionError {
-    const snapshot = this.buildReferenceSnapshot()
-    const { tooLarge } = this.measureReferenceProjection()
+    const settings = this.store.getSettings()
+    const snapshot = buildAgentReferenceSnapshot(settings)
+    const { tooLarge } = measureAgentReferenceProjection(settings)
     if (tooLarge) {
       return {
         version: 1,
@@ -216,8 +205,9 @@ export class AgentCatalogService {
 
   /** Uncapped authoring/repair view over local preload IPC only. */
   getLocalReferenceSnapshot(): LocalAgentReferenceSnapshot {
-    const snapshot = this.buildReferenceSnapshot()
-    const { bytes, tooLarge } = this.measureReferenceProjection()
+    const settings = this.store.getSettings()
+    const snapshot = buildAgentReferenceSnapshot(settings)
+    const { bytes, tooLarge } = measureAgentReferenceProjection(settings)
     return {
       ...snapshot,
       projection: tooLarge
@@ -261,6 +251,22 @@ export class AgentCatalogService {
         ...(application.owner ? { owner: application.owner } : {}),
         ...(application.field ? { field: application.field } : {}),
         ...(application.reason ? { reason: application.reason } : {})
+      }
+    }
+    // The 512 KiB remote-projection budget is checked on the post-mutation
+    // snapshot; a non-growing write still commits so an over-budget profile can
+    // always be edited back under budget (mirrors mutate()'s security-reducing
+    // allowlist).
+    const projected = measureAgentReferenceProjection({
+      ...settings,
+      ...application.patch
+    } as GlobalSettings)
+    if (projected.tooLarge && projected.bytes > measureAgentReferenceProjection(settings).bytes) {
+      return {
+        ok: false,
+        code: 'agent_reference_payload_too_large',
+        referenceRevision: currentReferenceRevision,
+        catalogRevision: this.getRevision()
       }
     }
     // Owner change commits before any prune; a failure between the two leaves
@@ -318,12 +324,10 @@ export class AgentCatalogService {
       countTombstoneReferences: (id) => this.referenceIndex.countReferences(id)
     })
     if (!application.ok) {
-      const revisionForError =
-        application.code === 'catalog_revision_conflict' ? currentRevision : currentRevision
       return {
         ok: false,
         code: application.code,
-        revision: revisionForError,
+        revision: currentRevision,
         ...(application.code === 'catalog_revision_conflict'
           ? { snapshot: this.getLocalSnapshot() }
           : {}),

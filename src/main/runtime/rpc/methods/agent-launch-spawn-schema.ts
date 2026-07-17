@@ -46,7 +46,11 @@ export const AgentLaunchSpawnRequestSchema: z.ZodType<AgentLaunchSpawnRequest> =
   prompt: z.string().max(100_000).optional(),
   allowEmptyPromptLaunch: z.boolean().optional(),
   promptDelivery: z.enum(['submit', 'draft']).optional(),
-  sourceRecord: AgentLaunchSourceRecord.optional()
+  sourceRecord: AgentLaunchSourceRecord.optional(),
+  // Why: without this, an unrecognized key would be silently stripped by Zod's
+  // default object parsing, downgrading a caller's declared unattended/
+  // background launch to interactive instead of failing closed.
+  unattended: z.object({ kind: z.literal('background') }).optional()
 })
 
 // The ownership key is the ONLY resume/fork input a client supplies; the host

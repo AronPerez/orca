@@ -173,22 +173,30 @@ export function serializeEnvRows(rows: readonly CustomAgentEnvRow[]): Record<str
 }
 
 /** Exact-duplicate keys collapse to one `Record` entry in `serializeEnvRows`, so
- *  the shared validator never sees them; flag the later row here instead of
- *  silently dropping the user's earlier value. Blank keys already get their own
- *  bounds error from the shared validator. */
+ *  the shared validator never sees them; flag the overwriting row here instead of
+ *  silently dropping the user's earlier value. This includes a repeated *blank*
+ *  key (two blank-key rows with different values also collapse to one entry).
+ *  `envEntryIndex` MUST be the serialized position (fully-blank rows dropped) that
+ *  CustomAgentEnvRowsEditor renders per-row errors against — a raw array index
+ *  diverges the moment a blank row precedes a duplicate, so the error would block
+ *  Save while rendering nowhere. */
 export function duplicateEnvKeyIssues(rows: readonly CustomAgentEnvRow[]): AgentFieldIssue[] {
   const seen = new Set<string>()
   const issues: AgentFieldIssue[] = []
-  rows.forEach((row, index) => {
-    if (row.key === '') {
-      return
+  let serializedIndex = 0
+  for (const row of rows) {
+    // Mirror serializeEnvRows: only a fully-blank row is dropped and carries no
+    // serialized index; every other row advances the position the editor uses.
+    if (row.key === '' && row.value === '') {
+      continue
     }
     if (seen.has(row.key)) {
-      issues.push({ field: 'env', reason: 'case_collision', envEntryIndex: index })
-      return
+      issues.push({ field: 'env', reason: 'case_collision', envEntryIndex: serializedIndex })
+    } else {
+      seen.add(row.key)
     }
-    seen.add(row.key)
-  })
+    serializedIndex += 1
+  }
   return issues
 }
 

@@ -178,6 +178,59 @@ describe('two-stage worktree agent-launch resolution', () => {
     expect(store.pendingCount()).toBe(0)
   })
 
+  it('threads the stage-2 worktree into admission so the per-worktree cap counts it (L3-#3)', async () => {
+    const resolve = vi
+      .fn<(request: ResolveAgentLaunchRequest) => ResolveAgentLaunchOutcome>()
+      .mockReturnValue({ ok: true, launch: makeLaunch('fp-real', 'sd-1', '/wt-real') })
+    const { deps, store } = makeSetup(resolve)
+    const prepared = await prepareWorktreeAgentLaunch(deps, CONTEXT, {
+      repoPath: '/repo',
+      worktreePath: '/wt-provisional'
+    })
+    expect(prepared.ok).toBe(true)
+    if (!prepared.ok) {
+      return
+    }
+    const executed = await executeWorktreeAgentLaunch(
+      deps,
+      { ...CONTEXT, worktreeId: 'wt-created' },
+      { repoPath: '/repo', worktreePath: '/wt-real' },
+      { reservationId: prepared.reservationId, expectedStableInputDigest: 'sd-1' }
+    )
+    expect(executed.ok).toBe(true)
+    expect(store.pendingForWorktree('wt-created')).toBe(1)
+  })
+
+  it("defaults the admission worktree to a background intent's own worktree (L3-#3)", async () => {
+    const resolve = vi
+      .fn<(request: ResolveAgentLaunchRequest) => ResolveAgentLaunchOutcome>()
+      .mockReturnValue({ ok: true, launch: makeLaunch('fp-real', 'sd-1', '/wt-real') })
+    const { deps, store } = makeSetup(resolve)
+    const context: WorktreeAgentLaunchContext = {
+      ...CONTEXT,
+      intent: { kind: 'background', attemptId: 'attempt-1', worktreeId: 'wt-bg' },
+      scope: 'attempt-1'
+    }
+    const prepared = await prepareWorktreeAgentLaunch(deps, context, {
+      repoPath: '/repo',
+      worktreePath: '/wt-real'
+    })
+    expect(prepared.ok).toBe(true)
+    if (!prepared.ok) {
+      return
+    }
+    const executed = await executeWorktreeAgentLaunch(
+      deps,
+      context,
+      { repoPath: '/repo', worktreePath: '/wt-real' },
+      { reservationId: prepared.reservationId, expectedStableInputDigest: 'sd-1' }
+    )
+    expect(executed.ok).toBe(true)
+    // Scope is the attempt id, yet the cap counts the attempt's worktree.
+    expect(store.pendingForWorktree('wt-bg')).toBe(1)
+    expect(store.pendingForWorktree('attempt-1')).toBe(0)
+  })
+
   it('takes no reservation when pre-git resolution fails', async () => {
     const resolve = vi
       .fn<(request: ResolveAgentLaunchRequest) => ResolveAgentLaunchOutcome>()

@@ -16,7 +16,7 @@ import type { AgentLaunchNotice } from '../../shared/agent-launch-contract'
 import { classifyRequestedState } from './resolve-agent-selection'
 import { buildLaunchContext } from './resolve-agent-launch-context'
 import { assembleCommand } from './resolve-agent-command'
-import { prepareVariableValues } from './resolve-agent-variables'
+import { interpolateVariables, prepareVariableValues } from './resolve-agent-variables'
 import type { LaunchClientKind } from './resolve-agent-env-admission'
 import type { LaunchTarget } from './resolve-agent-launch-result'
 
@@ -56,6 +56,7 @@ function resolveCurrentEffectiveDefinition(
     return null
   }
   const context = buildLaunchContext(decision, input.catalog, input.settings, input.client)
+  const values = prepareVariableValues(input.variables, input.target.execution)
   const command = assembleCommand({
     config: context.config,
     platform: input.target.platform,
@@ -66,16 +67,29 @@ function resolveCurrentEffectiveDefinition(
     prefixOverride: context.prefixOverride,
     argsTemplate: context.argsTemplate,
     isCustomArgs: context.isCustomArgs,
+    // NOTE (L3b-#4, follow-up): the admitted snapshot bakes the U7 per-launch recipe
+    // args into argv but does not persist the band separately, so a recipe-driven
+    // resume still reads as definition-changed here. The correct fix is an additive
+    // `perLaunchArgs` field on the durable AgentLaunchSnapshot (+capture) threaded in
+    // here; deferred to keep this change off the durable-schema path.
     envValues: Object.keys(context.env).map((key) => context.env[key]),
-    values: prepareVariableValues(input.variables, input.target.execution)
+    values
   })
   if (!command.ok) {
     return null
   }
+  // Mirror resolve-agent-launch: the captured snapshot env is interpolated, so the
+  // current env must be interpolated with the same (same-worktree) values or every
+  // resume of an agent with a {worktreePath}/{repoPath} env value would falsely read
+  // as definition-changed (and mobile remove-only replay would withhold it).
+  const resolvedEnv: Record<string, string> = {}
+  for (const key of Object.keys(context.env)) {
+    resolvedEnv[key] = interpolateVariables(context.env[key], values)
+  }
   return {
     displayLabel: context.displayLabel,
     argv: command.argv,
-    env: context.env,
+    env: resolvedEnv,
     envPolicy: context.envPolicy
   }
 }

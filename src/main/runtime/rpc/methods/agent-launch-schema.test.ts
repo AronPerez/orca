@@ -57,6 +57,37 @@ describe('agentLaunch admits custom ids on the sanctioned path', () => {
   })
 })
 
+// Regression for L4-m10: `unattended` wasn't declared on the schema, so Zod's
+// default object parsing silently stripped it — downgrading a caller's
+// declared background launch to interactive instead of failing closed.
+describe('agentLaunch unattended declaration', () => {
+  it('accepts and preserves an unattended background declaration', () => {
+    const parsed = AgentLaunchSpawnRequestSchema.safeParse({
+      selection: { kind: 'default' },
+      allowEmptyPromptLaunch: true,
+      unattended: { kind: 'background' }
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.unattended).toEqual({ kind: 'background' })
+  })
+
+  it('rejects an unknown unattended kind instead of silently dropping it', () => {
+    const parsed = AgentLaunchSpawnRequestSchema.safeParse({
+      selection: { kind: 'default' },
+      unattended: { kind: 'interactive' }
+    })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('is absent (undefined) rather than stripped-but-truthy when omitted', () => {
+    const parsed = AgentLaunchSpawnRequestSchema.safeParse({
+      selection: { kind: 'default' }
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.unattended).toBeUndefined()
+  })
+})
+
 describe('agentLaunch resume/fork variant', () => {
   const validKey = { worktreeId: 'wt-1', baseAgent: 'claude', providerSessionId: 'sess-1' }
 

@@ -82,6 +82,7 @@ const PARAMS = {
   clientMutationId: null,
   requestedAgent: 'claude' as const,
   intent: 'interactive' as const,
+  principal: { kind: 'local' as const },
   execute: async () => ({ ok: true as const, plan: PLAN, receipt: RECEIPT })
 }
 

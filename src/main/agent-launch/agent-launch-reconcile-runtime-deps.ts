@@ -33,8 +33,11 @@ import type {
 } from './agent-launch-worktree-reconcile-writer'
 
 /** A live terminal a launch token currently maps to. `worktreeId` is compared to
- *  the launch's expected worktree for attribution. */
-export type LiveTerminalForToken = { ptyId: string; worktreeId: string }
+ *  the launch's expected worktree for attribution; null means the re-list saw
+ *  the session but could not resolve its worktree (e.g. an SSH session whose
+ *  cwd/persisted binding no longer maps) — the token match alone still proves
+ *  the launch's own terminal is alive, so it must never resolve `absent`. */
+export type LiveTerminalForToken = { ptyId: string; worktreeId: string | null }
 
 export type ReconcileRuntimeDeps = {
   operationStore: AgentLaunchOperationStore
@@ -92,7 +95,10 @@ function resolveLiveness(
     const expected = deps.expectedWorktreeId(pending)
     return {
       kind: 'live',
-      attributed: expected === null || live.worktreeId === expected,
+      // A null live worktree is "unresolvable", not "different": the token is
+      // a per-launch random secret, so its match is proof of identity, and
+      // unattributed (identity theft) requires evidence of a CONFLICTING owner.
+      attributed: expected === null || live.worktreeId === null || live.worktreeId === expected,
       terminalId: live.ptyId
     }
   }

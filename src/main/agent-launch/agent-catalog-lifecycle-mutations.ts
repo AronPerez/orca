@@ -159,8 +159,12 @@ export function applyUpdateCustom(
     return draftError
   }
   const candidateKey = normalizeAgentLabelKey(changes.label)
-  const retained = persistedTombstones.filter(
-    (tombstone) => args.countTombstoneReferences(tombstone.id) !== 0
+  // The label check passes against pruned tombstones, so the prune must land in
+  // the same write (applyCreate's rule) or a live agent could take a freed
+  // tombstone's label while the same-label tombstone stays persisted.
+  const { retained, prunedIds } = pruneTombstones(
+    persistedTombstones,
+    args.countTombstoneReferences
   )
   if (labelCollides(candidateKey, catalog, retained, id)) {
     return { ok: false, code: 'duplicate_agent_label', field: 'label' }
@@ -173,9 +177,13 @@ export function applyUpdateCustom(
   })
   return {
     ok: true,
-    patch: { customTuiAgents: nextLive as CustomTuiAgent[], agentCatalogRevision: newRevision },
+    patch: {
+      customTuiAgents: nextLive as CustomTuiAgent[],
+      deletedCustomTuiAgents: retained,
+      agentCatalogRevision: newRevision
+    },
     newRevision,
-    prunedTombstoneIds: []
+    prunedTombstoneIds: prunedIds
   }
 }
 

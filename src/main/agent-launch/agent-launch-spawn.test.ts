@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   resolveAgentLaunchSpawn,
+  sanitizeClientAgentLaunchSourceRecord,
   type AgentLaunchSpawnDeps,
   type AgentLaunchSpawnInput,
   type AgentLaunchSpawnTarget
@@ -235,6 +236,22 @@ describe('resolveAgentLaunchSpawn', () => {
     expect(resolve.mock.calls[0]![0].reference).toEqual({ kind: 'persisted', owner: 'session' })
   })
 
+  it('threads worktreeId into admission so the per-worktree cap counts it (L3-#3)', async () => {
+    const admissionStore = new AgentLaunchAdmissionStore()
+    const deps: AgentLaunchSpawnDeps = {
+      getSettings: () => ({}) as GlobalSettings,
+      getCatalogRevision: () => 7,
+      boundary: new AgentLaunchBoundary({
+        admissionStore,
+        coordinator: new LaunchAdmissionCoordinator()
+      }),
+      resolve: () => ({ ok: true as const, launch: makeLaunch() })
+    }
+    const result = await resolveAgentLaunchSpawn(deps, baseInput({ worktreeId: 'wt-cap' }))
+    expect(result.ok).toBe(true)
+    expect(admissionStore.pendingForWorktree('wt-cap')).toBe(1)
+  })
+
   it('propagates a typed resolution failure without a plan', async () => {
     const resolve = vi.fn((_request: ResolveAgentLaunchRequest) => ({
       ok: false as const,
@@ -246,6 +263,42 @@ describe('resolveAgentLaunchSpawn', () => {
       ok: false,
       failure: { code: 'base_agent_unavailable', baseAgent: 'claude' }
     })
+  })
+})
+
+describe('sanitizeClientAgentLaunchSourceRecord (L3-#2)', () => {
+  it('keeps a host-validatable source-control-recipe owner', () => {
+    const request = {
+      selection: { kind: 'agent' as const, agent: 'claude' as const },
+      prompt: 'x',
+      sourceRecord: { owner: 'source-control-recipe' as const, id: 'fixChecks' }
+    }
+    expect(sanitizeClientAgentLaunchSourceRecord(request)).toBe(request)
+  })
+
+  it('strips unverifiable owners a client could forge for persisted fallback authority', () => {
+    for (const owner of [
+      'workspace',
+      'session',
+      'quick-command',
+      'commit-message',
+      'default'
+    ] as const) {
+      const sanitized = sanitizeClientAgentLaunchSourceRecord({
+        selection: { kind: 'agent', agent: 'claude' },
+        prompt: 'x',
+        sourceRecord: { owner, id: 'whatever' }
+      })
+      expect(sanitized.sourceRecord).toBeUndefined()
+      // Everything else survives untouched.
+      expect(sanitized.selection).toEqual({ kind: 'agent', agent: 'claude' })
+      expect(sanitized.prompt).toBe('x')
+    }
+  })
+
+  it('is a no-op without a sourceRecord', () => {
+    const request = { selection: { kind: 'default' as const }, prompt: 'x' }
+    expect(sanitizeClientAgentLaunchSourceRecord(request)).toBe(request)
   })
 })
 
