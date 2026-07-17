@@ -5,7 +5,10 @@ import {
   buildMobileAgentPickerRows,
   type MobileAgentPickerOptions
 } from '../tasks/mobile-agent-catalog-projection'
-import { pickWorkspaceAgent } from '../tasks/workspace-agent-selection'
+import {
+  pickWorkspaceAgent,
+  type WorkspaceCustomAgentBases
+} from '../tasks/workspace-agent-selection'
 
 export type NewWorktreeRuntimeSettings = {
   defaultTuiAgent?: TuiAgent | 'blank' | null
@@ -45,25 +48,51 @@ export const NEW_WORKTREE_BLANK_AGENT: NewWorktreeAgentOption = {
   label: 'Blank Terminal'
 }
 
-export function newWorktreeAgentOptionFor(id: string | null | undefined): NewWorktreeAgentOption {
+export function newWorktreeAgentOptionFor(
+  id: string | null | undefined,
+  snapshot: AgentCatalogValue | null = null
+): NewWorktreeAgentOption {
   if (id === 'blank' || id === '__blank__') {
     return NEW_WORKTREE_BLANK_AGENT
   }
-  return NEW_WORKTREE_AGENT_OPTIONS.find((agent) => agent.id === id) ?? NEW_WORKTREE_BLANK_AGENT
+  // With a snapshot, resolve against the catalog rows so a custom id maps to its
+  // real row (host label + base icon) instead of degrading to Blank.
+  const options = snapshot
+    ? buildNewWorktreeAgentOptions(snapshot, { includeCustomAgents: true })
+    : NEW_WORKTREE_AGENT_OPTIONS
+  return options.find((agent) => agent.id === id) ?? NEW_WORKTREE_BLANK_AGENT
+}
+
+// Ready + enabled customs from the catalog, keyed by id → base harness. The picker
+// projection already excludes disabled/repair-required customs.
+function customAgentBasesFrom(snapshot: AgentCatalogValue | null): WorkspaceCustomAgentBases {
+  const bases = new Map<TuiAgent, BuiltInTuiAgent>()
+  for (const row of buildMobileAgentPickerRows(snapshot, { includeCustomAgents: true })) {
+    if (row.isCustom && row.baseAgent) {
+      bases.set(row.id, row.baseAgent)
+    }
+  }
+  return bases
 }
 
 export function pickPreferredNewWorktreeAgent(
   settings: NewWorktreeRuntimeSettings | null,
-  detectedAgentIds: Set<string> | null
+  detectedAgentIds: Set<string> | null,
+  catalogSnapshot: AgentCatalogValue | null = null
 ): NewWorktreeAgentOption {
+  // Why: the host's defaultTuiAgent may be a custom id; validating it against the
+  // synced catalog keeps the un-overridden preview identical to the host's
+  // default launch (which handleCreate defers to via selection kind 'default').
   return newWorktreeAgentOptionFor(
     pickWorkspaceAgent(
       {
         defaultTuiAgent: settings?.defaultTuiAgent,
         disabledTuiAgents: settings?.disabledTuiAgents
       },
-      detectedAgentIds
-    )
+      detectedAgentIds,
+      customAgentBasesFrom(catalogSnapshot)
+    ),
+    catalogSnapshot
   )
 }
 
@@ -102,6 +131,21 @@ export function buildSelectableNewWorktreeAgentOptions(args: {
   )
 }
 
+/** Rows for the new-worktree agent picker: selectable catalog rows plus the blank
+ *  terminal. Customs appear only when the host publishes a version:1 catalog (the
+ *  identity-launch capability signal); the projection returns built-ins for a
+ *  null/oversize snapshot, so unconditional inclusion stays a safe gate flip. */
+export function buildNewWorktreePickerOptions(args: {
+  snapshot: AgentCatalogValue | null
+  detectedAgentIds: Set<string> | null
+  disabledTuiAgents?: TuiAgent[]
+}): NewWorktreeAgentOption[] {
+  return [
+    ...buildSelectableNewWorktreeAgentOptions({ ...args, includeCustomAgents: true }),
+    NEW_WORKTREE_BLANK_AGENT
+  ]
+}
+
 function isSelectableAgent(
   agent: NewWorktreeAgentOption,
   settings: NewWorktreeRuntimeSettings | null,
@@ -115,19 +159,25 @@ export function resolveNewWorktreeAgentSelection({
   selectedAgent,
   agentOverridden,
   runtimeSettings,
-  detectedAgentIds
+  detectedAgentIds,
+  catalogSnapshot = null
 }: {
   visible: boolean
   selectedAgent: NewWorktreeAgentOption
   agentOverridden: boolean
   runtimeSettings: NewWorktreeRuntimeSettings | null
   detectedAgentIds: Set<string> | null
+  catalogSnapshot?: AgentCatalogValue | null
 }): { selectedAgent: NewWorktreeAgentOption; agentOverridden: boolean } {
   if (!visible) {
     return { selectedAgent, agentOverridden }
   }
 
-  const preferred = pickPreferredNewWorktreeAgent(runtimeSettings, detectedAgentIds)
+  const preferred = pickPreferredNewWorktreeAgent(
+    runtimeSettings,
+    detectedAgentIds,
+    catalogSnapshot
+  )
   if (!agentOverridden) {
     return { selectedAgent: preferred, agentOverridden: false }
   }

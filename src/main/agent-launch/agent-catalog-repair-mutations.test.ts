@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { CustomTuiAgent, CustomTuiAgentId, GlobalSettings } from '../../shared/types'
+import type {
+  CustomTuiAgent,
+  CustomTuiAgentId,
+  DeletedCustomTuiAgent,
+  GlobalSettings
+} from '../../shared/types'
 import type { CustomAgentDraft } from '../../shared/agent-catalog-snapshot'
 import { normalizeAgentCatalog } from '../../shared/custom-tui-agents'
 import {
@@ -9,6 +14,7 @@ import {
 } from './agent-catalog-mutations'
 
 const UUID_A = '01234567-89ab-4cde-8f01-23456789abcd'
+const UUID_B = 'fedcba98-7654-4321-8fed-cba987654321'
 
 function customId(base: string, uuid = UUID_A): CustomTuiAgentId {
   return `custom-agent:${base}:${uuid}` as CustomTuiAgentId
@@ -130,7 +136,67 @@ describe('repair-corrupt', () => {
       label: 'Replaced'
     })
     expect(result.patch.customTuiAgents?.[0].id).toBe(result.mintedId)
-    expect(result.patch.deletedCustomTuiAgents).toBeUndefined()
+    // The prune is persisted in the same write; no tombstone for the old id.
+    expect(result.patch.deletedCustomTuiAgents).toEqual([])
+  })
+
+  it('replace onto a freed tombstone label clears that tombstone in the same revision', () => {
+    const freed: DeletedCustomTuiAgent = {
+      id: customId('claude', UUID_B),
+      baseAgent: 'claude',
+      label: 'Freed Name',
+      deletedAt: 1
+    }
+    const settings = settingsWith({
+      ...corruptSettings(),
+      deletedCustomTuiAgents: [freed]
+    })
+    const registry = new AgentCatalogRepairTokenRegistry()
+    const token = registry.tokenFor(corruptRowsOf(settings)[0])
+    const result = apply({
+      settings,
+      repairTokens: registry,
+      countTombstoneReferences: () => 0,
+      mutation: {
+        kind: 'repair-corrupt',
+        repairToken: token,
+        action: { kind: 'replace', baseAgent: 'claude', draft: draft({ label: 'Freed Name' }) }
+      }
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    // The label check passed against the pruned view, so the prune must land in
+    // the same patch or the freed label would coexist with its tombstone.
+    expect(result.patch.deletedCustomTuiAgents).toEqual([])
+    expect(result.prunedTombstoneIds).toEqual([freed.id])
+  })
+
+  it('replace still rejects a referenced tombstone label and retains the tombstone', () => {
+    const kept: DeletedCustomTuiAgent = {
+      id: customId('claude', UUID_B),
+      baseAgent: 'claude',
+      label: 'Kept Name',
+      deletedAt: 1
+    }
+    const settings = settingsWith({
+      ...corruptSettings(),
+      deletedCustomTuiAgents: [kept]
+    })
+    const registry = new AgentCatalogRepairTokenRegistry()
+    const token = registry.tokenFor(corruptRowsOf(settings)[0])
+    const result = apply({
+      settings,
+      repairTokens: registry,
+      countTombstoneReferences: () => 1,
+      mutation: {
+        kind: 'repair-corrupt',
+        repairToken: token,
+        action: { kind: 'replace', baseAgent: 'claude', draft: draft({ label: 'Kept Name' }) }
+      }
+    })
+    expect(result).toMatchObject({ ok: false, code: 'duplicate_agent_label' })
   })
 
   it('rejects stale tokens without writing', () => {
@@ -225,6 +291,48 @@ describe('resolve-duplicate-id', () => {
       return
     }
     expect(result.patch.customTuiAgents).toEqual([])
+  })
+
+  it('persists the tombstone prune in the same write without stripping the kept row', () => {
+    const freed: DeletedCustomTuiAgent = {
+      id: customId('claude', UUID_B),
+      baseAgent: 'claude',
+      label: 'Freed Name',
+      deletedAt: 1
+    }
+    const settings = settingsWith({
+      ...duplicateSettings(),
+      deletedCustomTuiAgents: [freed]
+    })
+    const registry = new AgentCatalogRepairTokenRegistry()
+    const rows = corruptRowsOf(settings)
+    const result = apply({
+      settings,
+      repairTokens: registry,
+      countTombstoneReferences: () => 0,
+      mutation: {
+        kind: 'resolve-duplicate-id',
+        duplicateId: id,
+        rows: [
+          {
+            repairToken: registry.tokenFor(rows[0]),
+            action: {
+              kind: 'keep-for-existing-references',
+              repairedDraft: draft({ label: 'Freed Name' })
+            }
+          },
+          { repairToken: registry.tokenFor(rows[1]), action: { kind: 'discard' } }
+        ]
+      }
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    expect(result.patch.deletedCustomTuiAgents).toEqual([])
+    expect(result.prunedTombstoneIds).toEqual([freed.id])
+    expect(result.patch.customTuiAgents).toHaveLength(1)
+    expect(result.patch.customTuiAgents?.[0]).toMatchObject({ id, label: 'Freed Name' })
   })
 
   it('rejects an incomplete group, repeated tokens, or two keeps', () => {

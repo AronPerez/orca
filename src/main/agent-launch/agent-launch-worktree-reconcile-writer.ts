@@ -4,9 +4,13 @@
 // callbacks, enforcing the plan's coexistence rule for the unknown state:
 //   launched               → settle the boundary registered, record `launched`,
 //                            clear pending (public + private), clear the failure.
-//   invalid_launch_snapshot → record a durable failure, settle failed, clear
-//                            pending; NEVER tears down the live-but-unattributed
-//                            terminal (the retry gate blocks Retry while live).
+//   invalid_launch_snapshot → write the durable failure ONLY, like unknown: the
+//                            pending, the private snapshot/token, and the held
+//                            reservation all survive while the conflicting
+//                            terminal is live, so its later exit re-derives this
+//                            same pending as spawn_failed and Retry re-opens.
+//                            NEVER tears down the live-but-unattributed terminal
+//                            (the retry gate blocks Retry while it lives).
 //   spawn_failed           → record a durable failure, settle failed, clear
 //                            pending; Retry becomes available.
 //   launch_state_unknown   → write the durable failure ONLY. The public pending,
@@ -40,9 +44,12 @@ export type ResolvedLaunchLiveness =
   | { kind: 'unknown' }
 
 /** Per-scope durable writes the reconciler drives. `settleLaunched`/`settleFailed`
- *  clear the public pending; `markUnknown` MUST retain it (coexistence rule) and
- *  should keep any existing launch_state_unknown failureId stable across idempotent
- *  re-runs so the client's expectedFailureId guard does not churn. */
+ *  clear the public pending; `markUnknown` MUST retain it (coexistence rule). It
+ *  receives BOTH non-settling codes — launch_state_unknown and
+ *  invalid_launch_snapshot — and should keep any existing launch_state_unknown
+ *  failureId stable across idempotent re-runs so the client's expectedFailureId
+ *  guard does not churn (invalid_launch_snapshot may rotate: Retry is blocked
+ *  while the conflicting terminal lives, so no guard reads it). */
 export type ReconcileScopePersistence = {
   settleLaunched: () => void
   settleFailed: (failure: PersistedAgentLaunchFailure) => void
@@ -116,7 +123,7 @@ export function reconcileOnePendingAgentLaunch(
     return outcome
   }
 
-  if (outcome.kind === 'invalid_launch_snapshot' || outcome.kind === 'spawn_failed') {
+  if (outcome.kind === 'spawn_failed') {
     const failure = persistedFailure(outcome.kind, pending, deps, pending.intent, nowFn())
     deps.settleBoundary(pending.launchToken, 'failed')
     deps.operationStore.recordSettled({
@@ -134,9 +141,13 @@ export function reconcileOnePendingAgentLaunch(
     return outcome
   }
 
-  // launch_state_unknown — coexistence rule: settle nothing, clear nothing,
-  // release nothing. Only the durable failure card is (re)written.
-  const failure = persistedFailure('launch_state_unknown', pending, deps, pending.intent, nowFn())
+  // invalid_launch_snapshot / launch_state_unknown — coexistence rule: settle
+  // nothing, clear nothing, release nothing. Only the durable failure card is
+  // (re)written. Retaining the pending is what re-opens recovery later: once
+  // the conflicting (or unreachable) terminal is gone, the next liveness event
+  // reconciles this same pending as spawn_failed (retryable) — never a
+  // permanent dead-end that neither Retry nor Forget can clear.
+  const failure = persistedFailure(outcome.kind, pending, deps, pending.intent, nowFn())
   persistence.markUnknown(failure)
   return outcome
 }

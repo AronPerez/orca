@@ -79,6 +79,7 @@ export function CustomAgentEnvRowsEditor({
             <EnvRowFields
               key={row.rowId}
               row={row}
+              disabled={editor.inputsLocked}
               error={rowError?.message}
               onKeyChange={(key) =>
                 editor.setEnvRows((current) =>
@@ -117,7 +118,7 @@ export function CustomAgentEnvRowsEditor({
         type="button"
         variant="outline"
         size="sm"
-        disabled={atCap}
+        disabled={atCap || editor.inputsLocked}
         onClick={() => editor.setEnvRows((current) => [...current, createEnvRow()])}
       >
         <Plus className="size-3.5" />
@@ -137,6 +138,7 @@ export function CustomAgentEnvRowsEditor({
 
 type EnvRowFieldsProps = {
   row: CustomAgentEnvRow
+  disabled?: boolean
   error?: string
   onKeyChange: (key: string) => void
   onValueChange: (value: string) => void
@@ -147,6 +149,7 @@ type EnvRowFieldsProps = {
 
 function EnvRowFields({
   row,
+  disabled,
   error,
   onKeyChange,
   onValueChange,
@@ -159,6 +162,7 @@ function EnvRowFields({
       <div className="flex items-center gap-2">
         <Input
           value={row.key}
+          disabled={disabled}
           placeholder={translate(
             'auto.components.settings.CustomAgentEditorDialog.envKeyPlaceholder',
             'NAME'
@@ -175,6 +179,7 @@ function EnvRowFields({
         />
         <Input
           value={row.value}
+          disabled={disabled}
           type={row.revealed ? 'text' : 'password'}
           placeholder={translate(
             'auto.components.settings.CustomAgentEditorDialog.envValuePlaceholder',
@@ -194,6 +199,7 @@ function EnvRowFields({
           type="button"
           variant="ghost"
           size="icon"
+          disabled={disabled}
           onClick={onToggleReveal}
           aria-pressed={row.revealed}
           aria-label={
@@ -211,6 +217,7 @@ function EnvRowFields({
           type="button"
           variant="ghost"
           size="icon"
+          disabled={disabled}
           onClick={onRemove}
           aria-label={translate(
             'auto.components.settings.CustomAgentEditorDialog.envRemove',

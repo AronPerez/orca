@@ -61,6 +61,40 @@ export async function runSourceControlAgentActionStart({
   onLaunched,
   onClose
 }: RunSourceControlAgentActionStartArgs): Promise<boolean> {
+  // Why: both launch paths resolve the recipe host-side from the owner locator
+  // (the client no longer sends assembled args), so "Save & start" must persist
+  // the recipe first or the launch runs against the previous stored snapshot.
+  const saveTarget = resolveSourceControlAgentSaveTarget(saveTargetValue, repoId)
+  const launchRecipe = {
+    agentId: selectedAgent,
+    commandInputTemplate: commandTemplate,
+    agentArgs
+  }
+  const launchRecipeAlreadySaved = Boolean(
+    saveTarget &&
+    sourceControlActionRecipeMatchesTarget({
+      actionId,
+      target: saveTarget,
+      recipe: launchRecipe,
+      settings,
+      repo
+    })
+  )
+  if (saveTarget && onSaveAgentDefault && !launchRecipeAlreadySaved) {
+    try {
+      await onSaveAgentDefault(saveTarget, actionId, launchRecipe)
+    } catch (error) {
+      console.error('saving the agent recipe before launch failed', error)
+      toast.error(
+        translate(
+          'auto.components.right.sidebar.SourceControlAgentActionDialog.saveBeforeStartFailed',
+          'Could not save the agent settings, so the agent was not started.'
+        )
+      )
+      return false
+    }
+  }
+
   let launched = false
   let launchFailureNotified = false
   if (onStart) {
@@ -109,25 +143,6 @@ export async function runSourceControlAgentActionStart({
     return false
   }
 
-  const saveTarget = resolveSourceControlAgentSaveTarget(saveTargetValue, repoId)
-  const launchRecipe = {
-    agentId: selectedAgent,
-    commandInputTemplate: commandTemplate,
-    agentArgs
-  }
-  const launchRecipeAlreadySaved = Boolean(
-    saveTarget &&
-    sourceControlActionRecipeMatchesTarget({
-      actionId,
-      target: saveTarget,
-      recipe: launchRecipe,
-      settings,
-      repo
-    })
-  )
-  if (saveTarget && onSaveAgentDefault && !launchRecipeAlreadySaved) {
-    await onSaveAgentDefault(saveTarget, actionId, launchRecipe)
-  }
   onLaunched?.()
   onClose()
   return true

@@ -297,6 +297,26 @@ describe('tombstone reference GC across owners', () => {
     expect(state.settings.agentCatalogRevision).toBe(2)
     expect(result.catalogRevision).toBe(2)
   })
+
+  it('reference-removal prune strips a suppressed same-id live row instead of resurrecting it', () => {
+    // Corrupted/legacy merge state: a full live definition survived deletion and
+    // is suppressed only by the tombstone. The prune must not make it launchable.
+    const zombie = liveAgent({ id: deadId, label: 'Zombie', args: '--secret' })
+    const { service, state } = serviceWith({
+      settings: baseSettings({
+        customTuiAgents: [zombie],
+        terminalQuickCommands: [agentQuickCommand(deadId)],
+        deletedCustomTuiAgents: [tombstoneFor(deadId)]
+      })
+    })
+    const result = service.mutateReferences({
+      expectedReferenceRevision: 1,
+      mutation: { kind: 'quick-command-delete', id: 'qc-1' }
+    })
+    expect(result.ok).toBe(true)
+    expect(state.settings.deletedCustomTuiAgents).toHaveLength(0)
+    expect(state.settings.customTuiAgents).toEqual([])
+  })
 })
 
 describe('session owner (host-private resume records)', () => {

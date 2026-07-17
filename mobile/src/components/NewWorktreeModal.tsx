@@ -27,19 +27,17 @@ import {
   wasSetupHookPreviouslyApproved,
   type SetupHookTrust
 } from '../tasks/setup-hook-trust'
-import {
-  isMobileTuiAgent,
-  isMobileTuiAgentEnabled,
-  MOBILE_TUI_AGENT_LAUNCH_COMMANDS
-} from '../tasks/mobile-tui-agents'
+import { isMobileTuiAgentEnabled } from '../tasks/mobile-tui-agents'
 import { hostSupportsAgentLaunchIdentity } from '../session/agent-launch-identity-capability'
-import { buildInteractiveLaunchParams } from './interactive-worktree-launch-params'
+import {
+  buildInteractiveLaunchParams,
+  legacyAgentLaunchCommand
+} from './interactive-worktree-launch-params'
 import type { PersistedTrustedOrcaHooks, TuiAgent } from '../../../src/shared/types'
 import type { SshConnectionState } from '../../../src/shared/ssh-types'
 import {
-  buildSelectableNewWorktreeAgentOptions,
+  buildNewWorktreePickerOptions,
   NEW_WORKTREE_AGENT_OPTIONS as AGENT_OPTIONS,
-  NEW_WORKTREE_BLANK_AGENT as BLANK_TERMINAL,
   pickPreferredNewWorktreeAgent,
   resolveNewWorktreeAgentSelection,
   type NewWorktreeAgentOption as AgentOption
@@ -288,7 +286,8 @@ function NewWorktreeModalContent({
     selectedAgent: selectedAgentState,
     agentOverridden: agentOverriddenState,
     runtimeSettings,
-    detectedAgentIds
+    detectedAgentIds,
+    catalogSnapshot: agentCatalog
   })
   // Why: agent preference repair is pure render dataflow; doing it here
   // avoids a stale selected-agent commit while preserving user overrides.
@@ -638,19 +637,18 @@ function NewWorktreeModalContent({
         selectedAgent.id !== '__blank__' &&
         !isMobileTuiAgentEnabled(selectedAgent.id, latestRuntimeSettings?.disabledTuiAgents)
       ) {
-        setSelectedAgent(pickPreferredNewWorktreeAgent(latestRuntimeSettings, detectedAgentIds))
+        setSelectedAgent(
+          pickPreferredNewWorktreeAgent(latestRuntimeSettings, detectedAgentIds, agentCatalog)
+        )
         setAgentOverridden(false)
         setError('Selected agent is disabled. Choose an enabled agent before creating.')
         return
       }
 
-      const legacyCommand =
-        selectedAgent.id !== '__blank__'
-          ? (latestRuntimeSettings?.agentCmdOverrides?.[selectedAgent.id] ??
-            (isMobileTuiAgent(selectedAgent.id)
-              ? MOBILE_TUI_AGENT_LAUNCH_COMMANDS[selectedAgent.id]
-              : undefined))
-          : undefined
+      const legacyCommand = legacyAgentLaunchCommand(
+        selectedAgent.id,
+        latestRuntimeSettings?.agentCmdOverrides
+      )
       // Capable hosts own launch resolution: send the agent identity only and let the
       // host derive the command + env. An un-overridden selection defers to the host's
       // atomic default pick; incapable hosts get the legacy startupCommand.
@@ -754,16 +752,11 @@ function NewWorktreeModalContent({
     !creating &&
     !sshGate.requiresConnection &&
     (!needsSetupChoice || setupDecisionChoice != null)
-  // Customs appear only when the host publishes a version:1 catalog (the identity-
-  // launch capability signal); the projection returns built-ins for a null/oversize
-  // snapshot, so passing includeCustomAgents unconditionally stays a safe gate flip.
-  const visibleAgentOptions = buildSelectableNewWorktreeAgentOptions({
+  const pickerAgentOptions = buildNewWorktreePickerOptions({
     snapshot: agentCatalog,
-    includeCustomAgents: true,
     detectedAgentIds,
     disabledTuiAgents: runtimeSettings?.disabledTuiAgents
   })
-  const pickerAgentOptions = [...visibleAgentOptions, BLANK_TERMINAL]
   const repoPickerItems = useMemo(
     () => repos.map((repo) => ({ id: repo.id, label: repo.displayName, repo })),
     [repos]

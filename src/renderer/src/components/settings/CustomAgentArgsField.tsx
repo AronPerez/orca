@@ -40,10 +40,12 @@ export function CustomAgentArgsField({
         <div className="flex items-center gap-1">
           <InsertChip
             label={REPO_PATH_PLACEHOLDER}
+            disabled={editor.inputsLocked}
             onInsert={() => editor.insertPlaceholder(REPO_PATH_PLACEHOLDER)}
           />
           <InsertChip
             label={WORKTREE_PATH_PLACEHOLDER}
+            disabled={editor.inputsLocked}
             onInsert={() => editor.insertPlaceholder(WORKTREE_PATH_PLACEHOLDER)}
           />
         </div>
@@ -51,6 +53,7 @@ export function CustomAgentArgsField({
       <textarea
         id="custom-agent-args"
         ref={editor.refs.argsTextareaRef}
+        disabled={editor.inputsLocked}
         value={draft.args}
         spellCheck={false}
         maxLength={MAX_AGENT_ARGS_CODE_UNITS}
@@ -87,9 +90,11 @@ export function CustomAgentArgsField({
 
 function InsertChip({
   label,
+  disabled,
   onInsert
 }: {
   label: string
+  disabled?: boolean
   onInsert: () => void
 }): React.JSX.Element {
   return (
@@ -97,6 +102,7 @@ function InsertChip({
       type="button"
       variant="outline"
       size="sm"
+      disabled={disabled}
       className="h-6 px-2 font-mono text-[11px]"
       // Keep the target field focused and its selection intact so the insert
       // lands at the caret instead of the end.

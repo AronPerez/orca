@@ -797,4 +797,26 @@ describe('update-built-in malformed payloads (L1-#6)', () => {
     })
     expect(numberArgs).toMatchObject({ ok: false, field: 'args', reason: 'bounds' })
   })
+
+  it('returns a typed error for a non-string commandOverride instead of throwing on trim', () => {
+    for (const override of [42, { path: '/x' }]) {
+      const result = apply({
+        mutation: {
+          kind: 'update-built-in',
+          agent: 'codex',
+          changes: { commandOverride: override, args: '', env: {} } as unknown as {
+            commandOverride: null
+            args: string
+            env: {}
+          }
+        }
+      })
+      expect(result).toMatchObject({
+        ok: false,
+        code: 'invalid_agent_field',
+        field: 'commandOverride',
+        reason: 'bounds'
+      })
+    }
+  })
 })

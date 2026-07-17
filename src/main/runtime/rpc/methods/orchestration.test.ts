@@ -1640,10 +1640,46 @@ describe('orchestration RPC methods', () => {
       setup()
       const task = db.createTask({ spec: 'work' })
       const ctx = db.createDispatchContext(task.id, 'term_a')
+      // Stale unknown card left behind, but the dispatch already completed —
+      // the db-level 'dispatched'-only gate must still reject.
+      db.markDispatchLaunchUnknown(ctx.id, strandedFailure)
       db.completeDispatch(ctx.id)
       await expect(call('orchestration.dispatchForget', { task: task.id })).rejects.toThrow(
         'not in a forgettable state'
       )
+    })
+
+    // Regression (P3 review): the automation/worktree forgets require the
+    // reconciler's launch_state_unknown marker; dispatchForget must too, or any
+    // authenticated caller could force-forget a healthy working dispatch with
+    // only a task id.
+    it('rejects a healthy dispatched context with no launch failure card', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+
+      await expect(call('orchestration.dispatchForget', { task: task.id })).rejects.toThrow(
+        'not stranded in an unknown launch state'
+      )
+      // Nothing mutated: the dispatch keeps working and the task stays dispatched.
+      expect(db.getDispatchContextById(ctx.id)?.status).toBe('dispatched')
+      expect(db.getTask(task.id)?.status).toBe('dispatched')
+    })
+
+    it('rejects a dispatched context whose failure card is not launch_state_unknown', async () => {
+      setup()
+      const task = db.createTask({ spec: 'work' })
+      const ctx = db.createDispatchContext(task.id, 'term_a')
+      db.markDispatchLaunchUnknown(ctx.id, {
+        ...strandedFailure,
+        code: 'spawn_failed',
+        failureId: 'fail-spawn-1'
+      })
+
+      await expect(
+        call('orchestration.dispatchForget', { task: task.id, expectedFailureId: 'fail-spawn-1' })
+      ).rejects.toThrow('not stranded in an unknown launch state')
+      expect(db.getDispatchContextById(ctx.id)?.status).toBe('dispatched')
     })
 
     it('settles the op-store ledger, clears the pending snapshot, and frees the reservation (parity with worktree forget)', async () => {

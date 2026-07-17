@@ -57,6 +57,9 @@ export function useCustomAgentEditor(params: {
   const { open, mode, initialBaseAgent, onSaved, onClose } = params
   const [draft, setDraft] = useState<CustomAgentEditorDraft>(() => emptyDraft(initialBaseAgent))
   const [loading, setLoading] = useState(false)
+  // A failed edit seed must lock the form: saving without the seeded draft would
+  // issue update-custom with a blank/stale client draft over the host definition.
+  const [seedFailed, setSeedFailed] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [showSaving, setShowSaving] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<CustomAgentEditorFieldError[]>([])
@@ -99,6 +102,7 @@ export function useCustomAgentEditor(params: {
     const token = (loadTokenRef.current += 1)
     setFieldErrors([])
     setFormError(null)
+    setSeedFailed(false)
     activeFieldRef.current = null
     // new and repair-replace both start from a blank, base-selectable draft.
     if (mode.kind === 'new' || mode.kind === 'repair-replace') {
@@ -119,6 +123,9 @@ export function useCustomAgentEditor(params: {
     }
     // edit and repair-edit both seed one editable record; repair-edit addresses
     // the corrupt physical row by its opaque token instead of by id.
+    // Clear the previous session's draft before the fetch: another agent's fields
+    // (including env values) must never show under this identity or be saved onto it.
+    setDraft(emptyDraft(baseAgent))
     setLoading(true)
     const seed =
       mode.kind === 'repair-edit'
@@ -132,6 +139,7 @@ export function useCustomAgentEditor(params: {
       if (result.kind === 'ready') {
         setDraft(result.draft)
       } else {
+        setSeedFailed(true)
         setFormError(result.error)
       }
     })
@@ -148,20 +156,37 @@ export function useCustomAgentEditor(params: {
     }
   }, [])
 
+  // Backstop for controls without a wired disabled prop (e.g. the syncEnv
+  // switch): a locked form accepts no draft mutation, so a late seed cannot
+  // clobber typing and a failed seed cannot be edited around.
+  const inputsLocked = loading || seedFailed
+
   const clearFieldErrors = useCallback((field: CustomAgentEditorFieldError['field']) => {
     setFieldErrors((current) => current.filter((error) => error.field !== field))
     setFormError(null)
   }, [])
 
-  const updateField = useCallback((partial: Partial<CustomAgentEditorDraft>) => {
-    setDraft((current) => ({ ...current, ...partial }))
-  }, [])
+  const updateField = useCallback(
+    (partial: Partial<CustomAgentEditorDraft>) => {
+      if (inputsLocked) {
+        return
+      }
+      setDraft((current) => ({ ...current, ...partial }))
+    },
+    [inputsLocked]
+  )
 
-  const setEnvRows = useCallback((updater: (rows: CustomAgentEnvRow[]) => CustomAgentEnvRow[]) => {
-    setDraft((current) => ({ ...current, envRows: updater(current.envRows) }))
-    setFieldErrors((current) => current.filter((error) => error.field !== 'env'))
-    setFormError(null)
-  }, [])
+  const setEnvRows = useCallback(
+    (updater: (rows: CustomAgentEnvRow[]) => CustomAgentEnvRow[]) => {
+      if (inputsLocked) {
+        return
+      }
+      setDraft((current) => ({ ...current, envRows: updater(current.envRows) }))
+      setFieldErrors((current) => current.filter((error) => error.field !== 'env'))
+      setFormError(null)
+    },
+    [inputsLocked]
+  )
 
   const registerTemplateField = useCallback(
     (target: TemplateInsertTarget, element: HTMLTextAreaElement | HTMLInputElement) => {
@@ -174,22 +199,27 @@ export function useCustomAgentEditor(params: {
     []
   )
 
-  const insertPlaceholder = useCallback((placeholder: string) => {
-    const active = activeFieldRef.current
-    const element = active?.element ?? argsTextareaRef.current
-    const target: TemplateInsertTarget = active?.target ?? { kind: 'args' }
-    if (!element) {
-      return
-    }
-    const selection = {
-      start: element.selectionStart ?? element.value.length,
-      end: element.selectionEnd ?? element.value.length
-    }
-    applyTemplateInsert({ target, selection, placeholder, element, setDraft })
-  }, [])
+  const insertPlaceholder = useCallback(
+    (placeholder: string) => {
+      const active = activeFieldRef.current
+      const element = active?.element ?? argsTextareaRef.current
+      const target: TemplateInsertTarget = active?.target ?? { kind: 'args' }
+      if (!element || inputsLocked) {
+        return
+      }
+      const selection = {
+        start: element.selectionStart ?? element.value.length,
+        end: element.selectionEnd ?? element.value.length
+      }
+      applyTemplateInsert({ target, selection, placeholder, element, setDraft })
+    },
+    [inputsLocked]
+  )
 
   const submit = useCallback(async () => {
-    if (submitting) {
+    // Refuse until the seed completed for the addressed identity: Enter-to-submit
+    // and a re-enabled Save must not write a blank/foreign draft over the record.
+    if (submitting || loading || seedFailed) {
       return
     }
     const localIssues = collectLocalIssues(mode, draft)
@@ -220,12 +250,16 @@ export function useCustomAgentEditor(params: {
       setFormError(copy.error)
     }
     focusErrorSummary(errorSummaryRef)
-  }, [submitting, mode, draft, onSaved, onClose])
+  }, [submitting, loading, seedFailed, mode, draft, onSaved, onClose])
 
   return {
     draft,
     baseAgent,
     loading,
+    seedFailed,
+    // Field editors and Save disable together: while the seed is in flight (so a
+    // late seed cannot clobber typing) and permanently once it has failed.
+    inputsLocked,
     submitting,
     showSaving,
     fieldErrors,

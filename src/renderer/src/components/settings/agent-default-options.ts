@@ -6,6 +6,7 @@
 import type { BuiltInTuiAgent, TuiAgent } from '../../../../shared/types'
 import type { LocalAgentCatalogSnapshot } from '../../../../shared/agent-catalog-snapshot'
 import { getAgentCatalog } from '@/lib/agent-catalog'
+import { translate } from '@/i18n/i18n'
 import { TUI_AGENT_DISPLAY_NAMES } from '../../../../shared/tui-agent-display-names'
 import { buildAgentSearchSummary } from '../../../../shared/agent-search-query'
 import type {
@@ -114,6 +115,24 @@ export function deriveStaleDefault(snapshot: LocalAgentCatalogSnapshot): AgentDe
   )
   if (custom && custom.status === 'ready') {
     return { id: value, label: custom.definition.label, baseAgent: custom.definition.baseAgent }
+  }
+  // Host normalization keeps a repair-required custom as the stored default when
+  // its base is proven; without this branch the trigger falls through to Auto and
+  // hides the repair warning. No base is ever derived from id syntax alone.
+  const repair = snapshot.customAgents.find(
+    (agent) => agent.status === 'repair-required' && agent.id === value
+  )
+  if (repair && repair.status === 'repair-required' && repair.baseAgent) {
+    return {
+      id: value,
+      label:
+        repair.label ??
+        translate(
+          'auto.components.settings.AgentDefaultCombobox.repairFallbackLabel',
+          'Custom agent'
+        ),
+      baseAgent: repair.baseAgent
+    }
   }
   const tombstone = snapshot.deletedCustomAgents.find((agent) => agent.id === value)
   if (tombstone) {

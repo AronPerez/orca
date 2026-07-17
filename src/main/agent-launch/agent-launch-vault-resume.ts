@@ -23,6 +23,7 @@ import {
 } from '../../shared/ai-vault-types'
 import {
   isResumableTuiAgent,
+  providerSessionKeyForResumableBase,
   type SleepingAgentLaunchConfig
 } from '../../shared/agent-session-resume'
 import {
@@ -263,7 +264,12 @@ export function buildVaultResumeStartup(args: {
   if (isResumableTuiAgent(session.agent)) {
     const startupPlan = buildAgentResumeStartupPlan({
       agent: session.agent,
-      providerSession: { key: 'session_id', id: session.sessionId },
+      // Antigravity keys on conversation_id; a hardcoded session_id makes its
+      // resume argv lookup fail and drops it to the unstructured fallback.
+      providerSession: {
+        key: providerSessionKeyForResumableBase(session.agent),
+        id: session.sessionId
+      },
       cmdOverrides: {
         ...settings?.agentCmdOverrides,
         ...(commandOverride?.trim() ? { [session.agent]: commandOverride } : {})

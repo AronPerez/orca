@@ -86,9 +86,17 @@ export function validateDraft(draft: CustomAgentDraft): AgentCatalogMutationErro
       return fieldError(commandIssue)
     }
   }
+  // IPC validates only the mutation envelope, so a draft missing args/env must
+  // fail typed here instead of throwing inside draftToDefinition.
+  if (typeof draft.args !== 'string') {
+    return { ok: false, code: 'invalid_agent_field', field: 'args', reason: 'bounds' }
+  }
   const argsIssue = validateAgentArgs(draft.args)
   if (argsIssue) {
     return fieldError(argsIssue)
+  }
+  if (draft.env === null || draft.env === undefined) {
+    return { ok: false, code: 'invalid_agent_field', field: 'env', reason: 'bounds' }
   }
   const envIssues = validateCustomAgentEnv(draft.env)
   if (envIssues.length > 0) {
@@ -143,25 +151,6 @@ export function labelCollides(
     }
   }
   return false
-}
-
-/** Conservative unreferenced-tombstone prune: authoritative zero references
- *  frees the tombstone (and its label); 'unknown' retains. */
-export function pruneTombstones(
-  tombstones: readonly DeletedCustomTuiAgent[],
-  countReferences: (id: CustomTuiAgentId) => TombstoneReferenceCount
-): { retained: DeletedCustomTuiAgent[]; prunedIds: CustomTuiAgentId[] } {
-  const retained: DeletedCustomTuiAgent[] = []
-  const prunedIds: CustomTuiAgentId[] = []
-  for (const tombstone of tombstones) {
-    const count = countReferences(tombstone.id)
-    if (count === 0) {
-      prunedIds.push(tombstone.id)
-    } else {
-      retained.push(tombstone)
-    }
-  }
-  return { retained, prunedIds }
 }
 
 type AgentKeyedCacheHolder = {

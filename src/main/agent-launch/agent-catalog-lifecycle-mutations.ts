@@ -21,11 +21,14 @@ import { isBuiltInTuiAgent } from '../../shared/tui-agent-config'
 import {
   draftToDefinition,
   labelCollides,
-  pruneTombstones,
   stripAgentKeyedModelCaches,
   validateDraft,
   type AgentCatalogMutationApplication
 } from './agent-catalog-draft-validation'
+import {
+  pruneTombstones,
+  stripRowsSuppressedByPrunedTombstones
+} from './agent-catalog-tombstone-gc'
 import {
   isLegacyAgentPrefixPlatformAmbiguous,
   tokenizeLegacyAgentPrefix
@@ -55,10 +58,16 @@ export function applyCreate(
   }
   const id = mintCustomTuiAgentId(baseAgent)
   const definition = draftToDefinition(id, baseAgent, draft)
+  // A pruned tombstone must not resurrect its suppressed same-id row.
+  const nextLive = stripRowsSuppressedByPrunedTombstones(
+    context.persistedLive,
+    prunedIds,
+    context.catalog
+  )
   return {
     ok: true,
     patch: {
-      customTuiAgents: [...context.persistedLive, definition] as CustomTuiAgent[],
+      customTuiAgents: [...nextLive, definition] as CustomTuiAgent[],
       deletedCustomTuiAgents: retained,
       agentCatalogRevision: context.newRevision
     },
@@ -170,11 +179,14 @@ export function applyUpdateCustom(
     return { ok: false, code: 'duplicate_agent_label', field: 'label' }
   }
   const nextDefinition = draftToDefinition(id, baseAgent, changes)
-  // Updates preserve the row's physical index (creation-order authority).
-  const nextLive = persistedLive.map((row) => {
-    const rowId = (row as { id?: unknown })?.id
-    return rowId === id ? nextDefinition : row
-  })
+  // A pruned tombstone must not resurrect its suppressed same-id row; updates
+  // preserve the row's physical index (creation-order authority).
+  const nextLive = stripRowsSuppressedByPrunedTombstones(persistedLive, prunedIds, catalog).map(
+    (row) => {
+      const rowId = (row as { id?: unknown })?.id
+      return rowId === id ? nextDefinition : row
+    }
+  )
   return {
     ok: true,
     patch: {

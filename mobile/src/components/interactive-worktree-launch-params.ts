@@ -4,6 +4,25 @@ import type {
   AgentLaunchSelectionRequest,
   AgentLaunchSpawnRequest
 } from '../../../src/shared/agent-launch-spawn-request'
+import { isMobileTuiAgent, MOBILE_TUI_AGENT_LAUNCH_COMMANDS } from '../tasks/mobile-tui-agents'
+
+// Legacy client-assembled command for hosts without the identity capability: the
+// user's per-agent override, else the built-in launch command. Custom ids have no
+// client-derivable command.
+export function legacyAgentLaunchCommand(
+  selectedAgentId: TuiAgent | '__blank__',
+  agentCmdOverrides: Record<string, string> | undefined
+): string | undefined {
+  if (selectedAgentId === '__blank__') {
+    return undefined
+  }
+  return (
+    agentCmdOverrides?.[selectedAgentId] ??
+    (isMobileTuiAgent(selectedAgentId)
+      ? MOBILE_TUI_AGENT_LAUNCH_COMMANDS[selectedAgentId]
+      : undefined)
+  )
+}
 
 export type InteractiveLaunchParamsInput = {
   selectedAgentId: TuiAgent | '__blank__'

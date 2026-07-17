@@ -17,6 +17,7 @@ import {
   AgentCatalogRepairTokenRegistry,
   applyAgentCatalogMutation
 } from './agent-catalog-mutations'
+import { buildUnreferencedTombstonePrunePatch } from './agent-catalog-tombstone-gc'
 import {
   buildAgentCatalogSnapshot,
   buildLocalAgentCatalogSnapshot,
@@ -285,19 +286,19 @@ export class AgentCatalogService {
    *  publishes the catalog revision so receivers replace their snapshot. */
   private pruneUnreferencedTombstonesAfterReferenceRemoval(): void {
     const settings = this.store.getSettings()
-    const tombstones = settings.deletedCustomTuiAgents ?? []
-    if (tombstones.length === 0) {
-      return
-    }
-    const retained = tombstones.filter(
-      (tombstone) => this.referenceIndex.countReferences(tombstone.id) !== 0
+    // The patch also strips any persisted row the pruned tombstone suppressed,
+    // so the prune can never resurrect it.
+    const prunePatch = buildUnreferencedTombstonePrunePatch(
+      settings,
+      normalizeCatalogFromSettings(settings),
+      (id) => this.referenceIndex.countReferences(id)
     )
-    if (retained.length === tombstones.length) {
+    if (!prunePatch) {
       return
     }
     const newRevision = (settings.agentCatalogRevision ?? 1) + 1
     this.store.updateSettings(
-      { deletedCustomTuiAgents: retained, agentCatalogRevision: newRevision },
+      { ...prunePatch, agentCatalogRevision: newRevision },
       { notifyListeners: true }
     )
     for (const listener of this.changeListeners) {

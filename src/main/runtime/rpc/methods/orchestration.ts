@@ -15,6 +15,8 @@ import { abbreviateOrchestrationTasks } from '../../../../shared/orchestration-t
 import { ORCHESTRATION_GATE_METHODS } from './orchestration-gates'
 import { getHostAgentLaunchOperationStore } from '../../../agent-launch/agent-launch-operation-store-host'
 import { getHostAgentLaunchBoundary } from '../../../agent-launch/agent-launch-boundary-host'
+import { parsePersistedAgentLaunchFailure } from '../../../../shared/agent-launch-failure-schema'
+import type { PersistedAgentLaunchFailure } from '../../../../shared/agent-launch-contract'
 
 const MESSAGE_TYPES: MessageType[] = [
   'status',
@@ -76,15 +78,17 @@ function settleForgottenDispatchOpStore(dispatchId: string): void {
   getHostAgentLaunchBoundary().settleAgentLaunch(pending.launchToken, 'failed')
 }
 
-// The dispatch's structured launch-failure failureId, used as the Forget
-// anti-race guard. Tolerant of a null/legacy/malformed blob → null.
-function parseDispatchFailureId(agentLaunchFailure: string | null): string | null {
+// The dispatch's structured launch failure, strictly parsed for the Forget
+// stranded gate + failureId anti-race guard. A null/legacy/malformed blob is
+// null, which fails the stranded gate closed (never forgettable).
+function parseDispatchLaunchFailure(
+  agentLaunchFailure: string | null
+): PersistedAgentLaunchFailure | null {
   if (!agentLaunchFailure) {
     return null
   }
   try {
-    const parsed = JSON.parse(agentLaunchFailure) as { failureId?: unknown }
-    return typeof parsed.failureId === 'string' ? parsed.failureId : null
+    return parsePersistedAgentLaunchFailure(JSON.parse(agentLaunchFailure))
   } catch {
     return null
   }
@@ -225,7 +229,8 @@ const DispatchForgetParams = z.object({
   task: requiredString('Missing --task'),
   // Anti-race guard: only forget the exact stranded failure the caller saw. The
   // failureId comes from the dispatch's structured agent_launch_failure (never a
-  // secret). Absent = forget the current stranded dispatch unconditionally.
+  // secret). Absent = skip the anti-race check; the launch_state_unknown
+  // stranded gate in the handler still applies either way.
   expectedFailureId: OptionalString
 })
 
@@ -645,11 +650,22 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
         settleForgottenDispatchOpStore(ctx.id)
         return { dispatch: ctx }
       }
+      const launchFailure = parseDispatchLaunchFailure(ctx.agent_launch_failure)
       if (
         params.expectedFailureId !== undefined &&
-        parseDispatchFailureId(ctx.agent_launch_failure) !== params.expectedFailureId
+        launchFailure?.failureId !== params.expectedFailureId
       ) {
         throw new Error(`Stale forget for task ${params.task}: dispatch launch failure changed`)
+      }
+      // Stranded gate (parity with automation forgetAutomationRun L4-M4 and the
+      // worktree/background forget): a 'dispatched' status alone doesn't mean
+      // stranded — the worker may be actively running. Only the reconciler's
+      // launch_state_unknown card proves Orca lost track of the launch; without
+      // it, a bare task id must not force-forget a healthy dispatch.
+      if (launchFailure?.code !== 'launch_state_unknown') {
+        throw new Error(
+          `Dispatch for task ${params.task} is not stranded in an unknown launch state`
+        )
       }
       const forgotten = db.forgetDispatch(ctx.id)
       if (!forgotten) {

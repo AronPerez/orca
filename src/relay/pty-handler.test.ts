@@ -2121,6 +2121,47 @@ describe('PtyHandler', () => {
     expect(callArgs.env.TERM_PROGRAM).toBe('Orca')
   })
 
+  it('echoes launchToken on listProcesses across spawn and revive', async () => {
+    // Crash reconciliation matches pending launches to live remote PTYs by the
+    // re-listed token; a persisted-but-not-echoed token false-settles
+    // spawn_failed while the agent is still running.
+    await dispatcher.callRequest('pty.spawn', {
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      launchToken: 'tok-reconcile'
+    })
+    await dispatcher.callRequest('pty.spawn', { cols: 80, rows: 24, cwd: '/tmp' })
+
+    const listed = (await dispatcher.callRequest('pty.listProcesses')) as {
+      id: string
+      launchToken?: string
+    }[]
+    expect(listed.find((p) => p.id === 'pty-1')?.launchToken).toBe('tok-reconcile')
+    const tokenless = listed.find((p) => p.id === 'pty-2')
+    expect(tokenless).toBeDefined()
+    expect(tokenless && 'launchToken' in tokenless).toBe(false)
+
+    const state = (await dispatcher.callRequest('pty.serialize', { ids: ['pty-1'] })) as string
+
+    await handler.dispose({ waitForPhysicalExit: false })
+    mockPtySpawn.mockClear()
+    dispatcher = createMockDispatcher()
+    handler = new PtyHandler(dispatcher as unknown as RelayDispatcher)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      await dispatcher.callRequest('pty.revive', { state })
+    } finally {
+      killSpy.mockRestore()
+    }
+
+    const revived = (await dispatcher.callRequest('pty.listProcesses')) as {
+      id: string
+      launchToken?: string
+    }[]
+    expect(revived.find((p) => p.id === 'pty-1')?.launchToken).toBe('tok-reconcile')
+  })
+
   it('fences both revived worktree identity and cwd with rollback', async () => {
     const finishSiblingAdmission = vi.fn()
     const beginWorktreePtySpawn = vi.fn((operationPath: string) => {

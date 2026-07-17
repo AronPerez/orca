@@ -70,6 +70,25 @@ describe('useLocalAgentCatalog', () => {
     expect(getLocal).toHaveBeenCalledTimes(2)
   })
 
+  it('refetches when custom-agent catalog settings slices change', async () => {
+    getLocal
+      .mockResolvedValueOnce(snapshot(1))
+      .mockResolvedValueOnce(snapshot(2))
+      .mockResolvedValueOnce(snapshot(3))
+      .mockResolvedValueOnce(snapshot(4))
+    const { result } = renderHook(() => useLocalAgentCatalog())
+    await waitFor(() => expect(result.current.snapshot?.revision).toBe(1))
+
+    // Authoring mutations patch these keys; every mounted consumer must refetch.
+    act(() => settingsChangedCallback?.({ customTuiAgents: [] }))
+    await waitFor(() => expect(result.current.snapshot?.revision).toBe(2))
+    act(() => settingsChangedCallback?.({ deletedCustomTuiAgents: [] }))
+    await waitFor(() => expect(result.current.snapshot?.revision).toBe(3))
+    act(() => settingsChangedCallback?.({ agentCatalogRevision: 7 }))
+    await waitFor(() => expect(result.current.snapshot?.revision).toBe(4))
+    expect(getLocal).toHaveBeenCalledTimes(4)
+  })
+
   it('ignores unrelated settings changes', async () => {
     const { result } = renderHook(() => useLocalAgentCatalog())
     await waitFor(() => expect(result.current.snapshot?.revision).toBe(1))

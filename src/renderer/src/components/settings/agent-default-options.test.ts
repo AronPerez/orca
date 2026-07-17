@@ -6,7 +6,11 @@ import {
   deriveStaleDefault,
   isDefaultUnset
 } from './agent-default-options'
-import { buildLocalCatalogSnapshot, buildReadyCustom } from './agent-catalog-snapshot.fixture'
+import {
+  buildLocalCatalogSnapshot,
+  buildReadyCustom,
+  buildRepairCustom
+} from './agent-catalog-snapshot.fixture'
 
 const CUSTOM_ID = 'custom-agent:codex:one' as CustomTuiAgentId
 
@@ -92,6 +96,37 @@ describe('deriveStaleDefault', () => {
     )
     expect(stale).toMatchObject({ id: 'codex', baseAgent: 'codex' })
     expect(stale?.label).toBeTruthy()
+  })
+
+  it('surfaces a repair-required custom default instead of falling through to Auto', () => {
+    const stale = deriveStaleDefault(
+      buildLocalCatalogSnapshot({
+        defaultAgent: CUSTOM_ID,
+        customAgents: [buildRepairCustom({ id: CUSTOM_ID, base: 'codex', label: 'Broken Codex' })]
+      })
+    )
+    expect(stale).toMatchObject({ id: CUSTOM_ID, baseAgent: 'codex', label: 'Broken Codex' })
+  })
+
+  it('falls back to a generic label for a repair-required default with an unsafe label', () => {
+    const stale = deriveStaleDefault(
+      buildLocalCatalogSnapshot({
+        defaultAgent: CUSTOM_ID,
+        customAgents: [buildRepairCustom({ id: CUSTOM_ID, base: 'codex', label: null })]
+      })
+    )
+    expect(stale).toMatchObject({ id: CUSTOM_ID, baseAgent: 'codex' })
+    expect(stale?.label).toBeTruthy()
+  })
+
+  it('returns no stale descriptor for a repair row without a proven base', () => {
+    const stale = deriveStaleDefault(
+      buildLocalCatalogSnapshot({
+        defaultAgent: CUSTOM_ID,
+        customAgents: [buildRepairCustom({ id: CUSTOM_ID, base: undefined, label: 'Broken' })]
+      })
+    )
+    expect(stale).toBeNull()
   })
 
   it('surfaces a tombstoned custom default with its stored label and base', () => {

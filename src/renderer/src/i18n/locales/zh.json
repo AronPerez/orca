@@ -9313,7 +9313,8 @@
           "autoHint": "自动模式不会选择自定义智能体。",
           "staleWarning": "此默认设置不可用。在你选择其他智能体之前，需人工干预的启动将使用标准的基础智能体命令。",
           "unsetPlaceholder": "选择默认智能体",
-          "listLabel": "默认智能体选项"
+          "listLabel": "默认智能体选项",
+          "repairFallbackLabel": "Custom agent"
         },
         "BuiltInLaunchSettingsDialog": {
           "reset": "重置",
@@ -10004,7 +10005,8 @@
             "c075d00de1": "无法解析工作区连接。",
             "808cfe0a3b": "仅保存到此存储库",
             "994cddd1f7": "不保存",
-            "38b899cc02": "所有仓库"
+            "38b899cc02": "所有仓库",
+            "saveBeforeStartFailed": "Could not save the agent settings, so the agent was not started."
           },
           "SourceControlAgentActionDialogForm": {
             "1bc0bdbb5e": "启动：",

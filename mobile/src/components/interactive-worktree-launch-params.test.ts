@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildInteractiveLaunchParams } from './interactive-worktree-launch-params'
+import {
+  buildInteractiveLaunchParams,
+  legacyAgentLaunchCommand
+} from './interactive-worktree-launch-params'
 import type { TuiAgent } from '../../../src/shared/types'
 
 // Canonical minted shape: custom-agent:<base>:<lowercase UUID> (see mintCustomTuiAgentId).
@@ -89,5 +92,17 @@ describe('buildInteractiveLaunchParams', () => {
     })
     expect(params).toEqual({ createdWithAgent: 'claude' })
     expect(params).not.toHaveProperty('startupCommand')
+  })
+})
+
+describe('legacyAgentLaunchCommand', () => {
+  it('prefers the per-agent override, then the built-in launch command', () => {
+    expect(legacyAgentLaunchCommand('codex', { codex: 'my-codex' })).toBe('my-codex')
+    expect(legacyAgentLaunchCommand('codex', undefined)).toBe('codex')
+  })
+
+  it('resolves no command for blank or custom selections', () => {
+    expect(legacyAgentLaunchCommand('__blank__', { codex: 'my-codex' })).toBeUndefined()
+    expect(legacyAgentLaunchCommand(CUSTOM_ID, undefined)).toBeUndefined()
   })
 })

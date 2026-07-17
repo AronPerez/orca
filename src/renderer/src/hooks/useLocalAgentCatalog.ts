@@ -46,7 +46,16 @@ export function useLocalAgentCatalog(): UseLocalAgentCatalog {
     mountedRef.current = true
     load()
     const unsubscribe = window.api.settings.onChanged((updates) => {
-      if ('defaultTuiAgent' in updates || 'disabledTuiAgents' in updates) {
+      // Custom-agent mutations patch customTuiAgents/deletedCustomTuiAgents (and
+      // bump agentCatalogRevision); without these keys, always-mounted launch
+      // surfaces keep a stale snapshot after authoring in another component.
+      if (
+        'defaultTuiAgent' in updates ||
+        'disabledTuiAgents' in updates ||
+        'customTuiAgents' in updates ||
+        'deletedCustomTuiAgents' in updates ||
+        'agentCatalogRevision' in updates
+      ) {
         load()
       }
     })

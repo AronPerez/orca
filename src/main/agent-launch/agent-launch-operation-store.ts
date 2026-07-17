@@ -237,6 +237,11 @@ export class AgentLaunchOperationStore {
   /** Append a settled outcome, replacing any prior entry for the same operation
    *  and keeping only the newest MAX_SETTLED_OPERATIONS_PER_SCOPE per scope. */
   recordSettled(entry: SettledAgentLaunchOperation): void {
+    this.appendSettled(entry)
+    this.persistDurable()
+  }
+
+  private appendSettled(entry: SettledAgentLaunchOperation): void {
     const bucket = this.settledByScope.get(entry.scope) ?? []
     const next = bucket.filter((existing) => existing.operationId !== entry.operationId)
     next.push(entry)
@@ -244,7 +249,6 @@ export class AgentLaunchOperationStore {
       next.splice(0, next.length - MAX_SETTLED_OPERATIONS_PER_SCOPE)
     }
     this.settledByScope.set(entry.scope, next)
-    this.persistDurable()
   }
 
   /** Newest settled entry matching the idempotency key within the scope, or
@@ -282,12 +286,14 @@ export class AgentLaunchOperationStore {
   }
 
   /** Rehydrate the settled ledger at startup. Applied in chronological order so
-   *  the per-scope bound retains the genuinely newest entries. */
+   *  the per-scope bound retains the genuinely newest entries. Never persists
+   *  (like rebuildPendingFrom): the locked-keychain recovery sink rebuilds while
+   *  installed as onDurableMutation, and persisting here would re-enter it. */
   rebuildSettledFrom(entries: Iterable<SettledAgentLaunchOperation>): void {
     this.settledByScope.clear()
     const ordered = [...entries].sort((a, b) => a.settledAt - b.settledAt)
     for (const entry of ordered) {
-      this.recordSettled(entry)
+      this.appendSettled(entry)
     }
   }
 }

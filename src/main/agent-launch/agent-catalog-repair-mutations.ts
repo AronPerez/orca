@@ -17,6 +17,10 @@ import {
   validateDraft,
   type AgentCatalogMutationApplication
 } from './agent-catalog-draft-validation'
+import {
+  collectRowsSuppressedByPrunedTombstones,
+  pruneTombstones
+} from './agent-catalog-tombstone-gc'
 import type { MutationContext } from './agent-catalog-mutations'
 
 /** Repair tokens are minted per physical corrupt record and stay stable while
@@ -113,8 +117,12 @@ export function applyRepairCorrupt(
   if (draftError) {
     return draftError
   }
-  const retained = context.persistedTombstones.filter(
-    (tombstone) => context.args.countTombstoneReferences(tombstone.id) !== 0
+  // The label check passes against the pruned view, so the prune must land in
+  // the same write (applyCreate's rule) or a live agent could take a freed
+  // tombstone's label while the same-label tombstone stays persisted.
+  const { retained, prunedIds } = pruneTombstones(
+    context.persistedTombstones,
+    context.args.countTombstoneReferences
   )
   const candidateKey = normalizeAgentLabelKey(action.draft.label)
   if (labelCollides(candidateKey, context.catalog, retained)) {
@@ -125,15 +133,22 @@ export function applyRepairCorrupt(
   // never rebinds any reference.
   const id = mintCustomTuiAgentId(action.baseAgent)
   nextLive.splice(row.physicalIndex, 1, draftToDefinition(id, action.baseAgent, action.draft))
+  // A pruned tombstone must not resurrect its suppressed same-id row.
+  const suppressed = collectRowsSuppressedByPrunedTombstones(
+    context.persistedLive,
+    prunedIds,
+    context.catalog
+  )
   return {
     ok: true,
     patch: {
-      customTuiAgents: nextLive as CustomTuiAgent[],
+      customTuiAgents: nextLive.filter((entry) => !suppressed.has(entry)) as CustomTuiAgent[],
+      deletedCustomTuiAgents: retained,
       agentCatalogRevision: context.newRevision
     },
     newRevision: context.newRevision,
     mintedId: id,
-    prunedTombstoneIds: []
+    prunedTombstoneIds: prunedIds
   }
 }
 
@@ -174,8 +189,11 @@ export function applyResolveDuplicateId(
   const parsedBase = context.catalog.corruptRows.find((row) => row.id === duplicateId)?.baseAgent
   const replacements = new Map<number, CustomTuiAgent | null>()
   let mintedId: CustomTuiAgentId | undefined
-  const retained = context.persistedTombstones.filter(
-    (tombstone) => context.args.countTombstoneReferences(tombstone.id) !== 0
+  // Label checks below pass against the pruned view, so the prune must land in
+  // the same write (applyCreate's rule).
+  const { retained, prunedIds } = pruneTombstones(
+    context.persistedTombstones,
+    context.args.countTombstoneReferences
   )
   const pendingLabels: string[] = []
   for (const [row, submitted] of resolved) {
@@ -223,10 +241,19 @@ export function applyResolveDuplicateId(
     )
   }
 
+  // A pruned tombstone must not resurrect its suppressed same-id row; rows the
+  // group repair explicitly places are never stripped.
+  const suppressed = collectRowsSuppressedByPrunedTombstones(
+    context.persistedLive,
+    prunedIds,
+    context.catalog
+  )
   const nextLive: unknown[] = []
   context.persistedLive.forEach((row, index) => {
     if (!replacements.has(index)) {
-      nextLive.push(row)
+      if (!suppressed.has(row)) {
+        nextLive.push(row)
+      }
       return
     }
     const replacement = replacements.get(index)
@@ -239,10 +266,11 @@ export function applyResolveDuplicateId(
     ok: true,
     patch: {
       customTuiAgents: nextLive as CustomTuiAgent[],
+      deletedCustomTuiAgents: retained,
       agentCatalogRevision: context.newRevision
     },
     newRevision: context.newRevision,
     ...(mintedId ? { mintedId } : {}),
-    prunedTombstoneIds: []
+    prunedTombstoneIds: prunedIds
   }
 }

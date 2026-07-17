@@ -115,7 +115,7 @@ export function CustomAgentEditorDialog({
           <Button
             type="button"
             className="min-w-24"
-            disabled={editor.submitting || editor.loading}
+            disabled={editor.submitting || editor.inputsLocked}
             onClick={() => void editor.submit()}
           >
             {editor.showSaving

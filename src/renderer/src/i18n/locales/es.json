@@ -9313,7 +9313,8 @@
           "autoHint": "El modo automático nunca selecciona un agente personalizado.",
           "staleWarning": "Este valor predeterminado no está disponible. Los inicios atendidos usarán el comando estándar del agente base hasta que elijas otro agente.",
           "unsetPlaceholder": "Elige un agente predeterminado",
-          "listLabel": "Opciones de agente predeterminado"
+          "listLabel": "Opciones de agente predeterminado",
+          "repairFallbackLabel": "Custom agent"
         },
         "BuiltInLaunchSettingsDialog": {
           "reset": "Restablecer",
@@ -10004,7 +10005,8 @@
             "c075d00de1": "No se puede resolver la conexión del espacio de trabajo.",
             "38b899cc02": "Todos los repositorios",
             "808cfe0a3b": "Este repositorio",
-            "994cddd1f7": "No guardar"
+            "994cddd1f7": "No guardar",
+            "saveBeforeStartFailed": "Could not save the agent settings, so the agent was not started."
           },
           "SourceControlAgentActionDialogForm": {
             "013c9ac04a": "Guardar para",

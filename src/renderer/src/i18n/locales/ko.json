@@ -9313,7 +9313,8 @@
           "autoHint": "자동 모드는 사용자 지정 에이전트를 선택하지 않습니다.",
           "staleWarning": "이 기본값을 사용할 수 없습니다. 다른 에이전트를 선택할 때까지 대화형 실행은 표준 기본 에이전트 명령을 사용합니다.",
           "unsetPlaceholder": "기본 에이전트 선택",
-          "listLabel": "기본 에이전트 옵션"
+          "listLabel": "기본 에이전트 옵션",
+          "repairFallbackLabel": "Custom agent"
         },
         "BuiltInLaunchSettingsDialog": {
           "reset": "재설정",
@@ -10004,7 +10005,8 @@
             "c075d00de1": "워크스페이스 연결을 확인할 수 없습니다.",
             "808cfe0a3b": "이 repos",
             "994cddd1f7": "저장하지 않음",
-            "38b899cc02": "모든 리포지토리"
+            "38b899cc02": "모든 리포지토리",
+            "saveBeforeStartFailed": "Could not save the agent settings, so the agent was not started."
           },
           "SourceControlAgentActionDialogForm": {
             "1bc0bdbb5e": "실행:",

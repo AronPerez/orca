@@ -141,6 +141,83 @@ describe('runSourceControlAgentActionStart', () => {
     expect(mocks.toastError).not.toHaveBeenCalled()
   })
 
+  it('persists the recipe before launching so the host resolves the new args', async () => {
+    mocks.launchAgentInNewTab.mockReturnValue({ tabId: 'tab-1', pasteDraftAfterLaunch: true })
+    mocks.onSaveAgentDefault.mockResolvedValue(undefined)
+
+    await expect(
+      runSourceControlAgentActionStart(buildArgs({ saveTargetValue: 'global' }))
+    ).resolves.toBe(true)
+
+    expect(mocks.onSaveAgentDefault).toHaveBeenCalledWith({ type: 'global' }, 'resolveComments', {
+      agentId: 'codex',
+      commandInputTemplate: '{basePrompt}',
+      agentArgs: '--model gpt-5'
+    })
+    // The launch resolves the stored recipe host-side, so the save must land first.
+    expect(mocks.onSaveAgentDefault.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.launchAgentInNewTab.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('persists the recipe before an injected onStart launch', async () => {
+    const onStart = vi.fn().mockResolvedValue(true)
+    mocks.onSaveAgentDefault.mockResolvedValue(undefined)
+
+    await expect(
+      runSourceControlAgentActionStart(
+        buildArgs({ onStart, saveTargetValue: 'global', worktreeId: undefined })
+      )
+    ).resolves.toBe(true)
+
+    expect(mocks.onSaveAgentDefault.mock.invocationCallOrder[0]).toBeLessThan(
+      onStart.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('aborts the launch when the pre-launch save fails', async () => {
+    const originalConsole = console
+    vi.stubGlobal('console', { ...originalConsole, error: vi.fn() })
+    mocks.onSaveAgentDefault.mockRejectedValue(new Error('write failed'))
+
+    try {
+      await expect(
+        runSourceControlAgentActionStart(buildArgs({ saveTargetValue: 'global' }))
+      ).resolves.toBe(false)
+    } finally {
+      vi.stubGlobal('console', originalConsole)
+    }
+
+    expect(mocks.launchAgentInNewTab).not.toHaveBeenCalled()
+    expect(mocks.onLaunched).not.toHaveBeenCalled()
+    expect(mocks.onClose).not.toHaveBeenCalled()
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      'Could not save the agent settings, so the agent was not started.'
+    )
+  })
+
+  it('skips the save when the stored recipe already matches', async () => {
+    mocks.launchAgentInNewTab.mockReturnValue({ tabId: 'tab-1', pasteDraftAfterLaunch: true })
+    const settings = {
+      sourceControlAi: {
+        actions: {
+          resolveComments: {
+            agentId: 'codex',
+            commandInputTemplate: '{basePrompt}',
+            agentArgs: '--model gpt-5'
+          }
+        }
+      }
+    } as Parameters<typeof runSourceControlAgentActionStart>[0]['settings']
+
+    await expect(
+      runSourceControlAgentActionStart(buildArgs({ saveTargetValue: 'global', settings }))
+    ).resolves.toBe(true)
+
+    expect(mocks.onSaveAgentDefault).not.toHaveBeenCalled()
+    expect(mocks.launchAgentInNewTab).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps injected onStart successes immediate', async () => {
     const onStart = vi.fn().mockResolvedValue(true)
 

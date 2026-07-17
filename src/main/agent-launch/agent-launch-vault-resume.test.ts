@@ -226,6 +226,16 @@ describe('buildVaultResumeStartup', () => {
     }
   })
 
+  it('resumes Antigravity by conversation id on the structured startup-plan path', () => {
+    // Antigravity's resume argv keys on conversation_id; a hardcoded session_id
+    // key would silently drop it to the unstructured fallback (no launchConfig).
+    const session = vaultSession({ agent: 'antigravity', sessionId: 'conv-42' })
+    const startup = buildVaultResumeStartup({ session, hostPlatform: 'linux' })
+    expect(startup.command).toContain('--conversation')
+    expect(startup.command).toContain('conv-42')
+    expect(startup.launchConfig).toBeDefined()
+  })
+
   it('resumes OMP by its host-derived transcript path, not the client field', () => {
     const session = vaultSession({
       agent: 'omp',

@@ -23,8 +23,10 @@ export type ProviderLiveness =
 export type AgentLaunchReconcileOutcome =
   // Settle launched, clear pending/failure, never spawn again.
   | { kind: 'launched' }
-  // Token-live but unattributed: record failed/invalid_launch_snapshot, keep the
-  // terminal visible, disable Retry/Choose while live, never spawn a duplicate.
+  // Token-live but unattributed: write the invalid_launch_snapshot failure but
+  // KEEP pending (coexistence, like unknown), keep the terminal visible, disable
+  // Retry/Choose while live, never spawn a duplicate. The retained pending lets
+  // the terminal's later exit re-reconcile to spawn_failed, re-opening Retry.
   | { kind: 'invalid_launch_snapshot' }
   // Absent: settle failed/spawn_failed; Retry becomes available.
   | { kind: 'spawn_failed' }
@@ -49,7 +51,10 @@ export function reconcileAgentLaunchLiveness(
  *  the recovery card renders, so the server-side gate reads that same state. The
  *  two blocking codes (launch_state_unknown while liveness is unknown,
  *  invalid_launch_snapshot while a token-live terminal lacks attribution) fail
- *  the retry WITHOUT mutation; every other durable failure is retryable. */
+ *  the retry WITHOUT mutation; every other durable failure is retryable. Neither
+ *  block is permanent: both codes keep their pending (coexistence rule), so the
+ *  next liveness event rewrites the code — absent proof yields spawn_failed and
+ *  this same gate turns retryable. */
 export function retryRecoveryGateForFailureCode(
   code: AgentLaunchFailureCode | undefined
 ): RetryRecoveryGate {

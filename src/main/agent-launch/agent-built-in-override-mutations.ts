@@ -35,6 +35,9 @@ export function applyUpdateBuiltIn(
   // fail at launch with a repairable error instead of being reinterpreted.
   const override = mutation.changes.commandOverride
   if (override !== null && override !== undefined) {
+    if (typeof override !== 'string') {
+      return { ok: false, code: 'invalid_agent_field', field: 'commandOverride', reason: 'bounds' }
+    }
     if (override.length > 4096) {
       return { ok: false, code: 'invalid_agent_field', field: 'commandOverride', reason: 'bounds' }
     }

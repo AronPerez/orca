@@ -54,6 +54,7 @@ export function CustomAgentIdentityFields({
         <Input
           id="custom-agent-name"
           ref={editor.refs.nameInputRef}
+          disabled={editor.inputsLocked}
           value={draft.label}
           maxLength={MAX_AGENT_LABEL_CODE_UNITS}
           autoComplete="off"
@@ -120,6 +121,7 @@ export function CustomAgentIdentityFields({
         >
           <Input
             id="custom-agent-executable"
+            disabled={editor.inputsLocked}
             value={draft.commandOverride}
             placeholder={translate(
               'auto.components.settings.CustomAgentEditorDialog.executablePlaceholder',

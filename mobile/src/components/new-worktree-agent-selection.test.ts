@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentCatalogSnapshot } from '../../../src/shared/agent-catalog-snapshot'
 import type { TuiAgent } from '../../../src/shared/types'
 import {
+  buildNewWorktreePickerOptions,
   buildSelectableNewWorktreeAgentOptions,
   NEW_WORKTREE_BLANK_AGENT,
   newWorktreeAgentOptionFor,
@@ -132,6 +133,72 @@ describe('new worktree agent selection', () => {
     expect(pickPreferredNewWorktreeAgent({ defaultTuiAgent: null }, new Set()).id).toBe('__blank__')
   })
 
+  it('resolves a custom id to its catalog row', () => {
+    expect(newWorktreeAgentOptionFor('custom-agent:claude:one', catalogWithClaudeCustom())).toEqual(
+      claudeCustomOption
+    )
+    expect(newWorktreeAgentOptionFor('custom-agent:claude:one')).toEqual(NEW_WORKTREE_BLANK_AGENT)
+  })
+
+  it('previews a custom host default when its base harness is detected', () => {
+    const preferred = pickPreferredNewWorktreeAgent(
+      { defaultTuiAgent: 'custom-agent:claude:one' as TuiAgent },
+      new Set(['claude', 'codex']),
+      catalogWithClaudeCustom()
+    )
+    expect(preferred).toEqual(claudeCustomOption)
+  })
+
+  it('previews a custom host default while detection is pending', () => {
+    const preferred = pickPreferredNewWorktreeAgent(
+      { defaultTuiAgent: 'custom-agent:claude:one' as TuiAgent },
+      null,
+      catalogWithClaudeCustom()
+    )
+    expect(preferred).toEqual(claudeCustomOption)
+  })
+
+  it('falls back to auto-pick when the custom default base is not detected', () => {
+    const preferred = pickPreferredNewWorktreeAgent(
+      { defaultTuiAgent: 'custom-agent:claude:one' as TuiAgent },
+      new Set(['codex']),
+      catalogWithClaudeCustom()
+    )
+    expect(preferred).toEqual(newWorktreeAgentOptionFor('codex'))
+  })
+
+  it('falls back to auto-pick for a custom default without a catalog snapshot', () => {
+    const preferred = pickPreferredNewWorktreeAgent(
+      { defaultTuiAgent: 'custom-agent:claude:one' as TuiAgent },
+      new Set(['claude', 'codex'])
+    )
+    expect(preferred).toEqual(newWorktreeAgentOptionFor('claude'))
+  })
+
+  it('selects the custom host default while un-overridden', () => {
+    const resolved = resolveNewWorktreeAgentSelection({
+      visible: true,
+      selectedAgent: newWorktreeAgentOptionFor('claude'),
+      agentOverridden: false,
+      runtimeSettings: { defaultTuiAgent: 'custom-agent:claude:one' as TuiAgent },
+      detectedAgentIds: new Set(['claude', 'codex']),
+      catalogSnapshot: catalogWithClaudeCustom()
+    })
+
+    expect(resolved).toEqual({ selectedAgent: claudeCustomOption, agentOverridden: false })
+  })
+
+  it('ignores a disabled custom default from the catalog', () => {
+    const snapshot = catalogWithClaudeCustom()
+    snapshot.disabledAgents = ['custom-agent:claude:one' as TuiAgent]
+    const preferred = pickPreferredNewWorktreeAgent(
+      { defaultTuiAgent: 'custom-agent:claude:one' as TuiAgent },
+      new Set(['claude', 'codex']),
+      snapshot
+    )
+    expect(preferred).toEqual(newWorktreeAgentOptionFor('claude'))
+  })
+
   it('keeps a custom override when its base harness is detected', () => {
     const resolved = resolveNewWorktreeAgentSelection({
       visible: true,
@@ -190,6 +257,16 @@ describe('buildSelectableNewWorktreeAgentOptions', () => {
       disabledTuiAgents: undefined
     })
     expect(options.some((option) => option.id === 'custom-agent:claude:one')).toBe(false)
+  })
+
+  it('builds picker rows with customs included and blank terminal last', () => {
+    const options = buildNewWorktreePickerOptions({
+      snapshot: catalogWithClaudeCustom(),
+      detectedAgentIds: new Set(['claude']),
+      disabledTuiAgents: undefined
+    })
+    expect(options.some((option) => option.id === 'custom-agent:claude:one')).toBe(true)
+    expect(options.at(-1)).toEqual(NEW_WORKTREE_BLANK_AGENT)
   })
 
   it('omits customs when the gate flag is off even with a snapshot', () => {

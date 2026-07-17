@@ -307,4 +307,47 @@ describe('boot init: admission rebuild + locked-keychain recovery', () => {
       )
     ).toEqual(['tok-crash'])
   })
+
+  it('recovery merge with settled rows never re-enters the recovery sink (L2-#2)', () => {
+    const path = agentLaunchOperationStorePath(dir)
+    writeAgentLaunchOperationStoreState(
+      path,
+      {
+        pending: [pending('tok-crash')],
+        settled: [settled('op-old-1'), settled('op-old-2')]
+      },
+      reversibleCipher(true)
+    )
+    let available = false
+    let decrypts = 0
+    const lateCipher: AgentLaunchOperationCipher = {
+      available: () => available,
+      encrypt: (plaintext) => Buffer.from(`enc:${plaintext}`, 'utf-8'),
+      decrypt: (ciphertext) => {
+        decrypts += 1
+        return ciphertext.toString('utf-8').replace(/^enc:/, '')
+      }
+    }
+    const store = new AgentLaunchOperationStore()
+    initAgentLaunchOperationStorePersistence(store, path, lateCipher, {
+      rebuildAdmission: () => {},
+      worktreeIdForBackgroundScope: () => null
+    })
+
+    available = true
+    store.recordSettled(settled('op-live'))
+
+    // Exactly one disk read for the merge. A persisting rebuildSettledFrom
+    // would re-enter the still-attached recovery sink once per rehydrated
+    // settled row, re-reading (and re-decrypting) the file recursively.
+    expect(decrypts).toBe(1)
+    expect(store.getPending('tok-crash')).not.toBeNull()
+    const onDisk = loadAgentLaunchOperationStoreState(path, reversibleCipher(true))
+    expect(onDisk.pending.map((entry) => entry.launchToken)).toEqual(['tok-crash'])
+    expect(onDisk.settled.map((entry) => entry.operationId).sort()).toEqual([
+      'op-live',
+      'op-old-1',
+      'op-old-2'
+    ])
+  })
 })

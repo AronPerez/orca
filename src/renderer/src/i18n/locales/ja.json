@@ -9313,7 +9313,8 @@
           "autoHint": "自動モードはカスタムエージェントを選択しません。",
           "staleWarning": "このデフォルトは利用できません。別のエージェントを選択するまで、対話的な起動は標準のベースエージェントコマンドを使用します。",
           "unsetPlaceholder": "デフォルトエージェントを選択",
-          "listLabel": "デフォルトエージェントの選択肢"
+          "listLabel": "デフォルトエージェントの選択肢",
+          "repairFallbackLabel": "Custom agent"
         },
         "BuiltInLaunchSettingsDialog": {
           "reset": "リセット",
@@ -10004,7 +10005,8 @@
             "c075d00de1": "ワークスペース接続を解決できません。",
             "808cfe0a3b": "この repos のみに保存",
             "994cddd1f7": "保存しないでください",
-            "38b899cc02": "すべての repos"
+            "38b899cc02": "すべての repos",
+            "saveBeforeStartFailed": "Could not save the agent settings, so the agent was not started."
           },
           "SourceControlAgentActionDialogForm": {
             "1bc0bdbb5e": "起動：",

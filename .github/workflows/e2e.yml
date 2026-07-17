@@ -226,6 +226,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-traces-ssh-docker-watcher-isolation
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # Why: §U10 live-evidence job for the SSH cell of agent-launch.resolution-
   # attribution. It boots a throwaway Docker SSH container, seeds a custom agent
   # via the persisted profile, launches it through the host agentLaunch boundary

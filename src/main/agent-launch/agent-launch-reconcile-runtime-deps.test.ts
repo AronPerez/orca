@@ -130,7 +130,9 @@ describe('buildReconcileAgentLaunchDeps liveness', () => {
     const outcome = reconcileOnePendingAgentLaunch(deps, entry)
 
     expect(outcome).toEqual({ kind: 'invalid_launch_snapshot' })
-    expect(arm.calls).toEqual(['failed'])
+    // Non-settling card write: pending survives so the thief terminal's exit
+    // can re-derive spawn_failed (Retry re-opens) instead of a dead-end.
+    expect(arm.calls).toEqual(['unknown'])
   })
 
   it('treats a live token with an UNRESOLVABLE worktree as attributed, never absent', () => {

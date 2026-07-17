@@ -9336,7 +9336,8 @@
           "autoHint": "Auto never selects a custom agent.",
           "staleWarning": "This default is unavailable. Attended launches use the stock base harness command until you choose another agent.",
           "unsetPlaceholder": "Choose a default agent",
-          "listLabel": "Default agent options"
+          "listLabel": "Default agent options",
+          "repairFallbackLabel": "Custom agent"
         },
         "BuiltInLaunchSettingsDialog": {
           "reset": "Reset",
@@ -10027,7 +10028,8 @@
             "c075d00de1": "Unable to resolve the workspace connection.",
             "38b899cc02": "All repositories",
             "808cfe0a3b": "This repository",
-            "994cddd1f7": "Don't save"
+            "994cddd1f7": "Don't save",
+            "saveBeforeStartFailed": "Could not save the agent settings, so the agent was not started."
           },
           "SourceControlAgentActionDialogForm": {
             "013c9ac04a": "Save for",

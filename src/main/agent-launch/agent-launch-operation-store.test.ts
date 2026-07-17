@@ -2,7 +2,7 @@
 // invariants — canonical digest determinism, idempotency-key stability, the
 // per-scope settled-ledger bound, and in-flight snapshot lookups. Reconciliation
 // and retry idempotency that consume these land in later steps.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AgentLaunchSnapshot } from '../../shared/agent-launch-host-contract'
 import {
   AgentLaunchOperationStore,
@@ -193,6 +193,20 @@ describe('settled ledger', () => {
     expect(found?.operationId).toBe('op-2')
     expect(store.findSettledByIdempotencyKey('wt-1', 'missing')).toBeNull()
     expect(store.findSettledByIdempotencyKey('wt-9', 'k-1')).toBeNull()
+  })
+
+  it('rebuild never invokes the durable sink (locked-keychain recovery re-entry)', () => {
+    // The recovery path rebuilds while its sink is still installed as
+    // onDurableMutation; a persisting rebuild would re-enter that sink per
+    // settled row and recurse.
+    const store = new AgentLaunchOperationStore()
+    const sink = vi.fn()
+    store.setDurablePersistence(sink)
+    store.rebuildSettledFrom([settled({ operationId: 'op-1' })])
+    store.rebuildPendingFrom([pending()])
+    expect(sink).not.toHaveBeenCalled()
+    expect(store.settledForScope('wt-1')).toHaveLength(1)
+    expect(store.getPending('token-a')).not.toBeNull()
   })
 
   it('rehydrates the settled ledger in chronological order under the bound', () => {
