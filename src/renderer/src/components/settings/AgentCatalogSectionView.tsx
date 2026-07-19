@@ -175,7 +175,10 @@ export function AgentCatalogSectionView({
   }
 
   return (
-    <div className="space-y-8">
+    // Why: gap (not space-y) — the default fieldset uses m-0, and Tailwind v4's
+    // space-y margins are :where() (zero specificity) so m-0 would collapse the
+    // gap between Default agent and Agents.
+    <div className="flex flex-col gap-8">
       {/* Why: read-only disabling is scoped per control group (not one pane-wide
           fieldset) so the catalog search box stays usable on paired clients. */}
       <fieldset disabled={readOnly} className="m-0 min-w-0 border-0 p-0">
