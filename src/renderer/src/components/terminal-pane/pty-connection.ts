@@ -30,6 +30,7 @@ import type { PtyBufferSnapshot, PtyConnectResult } from './pty-transport'
 import type { PtyTransportRecoveryState } from './pty-transport-types'
 import { createIpcPtyTransport } from './pty-transport'
 import { createRemoteRuntimePtyTransport } from './remote-runtime-pty-transport'
+import { toAgentLaunchPreferences } from '@/runtime/agent-session-create-operation'
 import { getConnectionId } from '@/lib/connection-context'
 import { getLocalProjectExecutionRuntimeContext } from '@/lib/local-preflight-context'
 import {
@@ -3327,6 +3328,7 @@ export function connectPanePty(
   const terminalColorQueryReplies = terminalTheme
     ? { foreground: terminalTheme.foreground, background: terminalTheme.background }
     : undefined
+  const agentLaunchPreferences = toAgentLaunchPreferences(paneStartup?.sessionOptions)
   const transportOptions = {
     cwd: deps.cwd,
     // Why: only fresh local IPC spawns may recover from a saved startup cwd
@@ -3355,6 +3357,18 @@ export function connectPanePty(
     ...(paneStartup?.resumeProviderSession
       ? { resumeProviderSession: paneStartup.resumeProviderSession }
       : {}),
+    ...((paneStartup?.initialAgentStatus?.prompt ?? paneStartup?.draftPrompt)
+      ? { agentPrompt: paneStartup?.initialAgentStatus?.prompt ?? paneStartup?.draftPrompt }
+      : {}),
+    ...(paneStartup?.initialAgentStatus?.prompt
+      ? { agentPromptDelivery: 'auto-submit' as const }
+      : paneStartup?.draftPrompt
+        ? { agentPromptDelivery: 'draft' as const }
+        : {}),
+    ...(paneStartup?.agentArgsOverride !== undefined
+      ? { agentArgsOverride: paneStartup.agentArgsOverride }
+      : {}),
+    ...(agentLaunchPreferences ? { agentLaunchPreferences } : {}),
     ...(launchToken ? { launchToken } : {}),
     ...(paneStartup?.launchAgent ? { launchAgent: paneStartup.launchAgent } : {}),
     ...(paneStartup?.telemetry ? { telemetry: paneStartup.telemetry } : {}),

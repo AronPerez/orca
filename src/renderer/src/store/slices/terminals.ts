@@ -41,6 +41,7 @@ import {
 import { isWslUncPath } from '../../../../shared/wsl-paths'
 import type { ProjectExecutionRuntimeResolution } from '../../../../shared/project-execution-runtime'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
+import type { SessionOptionValue } from '../../../../shared/native-chat-session-options'
 import { resolveLocalWindowsTerminalShellOverrideForTab } from '../../../../shared/local-windows-terminal-runtime'
 import { WINDOWS_GIT_BASH_SHELL } from '../../../../shared/windows-terminal-shell'
 import type { AgentStartedTelemetry } from '../../lib/worktree-activation'
@@ -492,7 +493,10 @@ export type TerminalSlice = {
       resumeProviderSession?: AgentProviderSessionMetadata
       launchToken?: string
       launchAgent?: TuiAgent
+      /** Explicit CLI override for host-owned agent launches; omission uses host settings. */
+      agentArgsOverride?: string | null
       draftPrompt?: string
+      sessionOptions?: Record<string, SessionOptionValue>
       /** Initial prompt-start status for agents that lack native prompt hooks. */
       initialAgentStatus?: { agent: TuiAgent; prompt: string }
       /** Show the restored-session banner when this startup command mounts. */
@@ -642,7 +646,9 @@ export type TerminalSlice = {
       resumeProviderSession?: AgentProviderSessionMetadata
       launchToken?: string
       launchAgent?: TuiAgent
+      agentArgsOverride?: string | null
       draftPrompt?: string
+      sessionOptions?: Record<string, SessionOptionValue>
       initialAgentStatus?: { agent: TuiAgent; prompt: string }
       showSessionRestoredBanner?: boolean
       telemetry?: AgentStartedTelemetry
@@ -660,7 +666,9 @@ export type TerminalSlice = {
     resumeProviderSession?: AgentProviderSessionMetadata
     launchToken?: string
     launchAgent?: TuiAgent
+    agentArgsOverride?: string | null
     draftPrompt?: string
+    sessionOptions?: Record<string, SessionOptionValue>
     initialAgentStatus?: { agent: TuiAgent; prompt: string }
     showSessionRestoredBanner?: boolean
     telemetry?: AgentStartedTelemetry

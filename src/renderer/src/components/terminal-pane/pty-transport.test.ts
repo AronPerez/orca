@@ -1913,19 +1913,32 @@ describe('createRemoteRuntimePtyTransport', () => {
       unsubscribe: unsubscribeFn,
       sendBinary: vi.fn()
     }
-    runtimeCall.mockResolvedValue({
-      id: 'rpc-create',
-      ok: true,
-      result: {
-        terminal: {
-          handle: 'term-remote',
-          worktreeId: 'repo1::/remote/wt',
-          title: null,
-          surface: 'background'
-        }
-      },
-      _meta: { runtimeId: 'runtime-remote' }
-    })
+    runtimeCall.mockImplementation(async (args: { method?: string }) =>
+      args.method === 'status.get'
+        ? {
+            id: 'rpc-status',
+            ok: true,
+            result: {
+              runtimeProtocolVersion: 3,
+              minCompatibleRuntimeClientVersion: 2,
+              capabilities: ['agent-session.host-authority.v1']
+            },
+            _meta: { runtimeId: 'runtime-remote' }
+          }
+        : {
+            id: 'rpc-create',
+            ok: true,
+            result: {
+              terminal: {
+                handle: 'term-remote',
+                worktreeId: 'repo1::/remote/wt',
+                title: null,
+                surface: 'background'
+              }
+            },
+            _meta: { runtimeId: 'runtime-remote' }
+          }
+    )
     runtimeSubscribe.mockImplementation(
       async (_args: unknown, callbacks: typeof subscriptionCallbacks) => {
         subscriptionCallbacks = callbacks
@@ -2061,6 +2074,119 @@ describe('createRemoteRuntimePtyTransport', () => {
     expect(onReplayData).toHaveBeenCalledWith('hello')
     expect(onConnect).toHaveBeenCalled()
     expect(onData).toHaveBeenCalledWith(' world', expect.objectContaining({ seq: 4 }))
+  })
+
+  it('routes provider resumes through the host authority without sending the client command', async () => {
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const transport = createRemoteRuntimePtyTransport('env-1', {
+      worktreeId: 'repo1::/remote/wt',
+      command: "claude '--resume' 'provider-session'",
+      env: { CLIENT_ONLY: 'must-not-cross' },
+      launchAgent: 'claude',
+      agentArgsOverride: '--permission-mode plan',
+      resumeProviderSession: { key: 'session_id', id: 'provider-session' },
+      tabId: 'tab-1',
+      leafId: '11111111-1111-4111-8111-111111111111'
+    })
+
+    await transport.connect({ url: '', callbacks: {} })
+
+    expect(runtimeCall).toHaveBeenCalledWith({
+      selector: 'env-1',
+      method: 'terminal.ensureAgentSession',
+      params: {
+        kind: 'explicit',
+        worktree: 'id:repo1::/remote/wt',
+        agent: 'claude',
+        providerSession: { key: 'session_id', id: 'provider-session' },
+        agentArgs: '--permission-mode plan',
+        placement: {
+          tabId: 'tab-1',
+          leafId: '11111111-1111-4111-8111-111111111111'
+        },
+        presentation: 'background'
+      },
+      timeoutMs: 15_000
+    })
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'terminal.create',
+        params: expect.objectContaining({ command: expect.any(String) })
+      })
+    )
+  })
+
+  it('treats an explicitly killed remote session as normal retirement', async () => {
+    runtimeCall.mockImplementation(async (args: { method?: string }) =>
+      args.method === 'terminal.create'
+        ? {
+            id: 'rpc-create',
+            ok: false,
+            error: {
+              code: 'terminal_gone',
+              message: 'Session "pty-dead" was explicitly killed'
+            }
+          }
+        : {
+            id: 'rpc-status',
+            ok: true,
+            result: {
+              runtimeProtocolVersion: 3,
+              minCompatibleRuntimeClientVersion: 2,
+              capabilities: ['agent-session.host-authority.v1']
+            }
+          }
+    )
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const transport = createRemoteRuntimePtyTransport('env-1', {
+      worktreeId: 'repo1::/remote/wt'
+    })
+    const onError = vi.fn()
+
+    await expect(transport.connect({ url: '', callbacks: { onError } })).resolves.toBeUndefined()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('routes fresh agents through an idempotent host-built launch', async () => {
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const transport = createRemoteRuntimePtyTransport('env-1', {
+      worktreeId: 'repo1::/remote/wt',
+      command: "codex 'fix the race'",
+      env: { CLIENT_ONLY: 'must-not-cross' },
+      launchAgent: 'codex',
+      agentPrompt: 'fix the race',
+      agentPromptDelivery: 'draft',
+      agentLaunchPreferences: { model: 'gpt-5', effort: 'high' },
+      tabId: 'tab-1',
+      leafId: '11111111-1111-4111-8111-111111111111'
+    })
+
+    await transport.connect({ url: '', callbacks: {} })
+
+    expect(runtimeCall).toHaveBeenCalledWith({
+      selector: 'env-1',
+      method: 'terminal.createAgentSession',
+      params: {
+        clientOperationId: expect.stringMatching(/^\d{13}-[0-9a-f]{32}$/),
+        worktree: 'id:repo1::/remote/wt',
+        agent: 'codex',
+        prompt: 'fix the race',
+        promptDelivery: 'draft',
+        launchPreferences: { model: 'gpt-5', effort: 'high' },
+        placement: {
+          tabId: 'tab-1',
+          leafId: '11111111-1111-4111-8111-111111111111'
+        },
+        presentation: 'background'
+      },
+      timeoutMs: 15_000
+    })
+    expect(runtimeCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'terminal.create',
+        params: expect.objectContaining({ command: expect.any(String) })
+      })
+    )
   })
 
   it('forwards input over the stream and disconnects without closing shared remote sessions', async () => {
