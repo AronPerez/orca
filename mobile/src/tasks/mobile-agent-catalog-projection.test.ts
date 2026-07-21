@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import type { AgentCatalogSnapshot } from '../../../src/shared/agent-catalog-snapshot'
 import type { AgentCatalogValue } from '../transport/agent-catalog-sync'
 import type { BuiltInTuiAgent, CustomTuiAgentId } from '../../../src/shared/types'
-import { buildMobileAgentPickerRows } from './mobile-agent-catalog-projection'
+import {
+  buildMobileAgentPickerRows,
+  isHostAgentCatalogMigrationBlocked
+} from './mobile-agent-catalog-projection'
 import { MOBILE_AGENT_CATALOG } from './mobile-agent-catalog'
 import { MOBILE_TUI_AGENT_AUTO_PICK_ORDER } from './mobile-tui-agents'
 
@@ -148,5 +151,15 @@ describe('mobile agent catalog projection', () => {
     }
     const custom = rows.find((row) => row.isCustom)
     expect(Object.keys(custom ?? {}).sort()).toEqual(['baseAgent', 'id', 'isCustom', 'label'])
+  })
+
+  it('reads the host migration-blocked flag as a boolean-only projection', () => {
+    expect(isHostAgentCatalogMigrationBlocked(null)).toBe(false)
+    expect(isHostAgentCatalogMigrationBlocked(snapshot())).toBe(false)
+    expect(isHostAgentCatalogMigrationBlocked(projectionError)).toBe(false)
+    const blocked = snapshot({ migrationBlocked: true })
+    expect(isHostAgentCatalogMigrationBlocked(blocked)).toBe(true)
+    // The wire value carries no error text or path — boolean only.
+    expect(JSON.stringify(blocked)).not.toMatch(/error|\/Users\//i)
   })
 })

@@ -1922,6 +1922,14 @@ const api = {
       ipcRenderer.invoke('localhostWorktreeLabels:register', args)
   } satisfies PreloadApi['localhostWorktreeLabels'],
 
+  dataRecovery: {
+    migrationStatus: (): Promise<unknown> => ipcRenderer.invoke('dataRecovery:migrationStatus'),
+    retryAgentCatalogMigration: (): Promise<unknown> =>
+      ipcRenderer.invoke('dataRecovery:retryAgentCatalogMigration'),
+    listPoints: (): Promise<unknown> => ipcRenderer.invoke('dataRecovery:listPoints'),
+    restore: (args: unknown): Promise<unknown> => ipcRenderer.invoke('dataRecovery:restore', args)
+  },
+
   keybindings: {
     get: (): Promise<KeybindingFileSnapshot> => ipcRenderer.invoke('keybindings:get'),
     ensureFile: (): Promise<KeybindingFileSnapshot> => ipcRenderer.invoke('keybindings:ensureFile'),

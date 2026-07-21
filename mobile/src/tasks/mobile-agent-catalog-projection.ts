@@ -71,6 +71,22 @@ function groupEnabledReadyCustoms(
   return grouped
 }
 
+/** True while the host's agent catalog is fail-closed pending recovery (failed
+ *  pre-v1 backup): catalog edits are read-only ON THE HOST and customs are
+ *  absent. Boolean projection only — the error detail never crosses the wire. */
+export function isHostAgentCatalogMigrationBlocked(snapshot: AgentCatalogValue | null): boolean {
+  return isCatalogSnapshot(snapshot) && snapshot.migrationBlocked === true
+}
+
+/** Picker subtitle for a blocked host, or undefined when healthy. */
+export function hostAgentCatalogReadOnlyNotice(
+  snapshot: AgentCatalogValue | null
+): string | undefined {
+  return isHostAgentCatalogMigrationBlocked(snapshot)
+    ? 'Agent settings on this host are read-only until its data migration is recovered.'
+    : undefined
+}
+
 /** Build the ordered picker rows. With no usable snapshot or with customs gated
  *  off, returns exactly the static built-in rows. Otherwise each enabled, ready
  *  custom is inserted directly below its base harness in the built-in order. */

@@ -105,6 +105,22 @@ describe('AgentCatalogSection (connected)', () => {
     expect(mutate).toHaveBeenCalledTimes(1)
   })
 
+  it('surfaces the migration block from the load-time snapshot before any mutation', async () => {
+    const getLocal = vi
+      .fn()
+      .mockResolvedValue(buildLocalCatalogSnapshot({ migrationBlockedError: 'disk full' }))
+    ;(window as unknown as { api: unknown }).api = {
+      settings: {
+        agentCatalog: { getLocal },
+        onChanged: () => () => {}
+      }
+    }
+    render(<AgentCatalogSection agentCmdOverrides={{}} />)
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByText('Agent settings are temporarily read-only')).toBeTruthy()
+    expect(screen.getByText('disk full')).toBeTruthy()
+  })
+
   it('keeps catalog search usable in read-only mode while controls stay disabled', async () => {
     render(<AgentCatalogSection agentCmdOverrides={{}} readOnly />)
     const search = (await screen.findByLabelText('Search agents')) as HTMLInputElement

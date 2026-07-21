@@ -5,6 +5,9 @@ export type UseLocalAgentCatalog = {
   /** Null while the first `getLocal` is in flight. */
   snapshot: LocalAgentCatalogSnapshot | null
   loading: boolean
+  /** True when the local catalog surface does not exist here (paired web);
+   *  callers render their read-only empty state instead of a loading spinner. */
+  unavailable: boolean
   /** Re-read the local snapshot from the host (desktop preload IPC only). */
   refetch: () => void
   /** Adopt the authoritative snapshot a local mutation just returned, without a
@@ -24,16 +27,27 @@ export type UseLocalAgentCatalog = {
  */
 export function useLocalAgentCatalog(): UseLocalAgentCatalog {
   const [snapshot, setSnapshot] = useState<LocalAgentCatalogSnapshot | null>(null)
+  const [unavailable, setUnavailable] = useState(false)
   const requestTokenRef = useRef(0)
   const mountedRef = useRef(true)
 
   const load = useCallback(() => {
     const token = (requestTokenRef.current += 1)
-    void window.api.settings.agentCatalog.getLocal().then((next) => {
-      if (mountedRef.current && token === requestTokenRef.current) {
-        setSnapshot(next)
-      }
-    })
+    void window.api.settings.agentCatalog
+      .getLocal()
+      .then((next) => {
+        if (mountedRef.current && token === requestTokenRef.current) {
+          setSnapshot(next)
+          setUnavailable(false)
+        }
+      })
+      .catch(() => {
+        // Paired web rejects (not_available_on_paired_web): surface an honest
+        // read-only empty state rather than a perpetual loading spinner.
+        if (mountedRef.current && token === requestTokenRef.current) {
+          setUnavailable(true)
+        }
+      })
   }, [])
 
   const applySnapshot = useCallback((next: LocalAgentCatalogSnapshot) => {
@@ -65,5 +79,11 @@ export function useLocalAgentCatalog(): UseLocalAgentCatalog {
     }
   }, [load])
 
-  return { snapshot, loading: snapshot === null, refetch: load, applySnapshot }
+  return {
+    snapshot,
+    loading: snapshot === null && !unavailable,
+    unavailable,
+    refetch: load,
+    applySnapshot
+  }
 }

@@ -619,6 +619,38 @@ describe('pre-v1 migration gate', () => {
     // No v1 write of any kind may land on the unbacked-up profile.
     expect(state.settings).toBe(before)
   })
+
+  it('carries the block into the local snapshot so Settings surfaces it on load', () => {
+    const state: StoreStubState = {
+      settings: baseSettings(),
+      repos: [],
+      automations: [],
+      agentCatalogMigrationError: 'disk full'
+    }
+    const service = new AgentCatalogService(makeStoreStub(state))
+    expect(service.getLocalSnapshot().migrationBlockedError).toBe('disk full')
+
+    state.agentCatalogMigrationError = null
+    expect(service.getLocalSnapshot().migrationBlockedError).toBeUndefined()
+  })
+
+  it('projects the block to remote clients as a boolean only — never the error text', () => {
+    const state: StoreStubState = {
+      settings: baseSettings(),
+      repos: [],
+      automations: [],
+      agentCatalogMigrationError: 'disk full at /Users/someone/Library'
+    }
+    const service = new AgentCatalogService(makeStoreStub(state))
+    const remote = service.getRemoteSnapshot()
+    expect('customAgents' in remote && remote.migrationBlocked).toBe(true)
+    expect(JSON.stringify(remote)).not.toContain('disk full')
+    expect(JSON.stringify(remote)).not.toContain('/Users/')
+
+    state.agentCatalogMigrationError = null
+    const healthy = service.getRemoteSnapshot()
+    expect('migrationBlocked' in healthy).toBe(false)
+  })
 })
 
 describe('reference payload budget (L1-#2)', () => {

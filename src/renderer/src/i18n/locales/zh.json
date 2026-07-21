@@ -175,6 +175,10 @@
             "07f788de83": "WebSocket"
           }
         }
+      },
+      "worktreeCreate": {
+        "hostPredatesDefaultLaunch": "This Orca host predates default-agent launch. Pick a specific built-in agent or update Orca on the host.",
+        "hostPredatesCustomAgents": "This Orca host predates custom agents. Pick a built-in agent or update Orca on the host."
       }
     },
     "store": {
@@ -9294,7 +9298,8 @@
           "defaultTitle": "默认智能体",
           "nullDefaultAttention": "请选择一个默认智能体。在此之前，需人工干预的启动将无法开始，并会要求你选择一个。",
           "migrationBlockedTitle": "智能体设置暂时为只读状态",
-          "migrationBlockedDescription": "Orca 在更新前无法备份你现有的智能体设置，因此变更已被阻止以保护你的数据。请先解决下面的问题，然后重试。"
+          "migrationBlockedDescription": "Orca 在更新前无法备份你现有的智能体设置，因此变更已被阻止以保护你的数据。请先解决下面的问题，然后重试。",
+          "unavailable": "Custom agents are managed on the desktop host."
         },
         "AgentCatalogStatusBadge": {
           "enabled": "已启用",
@@ -13694,6 +13699,31 @@
         "openTerminal": "打开终端",
         "forgetLaunch": "忘记启动…",
         "manageAgents": "管理代理"
+      },
+      "dataRecovery": {
+        "pointAgentCatalogPreV1Title": "Before the custom-agents update (agent catalog v1)",
+        "pointAgentCatalogPreV1Loss": "Restoring discards all settings and workspace metadata saved after this point, including any custom agents.",
+        "title": "Data recovery",
+        "description": "Restore this profile from a recovery point created before a data migration. Restoring never deletes the recovery point.",
+        "loading": "Looking for recovery points…",
+        "empty": "No recovery points exist for this profile.",
+        "createdAt": "Created {{date}}",
+        "createdUnknown": "Creation time unknown",
+        "previousBinary": "After restoring, Orca quits. Install the previous Orca version before opening it again.",
+        "restoring": "Restoring…",
+        "confirmRestore": "Restore and quit",
+        "cancel": "Cancel",
+        "prepareDowngrade": "Prepare downgrade…",
+        "restoreFailed": "Restore failed and no changes were made: {{error}}",
+        "close": "Close",
+        "noticeTitle": "Orca could not back up your data before a required update",
+        "noticeBody": "Your existing data is unchanged and built-in agents keep working, but custom-agent settings are read-only until this is resolved.",
+        "retrying": "Retrying…",
+        "retryMigration": "Retry migration",
+        "openDataRecovery": "Open Data recovery",
+        "copyDetails": "Copy details",
+        "settingsRowHint": "A pre-update recovery point exists for this profile.",
+        "settingsRowOpen": "Data recovery…"
       }
     },
     "i18n": {

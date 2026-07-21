@@ -146,4 +146,44 @@ describe('agent-catalog v1 migration through the real Store', () => {
     expect(store.getSettings().agentCatalogSchemaVersion).toBe(1)
     expect(existsSync(`${dataFile}${PINNED_BACKUP_SUFFIX}`)).toBe(false)
   })
+
+  // Why skip on win32: chmod cannot make a directory read-only on Windows.
+  it.skipIf(process.platform === 'win32')(
+    'retryAgentCatalogMigration completes a blocked migration once the cause clears',
+    async () => {
+      const original = JSON.stringify({ settings: { defaultTuiAgent: null } })
+      writeFileSync(dataFile, original, { mode: 0o600 })
+      chmodSync(dir, 0o500)
+      const store = await createStore(dataFile)
+      expect(store.getAgentCatalogMigrationError()).not.toBeNull()
+
+      // Still failing: retry reports the error and stays pre-v1.
+      const stillBlocked = store.retryAgentCatalogMigration()
+      expect(stillBlocked.ok).toBe(false)
+      expect(store.getAgentCatalogMigrationError()).not.toBeNull()
+      expect(store.getSettings().agentCatalogSchemaVersion).toBeUndefined()
+
+      chmodSync(dir, 0o755)
+      const result = store.retryAgentCatalogMigration()
+      expect(result).toEqual({ ok: true })
+      expect(store.getAgentCatalogMigrationError()).toBeNull()
+      expect(store.getSettings().agentCatalogSchemaVersion).toBe(1)
+      expect(store.getSettings().defaultTuiAgent).toBe('auto')
+      // The backup captured the untouched pre-v1 bytes before any v1 write.
+      expect(readFileSync(`${dataFile}${PINNED_BACKUP_SUFFIX}`, 'utf-8')).toBe(original)
+      store.flushOrThrow()
+      const persisted = JSON.parse(readFileSync(dataFile, 'utf-8'))
+      expect(persisted.settings.agentCatalogSchemaVersion).toBe(1)
+    }
+  )
+
+  it('retryAgentCatalogMigration is a no-op when the migration is not blocked', async () => {
+    writeFileSync(dataFile, JSON.stringify({ settings: { defaultTuiAgent: null } }), {
+      mode: 0o600
+    })
+    const store = await createStore(dataFile)
+    expect(store.getAgentCatalogMigrationError()).toBeNull()
+    expect(store.retryAgentCatalogMigration()).toEqual({ ok: true })
+    expect(store.getSettings().agentCatalogSchemaVersion).toBe(1)
+  })
 })

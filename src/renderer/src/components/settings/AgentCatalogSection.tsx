@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   BuiltInTuiAgent,
   CustomTuiAgentId,
@@ -22,6 +22,7 @@ import {
   AgentCatalogMigrationBlockedNotice,
   asAgentCatalogMigrationBlocked
 } from './agent-catalog-migration-blocked'
+import { DataRecoverySettingsRow } from '../data-recovery/DataRecoverySettingsRow'
 import { CustomAgentEditorDialog } from './CustomAgentEditorDialog'
 import { BuiltInLaunchSettingsDialog } from './BuiltInLaunchSettingsDialog'
 import { CustomAgentDeleteDialog } from './CustomAgentDeleteDialog'
@@ -68,7 +69,7 @@ export function AgentCatalogSection({
   codexSessionSourceHome,
   readOnly
 }: AgentCatalogSectionProps): React.JSX.Element {
-  const { snapshot, refetch } = useLocalAgentCatalog()
+  const { snapshot, unavailable, refetch } = useLocalAgentCatalog()
   const { detectedIds, isRefreshing, refresh } = useDetectedAgents()
   const detectedSet = useMemo<ReadonlySet<string> | null>(
     () => (detectedIds ? new Set(detectedIds) : null),
@@ -79,6 +80,18 @@ export function AgentCatalogSection({
   // write; without surfacing that, the toggles/default picker look like silent
   // no-ops. A later success clears the notice (the block lifted).
   const [migrationBlockedError, setMigrationBlockedError] = useState<string | null>(null)
+  // Why: the block is a load-time state (failed pre-v1 backup), not just a
+  // mutation outcome — a user who never edits must still learn writes are
+  // fail-closed. Each real snapshot is authoritative both ways: it arms the
+  // notice and clears one left stale by an app-banner Retry.
+  useEffect(() => {
+    if (!snapshot) {
+      return
+    }
+    setMigrationBlockedError(
+      typeof snapshot.migrationBlockedError === 'string' ? snapshot.migrationBlockedError : null
+    )
+  }, [snapshot])
   const surfaceMigrationBlock = (result: { ok: boolean }): void => {
     const blocked = asAgentCatalogMigrationBlocked(result)
     if (blocked) {
@@ -255,6 +268,19 @@ export function AgentCatalogSection({
     void refresh()
   }
 
+  if (unavailable) {
+    // Paired web: the local catalog surface doesn't exist here; the pane-level
+    // read-only notice explains where to manage agents.
+    return (
+      <p className="text-sm text-muted-foreground">
+        {translate(
+          'auto.components.settings.AgentCatalogSection.unavailable',
+          'Custom agents are managed on the desktop host.'
+        )}
+      </p>
+    )
+  }
+
   if (!snapshot) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -287,6 +313,7 @@ export function AgentCatalogSection({
         onRepairReplace={handleRepairReplace}
         onRepairDuplicate={handleRepairDuplicate}
       />
+      {!readOnly ? <DataRecoverySettingsRow /> : null}
       {editorMode.kind === 'built-in-launch' ? (
         <BuiltInLaunchSettingsDialog
           open={editorOpen}

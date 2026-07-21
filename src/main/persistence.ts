@@ -5091,6 +5091,42 @@ export class Store {
     return this.agentCatalogMigrationErrorValue
   }
 
+  /** Absolute path of the live data file; recovery/restore operations key off it. */
+  getDataFilePath(): string {
+    return this.dataFile
+  }
+
+  /** Re-attempt the blocked agent-catalog v1 migration without a relaunch: retry
+   *  the pinned backup against the on-disk pre-v1 bytes, then stamp v1 in memory
+   *  and persist. No-op when the migration is not blocked. */
+  retryAgentCatalogMigration(): { ok: true } | { ok: false; error: string } {
+    if (this.agentCatalogMigrationErrorValue === null) {
+      return { ok: true }
+    }
+    let raw: string | null = null
+    try {
+      raw = existsSync(this.dataFile) ? readFileSync(this.dataFile, 'utf-8') : null
+    } catch (error) {
+      const message = `Could not read the data file: ${error instanceof Error ? error.message : String(error)}`
+      this.agentCatalogMigrationErrorValue = message
+      return { ok: false, error: message }
+    }
+    const migration = migrateAgentCatalogSchema({
+      settings: this.state.settings,
+      preV1RawContents: raw,
+      createBackup: () => createPinnedPreV1Backup(this.dataFile, raw ?? '')
+    })
+    if (migration.backupError) {
+      this.agentCatalogMigrationErrorValue = migration.backupError
+      return { ok: false, error: migration.backupError }
+    }
+    // updateSettings (not a bare merge) so settings:changed listeners fire and
+    // Settings' catalog snapshot refetches, clearing its mirrored notice.
+    this.agentCatalogMigrationErrorValue = null
+    this.updateSettings(migration.settingsPatch)
+    return { ok: true }
+  }
+
   onSettingsChanged(
     listener: (
       updates: Partial<GlobalSettings>,
@@ -6404,6 +6440,13 @@ export class Store {
       clearTimeout(this.writeTimer)
       this.writeTimer = null
     }
+  }
+
+  // Why: only for a failed recovery-point restore — the data file was NOT
+  // replaced, so in-memory state is still authoritative and must persist again.
+  // Never call after a successful restore or a profile move.
+  unfreezeWrites(): void {
+    this.writesFrozen = false
   }
 
   // Why best-effort: the sidecar is a refetchable cache; a failed write only costs a cold badge paint next launch, never data.

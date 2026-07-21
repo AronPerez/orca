@@ -39,7 +39,7 @@ import {
   isSecurityReducingMutation,
   type AgentCatalogMigrationBlockedError
 } from './agent-catalog-write-policy'
-import { getHostAgentSessionRecordStore } from './agent-session-record-store-host'
+import { computeBaseDisableImpact } from './agent-catalog-base-disable-impact'
 import { applyAgentReferenceMutation } from './agent-reference-mutations'
 import type {
   AgentReferenceMutationRequest,
@@ -91,11 +91,19 @@ export class AgentCatalogService {
   }
 
   getLocalSnapshot(): LocalAgentCatalogSnapshot {
-    return buildLocalAgentCatalogSnapshot(this.store.getSettings(), this.repairTokens)
+    const snapshot = buildLocalAgentCatalogSnapshot(this.store.getSettings(), this.repairTokens)
+    const blocked = agentCatalogMigrationBlockedError(this.store)
+    return blocked ? { ...snapshot, migrationBlockedError: blocked.migrationError } : snapshot
   }
 
   getRemoteSnapshot(): ReturnType<typeof buildAgentCatalogSnapshot> {
-    return buildAgentCatalogSnapshot(this.store.getSettings())
+    const snapshot = buildAgentCatalogSnapshot(this.store.getSettings())
+    // Boolean-only block flag (the error text never crosses the wire); a
+    // projection error never carries it — a blocked host is pre-v1, never oversize.
+    if (!('customAgents' in snapshot) || !agentCatalogMigrationBlockedError(this.store)) {
+      return snapshot
+    }
+    return { ...snapshot, migrationBlocked: true }
   }
 
   /** Local-desktop-only reference summary for delete confirmation and "Review
@@ -104,38 +112,8 @@ export class AgentCatalogService {
     return this.referenceIndex.summarizeReferences(id)
   }
 
-  /** §973 base-disable impact: the counts of persisted-owner references and
-   *  resumable sessions that will block when a built-in base is disabled. Saved
-   *  references include the base id and any live custom derivative of it (a
-   *  derivative can't launch without its harness); sessions are counted by base
-   *  and excluded from the reference scan so the two counts never overlap. Counts
-   *  only — never a label or config. Enabled-derivative counts stay client-side. */
   getBaseDisableImpact(base: BuiltInTuiAgent): BaseDisableImpact {
-    const catalog = normalizeCatalogFromSettings(this.store.getSettings())
-    const derivativeIds = new Set<string>()
-    for (const agent of catalog.liveCustomAgents) {
-      if (agent.baseAgent === base) {
-        derivativeIds.add(agent.id)
-      }
-    }
-    const matches = (value: unknown): boolean =>
-      value === base || (typeof value === 'string' && derivativeIds.has(value))
-    const saved = this.referenceIndex.countMatchingReferences(matches, {
-      excludeOwners: new Set(['session'])
-    })
-    let resumableSessions: BaseDisableImpact['resumableSessions']
-    try {
-      resumableSessions = {
-        count: getHostAgentSessionRecordStore().countRecordsByBase(base),
-        atLeast: false
-      }
-    } catch {
-      resumableSessions = { count: 0, atLeast: true }
-    }
-    return {
-      savedReferences: { count: saved.count, atLeast: !saved.complete },
-      resumableSessions
-    }
+    return computeBaseDisableImpact(this.store.getSettings(), this.referenceIndex, base)
   }
 
   /** Single-record full-env editor read, access-checked by the preload boundary
@@ -217,18 +195,12 @@ export class AgentCatalogService {
     }
   }
 
-  /** Non-null while the profile is pinned pre-v1 by a failed backup; all
-   *  catalog/reference mutations are gated on it. */
-  private getMigrationBlockedError(): AgentCatalogMigrationBlockedError | null {
-    return agentCatalogMigrationBlockedError(this.store)
-  }
-
   mutateReferences(
     request: AgentReferenceMutationRequest
   ): AgentReferenceMutationResult<LocalAgentReferenceSnapshot> | AgentCatalogMigrationBlockedError {
     // The failed-backup invariant is "no v1 write": reference mutations stamp
     // agentReferenceRevision, so they are blocked alongside catalog mutations.
-    const blocked = this.getMigrationBlockedError()
+    const blocked = agentCatalogMigrationBlockedError(this.store)
     if (blocked) {
       return blocked
     }
@@ -311,7 +283,7 @@ export class AgentCatalogService {
   ): AgentCatalogMutationResult | AgentCatalogMigrationBlockedError {
     // A failed pinned pre-v1 backup means no v1 write may land on the profile;
     // fail closed here so authoring cannot bypass the migration invariant.
-    const blocked = this.getMigrationBlockedError()
+    const blocked = agentCatalogMigrationBlockedError(this.store)
     if (blocked) {
       return blocked
     }

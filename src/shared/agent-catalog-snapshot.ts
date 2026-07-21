@@ -60,6 +60,10 @@ export type AgentCatalogSnapshot = {
   disabledAgents: TuiAgent[]
   customAgents: SyncedCustomTuiAgent[]
   deletedCustomAgents: DeletedCustomTuiAgent[]
+  /** Set while the host's v1 migration is fail-closed behind a failed pinned
+   *  backup: catalog/reference writes are read-only pending recovery ON THE
+   *  HOST. Boolean only — the error text stays host-local, never on the wire. */
+  migrationBlocked?: true
 }
 
 export type AgentProjectionStatus =
@@ -96,6 +100,10 @@ export type LocalAgentCatalogSnapshot = Omit<AgentCatalogSnapshot, 'customAgents
   repairIssues: AgentCatalogRepairIssue[]
   projection: AgentProjectionStatus
   localStorage: LocalAgentCatalogStorageStatus
+  // Present while the pinned pre-v1 backup is failing and all catalog/reference
+  // writes are fail-closed; lets Settings surface the block on load, not only
+  // after a rejected mutation.
+  migrationBlockedError?: string
 }
 
 export const MAX_LOCAL_AGENT_DRAFT_BYTES = 1_048_576

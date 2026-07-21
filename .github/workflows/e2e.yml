@@ -236,9 +236,7 @@ jobs:
   # into the REMOTE worktree, and observes the spawned process's argv+env from
   # /proc inside the container — proving one host resolution produced one remote
   # PTY with the exact custom executable/args/env, and that reconnect never
-  # duplicates the launch. Ubuntu-only because macOS/Windows GitHub runners
-  # cannot host a Linux Docker container (the platform matrix in pr.yml covers
-  # the pure-resolution cross-OS cells instead).
+  # duplicates the launch.
   ssh-custom-agent:
     name: e2e ssh custom agent
     needs: build
