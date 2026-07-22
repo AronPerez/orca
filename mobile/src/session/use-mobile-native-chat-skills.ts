@@ -4,6 +4,11 @@ import type { DiscoveredSkill, SkillDiscoveryResult } from '../../../src/shared/
 import { getNativeChatAgentProfile } from '../../../src/shared/native-chat-agent-profiles'
 import { isNativeChatSkillForAgent } from '../../../src/shared/native-chat/native-chat-skill-ownership'
 import type { RpcClient } from '../transport/rpc-client'
+import {
+  getMobileTerminalDiagnosticErrorName,
+  logMobileTerminalDiagnostic,
+  shortenMobileTerminalDiagnosticId
+} from './mobile-terminal-diagnostics'
 
 const SKILL_DISCOVERY_DEBOUNCE_MS = 120
 const SKILL_DISCOVERY_TIMEOUT_MS = 30_000
@@ -70,9 +75,16 @@ export function useMobileNativeChatSkills(args: {
           if (sequenceRef.current !== sequence) {
             return
           }
+          const errorKind = classifyDiscoveryError(reason)
+          logMobileTerminalDiagnostic('skill-discovery-error', {
+            worktree: shortenMobileTerminalDiagnosticId(worktreeId),
+            errorKind,
+            rpcCode: reason instanceof MobileSkillDiscoveryError ? reason.code : null,
+            errorName: getMobileTerminalDiagnosticErrorName(reason)
+          })
           setState({
             ...storedState('error', client, worktreeId, agent),
-            errorKind: classifyDiscoveryError(reason)
+            errorKind
           })
         }
       )
