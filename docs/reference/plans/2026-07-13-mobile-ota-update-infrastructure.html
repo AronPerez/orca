@@ -1,0 +1,1452 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Plan for adding signed over-the-air JavaScript updates to the Orca mobile companion app."
+    />
+    <title>Orca Mobile OTA Update Infrastructure Plan</title>
+    <style>
+      @font-face {
+        font-family: 'Geist';
+        src: url('../../../src/renderer/src/assets/fonts/Geist-Variable.woff2') format('woff2');
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      /* Why: this document must remain readable as a standalone file, so it mirrors
+         the canonical Orca roles from main.css rather than depending on the app shell. */
+      :root {
+        color-scheme: light dark;
+        --background: #fff;
+        --foreground: #0a0a0a;
+        --card: #fff;
+        --card-foreground: #0a0a0a;
+        --primary: #171717;
+        --primary-foreground: #fafafa;
+        --secondary: #f5f5f5;
+        --secondary-foreground: #171717;
+        --muted: #f5f5f5;
+        --muted-foreground: #737373;
+        --accent: #f5f5f5;
+        --accent-foreground: #171717;
+        --border: #e5e5e5;
+        --ring: #a1a1a1;
+        --status-success: #15803d;
+        --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
+        --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
+        --radius: 0.625rem;
+        --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        --font-mono:
+          'SF Mono', SFMono-Regular, ui-monospace, 'Cascadia Code', Menlo, Consolas,
+          'Liberation Mono', monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: #0a0a0a;
+          --foreground: #fafafa;
+          --card: #171717;
+          --card-foreground: #fafafa;
+          --primary: #e5e5e5;
+          --primary-foreground: #171717;
+          --secondary: #262626;
+          --secondary-foreground: #fafafa;
+          --muted: #262626;
+          --muted-foreground: #a1a1a1;
+          --accent: #404040;
+          --accent-foreground: #fafafa;
+          --border: rgb(255 255 255 / 0.07);
+          --ring: #737373;
+          --status-success: #86efac;
+          --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
+          --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
+        }
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.65;
+        letter-spacing: 0.01em;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      a {
+        color: inherit;
+        text-decoration-color: var(--ring);
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        text-decoration-color: currentColor;
+      }
+
+      code,
+      pre {
+        font-family: var(--font-mono);
+      }
+
+      code {
+        padding: 0.1rem 0.3rem;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 0.6);
+        background: var(--muted);
+        font-size: 0.9em;
+      }
+
+      .shell {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 56px 0 96px;
+      }
+
+      .eyebrow {
+        margin: 0 0 12px;
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin-top: 0;
+        color: var(--foreground);
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+      }
+
+      h1 {
+        max-width: 820px;
+        margin-bottom: 18px;
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        font-weight: 680;
+      }
+
+      h2 {
+        margin-bottom: 18px;
+        font-size: 1.55rem;
+        font-weight: 650;
+      }
+
+      h3 {
+        margin-bottom: 8px;
+        font-size: 1rem;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+
+      p {
+        margin: 0 0 14px;
+      }
+
+      ul,
+      ol {
+        margin: 0;
+        padding-left: 1.25rem;
+      }
+
+      li + li {
+        margin-top: 6px;
+      }
+
+      .lede {
+        max-width: 800px;
+        margin-bottom: 20px;
+        color: var(--muted-foreground);
+        font-size: 1.05rem;
+      }
+
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 34px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 3px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--secondary);
+        color: var(--secondary-foreground);
+        font-size: 12px;
+        font-weight: 550;
+      }
+
+      .badge.recommended {
+        border-color: var(--status-success-border);
+        background: var(--status-success-background);
+        color: var(--status-success);
+      }
+
+      .decision {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 16px;
+        padding: 20px;
+        border: 1px solid var(--status-success-border);
+        border-radius: calc(var(--radius) * 1.4);
+        background: var(--status-success-background);
+      }
+
+      .decision-mark {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--status-success);
+        color: var(--background);
+        font-weight: 750;
+      }
+
+      .decision p:last-child {
+        margin-bottom: 0;
+      }
+
+      .page-grid {
+        display: grid;
+        grid-template-columns: 230px minmax(0, 1fr);
+        gap: 54px;
+        margin-top: 44px;
+      }
+
+      nav {
+        position: sticky;
+        top: 24px;
+        align-self: start;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 1.4);
+        background: var(--card);
+      }
+
+      nav p {
+        margin-bottom: 10px;
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      nav ol {
+        padding: 0;
+        list-style: none;
+      }
+
+      nav li + li {
+        margin-top: 1px;
+      }
+
+      nav a {
+        display: block;
+        padding: 6px 8px;
+        border-radius: calc(var(--radius) * 0.8);
+        color: var(--muted-foreground);
+        font-size: 12px;
+        text-decoration: none;
+      }
+
+      nav a:hover,
+      nav a:focus-visible {
+        background: var(--accent);
+        color: var(--accent-foreground);
+        outline: none;
+      }
+
+      nav a:focus-visible {
+        box-shadow: 0 0 0 2px var(--ring);
+      }
+
+      main {
+        min-width: 0;
+      }
+
+      section {
+        padding: 42px 0;
+        border-top: 1px solid var(--border);
+        scroll-margin-top: 24px;
+      }
+
+      section:first-child {
+        padding-top: 0;
+        border-top: 0;
+      }
+
+      .section-intro {
+        max-width: 760px;
+        color: var(--muted-foreground);
+      }
+
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 22px;
+      }
+
+      .card {
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 1.4);
+        background: var(--card);
+        color: var(--card-foreground);
+      }
+
+      .card p:last-child,
+      .card ul:last-child {
+        margin-bottom: 0;
+      }
+
+      .card .label {
+        margin-bottom: 7px;
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .callout {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border-left: 3px solid var(--ring);
+        border-radius: 0 calc(var(--radius) * 0.8) calc(var(--radius) * 0.8) 0;
+        background: var(--muted);
+      }
+
+      .callout p:last-child {
+        margin-bottom: 0;
+      }
+
+      .table-wrap {
+        margin-top: 20px;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 1.4);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--card);
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        padding: 13px 14px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--muted);
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      td:first-child {
+        font-weight: 600;
+      }
+
+      .architecture {
+        margin-top: 22px;
+        padding: 22px;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 1.4);
+        background: var(--card);
+        color: var(--card-foreground);
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre;
+      }
+
+      .flow-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 22px;
+        padding: 0;
+        list-style: none;
+        counter-reset: flow;
+      }
+
+      .flow-list li {
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        margin: 0;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 0.8);
+        background: var(--card);
+        counter-increment: flow;
+      }
+
+      .flow-list li::before {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--secondary);
+        color: var(--secondary-foreground);
+        content: counter(flow);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .phase {
+        display: grid;
+        grid-template-columns: 108px minmax(0, 1fr);
+        gap: 18px;
+        padding: 20px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .phase:last-child {
+        border-bottom: 0;
+      }
+
+      .phase-label {
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .checklist {
+        padding-left: 0;
+        list-style: none;
+      }
+
+      .checklist li {
+        position: relative;
+        padding-left: 24px;
+      }
+
+      .checklist li::before {
+        position: absolute;
+        top: 0.15em;
+        left: 0;
+        color: var(--muted-foreground);
+        content: '□';
+        font-size: 15px;
+      }
+
+      .footnotes {
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      footer {
+        margin-top: 44px;
+        padding-top: 22px;
+        border-top: 1px solid var(--border);
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      @media (max-width: 820px) {
+        .shell {
+          width: min(100% - 28px, 760px);
+          padding-top: 32px;
+        }
+
+        .page-grid {
+          grid-template-columns: 1fr;
+          gap: 28px;
+        }
+
+        nav {
+          position: static;
+        }
+
+        nav ol {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .cards {
+          grid-template-columns: 1fr;
+        }
+
+        .phase {
+          grid-template-columns: 1fr;
+          gap: 7px;
+        }
+      }
+
+      @media (max-width: 520px) {
+        .decision {
+          grid-template-columns: 1fr;
+        }
+
+        nav ol {
+          grid-template-columns: 1fr;
+        }
+
+        th,
+        td {
+          padding: 11px;
+        }
+      }
+
+      @media print {
+        :root {
+          color-scheme: light;
+        }
+
+        body {
+          background: var(--background);
+        }
+
+        .shell {
+          width: 100%;
+          padding: 0;
+        }
+
+        nav {
+          display: none;
+        }
+
+        .page-grid {
+          display: block;
+          margin-top: 32px;
+        }
+
+        section,
+        .card,
+        .table-wrap,
+        .flow-list li {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <p class="eyebrow">Architecture plan · July 13, 2026</p>
+        <h1>Orca Mobile over-the-air update infrastructure</h1>
+        <p class="lede">
+          A plan to ship React Native UI polish and JavaScript bug fixes without waiting for an
+          App Store or Play Store review, while keeping native changes on the normal store release
+          path.
+        </p>
+        <div class="meta-row" aria-label="Plan status">
+          <span class="badge recommended">Recommended: self-host</span>
+          <span class="badge">Client: expo-updates</span>
+          <span class="badge">Infrastructure: GCP + CDN</span>
+          <span class="badge">Signing: Cloud KMS</span>
+        </div>
+
+        <div class="decision">
+          <div class="decision-mark" aria-hidden="true">✓</div>
+          <div>
+            <h3>Recommended decision</h3>
+            <p>
+              Use the open-source <code>expo-updates</code> client and Expo Updates Protocol, but
+              operate the manifest service, release storage, signing, approvals, and rollout state
+              on Orca infrastructure. Keep a human approval before production promotion and
+              automate preview releases.
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <div class="page-grid">
+        <nav aria-label="Document sections">
+          <p>Contents</p>
+          <ol>
+            <li><a href="#outcome">Outcome</a></li>
+            <li><a href="#current-state">Current state</a></li>
+            <li><a href="#boundaries">OTA boundaries</a></li>
+            <li><a href="#experience">User experience</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#signing">Signing and approval</a></li>
+            <li><a href="#comparison">Hosted comparison</a></li>
+            <li><a href="#operations">Operations</a></li>
+            <li><a href="#delivery">Delivery plan</a></li>
+            <li><a href="#acceptance">Acceptance</a></li>
+            <li><a href="#decisions">Open decisions</a></li>
+          </ol>
+        </nav>
+
+        <main>
+          <section id="outcome">
+            <p class="eyebrow">01 · Outcome</p>
+            <h2>What this changes</h2>
+            <p class="section-intro">
+              The store version becomes a native runtime shell plus a known-good embedded bundle.
+              Most application behavior remains TypeScript and JavaScript, and compatible bundles
+              can be delivered independently after the shell has passed store review.
+            </p>
+
+            <div class="cards">
+              <article class="card">
+                <p class="label">Primary benefit</p>
+                <h3>Minutes instead of store-review days</h3>
+                <p>
+                  Source-control UI polish, terminal rendering changes, interaction fixes, copy,
+                  styling, state management, and compatible transport fixes can ship through OTA.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">Continuing constraint</p>
+                <h3>Native releases still exist</h3>
+                <p>
+                  New native modules, permissions, entitlements, Expo or React Native upgrades,
+                  and changes to the custom audio implementation still require store binaries.
+                </p>
+              </article>
+            </div>
+
+            <div class="callout">
+              <strong>This is not a mechanism for bypassing store policy.</strong> OTA should be used
+              for code compatible with the reviewed native runtime. Material changes to the app's
+              purpose or native capabilities stay on the store path even if they are technically
+              expressible in JavaScript.
+            </div>
+          </section>
+
+          <section id="current-state">
+            <p class="eyebrow">02 · Current state</p>
+            <h2>What the repository supports today</h2>
+            <p class="section-intro">
+              The mobile project is already well suited to OTA delivery. Most frequently changed
+              behavior is Metro-bundled TypeScript, TSX, HTML, CSS, and JavaScript.
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Area</th>
+                    <th>Current state</th>
+                    <th>Implication</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Framework</td>
+                    <td>Expo 55, React Native 0.83, Expo Router, new architecture enabled</td>
+                    <td><code>expo-updates</code> is the natural client implementation.</td>
+                  </tr>
+                  <tr>
+                    <td>Update configuration</td>
+                    <td>No <code>expo-updates</code>, update URL, or runtime version configured</td>
+                    <td>One store release is required to introduce the OTA-capable shell.</td>
+                  </tr>
+                  <tr>
+                    <td>High-change UI</td>
+                    <td>Source control, sessions, tasks, files, settings, and navigation are TS/TSX</td>
+                    <td>Most UI polish and behavior fixes can be OTA-delivered.</td>
+                  </tr>
+                  <tr>
+                    <td>Terminal</td>
+                    <td>React Native WebView with bundled xterm engine, HTML, CSS, and injected JS</td>
+                    <td>Most rendering and interaction fixes can ship OTA if WebView APIs are unchanged.</td>
+                  </tr>
+                  <tr>
+                    <td>Custom native boundary</td>
+                    <td><code>@orca/expo-two-way-audio</code> contains Kotlin and iOS native code</td>
+                    <td>Native audio changes require a new store binary.</td>
+                  </tr>
+                  <tr>
+                    <td>Native configuration</td>
+                    <td>Camera, notifications, image picker, splash, permissions, and build plugins</td>
+                    <td>Manifest, permission, plugin, and entitlement changes require store review.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="boundaries">
+            <p class="eyebrow">03 · OTA boundaries</p>
+            <h2>What can and cannot ship over the air</h2>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Change</th>
+                    <th>OTA?</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Source-control layout, interactions, and styling</td>
+                    <td>Yes</td>
+                    <td>React Native TS/TSX within the existing runtime.</td>
+                  </tr>
+                  <tr>
+                    <td>Terminal rendering, xterm configuration, and WebView-injected code</td>
+                    <td>Usually</td>
+                    <td>Safe while relying only on WebView/native APIs present in the target runtime.</td>
+                  </tr>
+                  <tr>
+                    <td>Navigation, state, transport, RPC, and business-logic fixes</td>
+                    <td>Usually</td>
+                    <td>Desktop/server protocol compatibility must include older mobile runtimes.</td>
+                  </tr>
+                  <tr>
+                    <td>Pure JavaScript dependency update</td>
+                    <td>Usually</td>
+                    <td>Only when Metro bundles it and it introduces no native code or configuration.</td>
+                  </tr>
+                  <tr>
+                    <td>New native package or Expo config plugin</td>
+                    <td>No</td>
+                    <td>The native binary must contain the module before JavaScript can call it.</td>
+                  </tr>
+                  <tr>
+                    <td>Expo SDK, React Native, or native dependency upgrade</td>
+                    <td>No</td>
+                    <td>Create a new runtime version and submit new binaries.</td>
+                  </tr>
+                  <tr>
+                    <td>Audio engine Kotlin, Swift, or Objective-C change</td>
+                    <td>No</td>
+                    <td>The custom native module is compiled into the app binary.</td>
+                  </tr>
+                  <tr>
+                    <td>Permissions, entitlements, Info.plist, AndroidManifest, icon, or splash</td>
+                    <td>No</td>
+                    <td>These are native package and store-review concerns.</td>
+                  </tr>
+                  <tr>
+                    <td>Material change to the app's primary purpose</td>
+                    <td>Store path</td>
+                    <td>Keep product-policy review separate from technical OTA capability.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout">
+              <strong>Compatibility rule:</strong> an update may only target a runtime version whose
+              native modules and configuration satisfy every API used by that bundle. When native
+              compatibility changes, increment the runtime version and ship through the stores.
+            </div>
+          </section>
+
+          <section id="experience">
+            <p class="eyebrow">04 · User experience</p>
+            <h2>How updates feel to a user</h2>
+            <ol class="flow-list">
+              <li>
+                <div>
+                  <h3>The app always has a launchable bundle</h3>
+                  <p>
+                    A store install contains an embedded bundle. Later launches use the newest
+                    compatible verified bundle already cached on the device.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <div>
+                  <h3>Update checks happen quietly</h3>
+                  <p>
+                    On launch or resume, the app asks for an update matching its platform, runtime
+                    version, and release channel. Routine checks should not block startup.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <div>
+                  <h3>The bundle downloads in the background</h3>
+                  <p>
+                    The client verifies the signed manifest and asset hashes before making the
+                    release eligible. Invalid or incomplete updates are rejected.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <div>
+                  <h3>The update applies at a safe boundary</h3>
+                  <p>
+                    Default behavior should apply routine releases on the next cold launch. For an
+                    important fix, show a concise “Update ready — Restart” action after download.
+                  </p>
+                </div>
+              </li>
+              <li>
+                <div>
+                  <h3>Failure falls back instead of blocking use</h3>
+                  <p>
+                    Network or service failure leaves the current bundle running. A bad release can
+                    be rolled back by repointing production to a previously signed manifest.
+                  </p>
+                </div>
+              </li>
+            </ol>
+
+            <p class="callout">
+              Users see no App Store prompt for an OTA release. Store updates remain visible only
+              when Orca ships a new native runtime or changes store-managed capabilities.
+            </p>
+          </section>
+
+          <section id="architecture">
+            <p class="eyebrow">05 · Architecture</p>
+            <h2>Small control plane, static delivery plane</h2>
+            <p class="section-intro">
+              Use Expo's client and public protocol while keeping the operational surface narrow.
+              Releases are immutable; only channel pointers change.
+            </p>
+
+            <pre class="architecture" aria-label="Proposed OTA architecture">Developer merges an OTA-safe change
+                 │
+                 ▼
+        CI builds bundle + assets
+                 │
+                 ├──────────────► Preview channel (automatic)
+                 │
+                 ▼
+     Production approval requested ───► Slack notification
+                 │                           │
+                 │◄──────────── approved ────┘
+                 ▼
+       Cloud KMS signs manifest
+                 │
+        ┌────────┴─────────┐
+        ▼                  ▼
+ GCS immutable objects   Firestore channel pointer
+ bundle / assets /       production → release ID
+ signed manifest
+        │                  │
+        └────────┬─────────┘
+                 ▼
+ Cloud Run manifest endpoint + CDN
+                 │
+                 ▼
+ expo-updates client verifies and caches</pre>
+
+            <div class="cards">
+              <article class="card">
+                <p class="label">Native shell</p>
+                <h3>Installed through the stores</h3>
+                <p>
+                  Contains React Native, Expo modules, custom native modules, an embedded fallback
+                  bundle, update URL, runtime identifier, and OTA public certificate.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">Manifest service</p>
+                <h3>Cloud Run</h3>
+                <p>
+                  Selects a signed manifest using platform, runtime version, and channel. It should
+                  not sign dynamically or rewrite immutable release content.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">Release storage</p>
+                <h3>GCS behind a CDN</h3>
+                <p>
+                  Stores content-addressed bundles, assets, and signed manifests with long immutable
+                  cache lifetimes. Bandwidth is the main variable infrastructure cost.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">Release state</p>
+                <h3>Firestore channel pointers</h3>
+                <p>
+                  A small mutable record maps channel, platform, and runtime to a release. Pointer
+                  changes support promotion and instant rollback without rebuilding.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">Signing</p>
+                <h3>Google Cloud KMS</h3>
+                <p>
+                  Holds a non-exportable, dedicated OTA RSA key. CI submits a SHA-256 digest and
+                  receives the detached RSA PKCS#1 v1.5 signature required by Expo.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">Compatibility</p>
+                <h3>Explicit runtime versions</h3>
+                <p>
+                  Every native compatibility set gets an identifier. Multiple store versions may
+                  remain active, each receiving only compatible updates.
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section id="signing">
+            <p class="eyebrow">06 · Signing and approval</p>
+            <h2>Protect the update path independently of desktop signing</h2>
+            <p>
+              Signing proves that a manifest was authorized by Orca. The signed manifest contains
+              cryptographic hashes for the JavaScript bundle and assets, so the signature extends
+              transitively to everything the client installs. HTTPS still protects transport, but
+              signature verification protects against storage, CDN, routing, or credential
+              compromise serving unauthorized code.
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Concern</th>
+                    <th>Desktop Windows</th>
+                    <th>Mobile OTA</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Trust root</td>
+                    <td>Public CA and Windows Authenticode trust</td>
+                    <td>Public certificate embedded in the Orca mobile binary</td>
+                  </tr>
+                  <tr>
+                    <td>Provider</td>
+                    <td>SignPath OSS program</td>
+                    <td>Google Cloud KMS recommended</td>
+                  </tr>
+                  <tr>
+                    <td>Key</td>
+                    <td>SignPath-controlled Windows code-signing key</td>
+                    <td>Dedicated, non-exportable OTA RSA key</td>
+                  </tr>
+                  <tr>
+                    <td>Approval</td>
+                    <td>Required by the SignPath OSS policy</td>
+                    <td>Orca-controlled production promotion policy</td>
+                  </tr>
+                  <tr>
+                    <td>Frequency</td>
+                    <td>One approval per desktop release signing request</td>
+                    <td>One approval and signature per unique production manifest, not per client</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout">
+              <strong>Why not reuse SignPath OSS?</strong> SignPath's published product matrix places
+              arbitrary hash signing under Code Signing Gateway. The OSS program's key and forced
+              approval workflow are designed for supported code-signing artifacts, and the private
+              key is not exportable. Orca can ask SignPath about an exception, but should not depend
+              on one.
+            </div>
+
+            <h3 style="margin-top: 28px">Recommended production approval flow</h3>
+            <ol class="flow-list">
+              <li><div>CI builds and tests an immutable release candidate.</div></li>
+              <li><div>A protected deployment environment creates an approval request.</div></li>
+              <li><div>The existing release bot posts the candidate and approval link in Slack.</div></li>
+              <li><div>An authorized team member approves or rejects production promotion.</div></li>
+              <li><div>After approval, a narrowly scoped CI identity asks KMS to sign the manifest.</div></li>
+              <li><div>CI uploads immutable content and atomically advances the production pointer.</div></li>
+            </ol>
+
+            <div class="cards">
+              <article class="card">
+                <p class="label">Preview policy</p>
+                <h3>Automatic</h3>
+                <p>Protected branches may publish to an internal channel without human approval.</p>
+              </article>
+              <article class="card">
+                <p class="label">Production policy</p>
+                <h3>One human approval</h3>
+                <p>
+                  Preserve the familiar Slack workflow without making approval a permanent property
+                  of the cryptographic provider.
+                </p>
+              </article>
+            </div>
+
+            <p class="footnotes" style="margin-top: 18px">
+              Key rotation normally requires a store release that embeds the next public
+              certificate. Plan rotation before expiry or suspected compromise, and keep KMS signing
+              permission isolated from the manifest-serving runtime.
+            </p>
+          </section>
+
+          <section id="comparison">
+            <p class="eyebrow">07 · Hosting decision</p>
+            <h2>Self-hosted versus Expo-hosted</h2>
+            <p class="section-intro">
+              Upfront implementation effort is intentionally excluded from this decision. The table
+              focuses on steady-state cost, maintenance, and control.
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Dimension</th>
+                    <th>Self-hosted on Orca infrastructure</th>
+                    <th>Expo-hosted EAS Update</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Recommendation</td>
+                    <td><strong>Preferred for Orca</strong></td>
+                    <td>Best fallback when minimizing engineering ownership</td>
+                  </tr>
+                  <tr>
+                    <td>Client technology</td>
+                    <td>Open-source <code>expo-updates</code></td>
+                    <td>Same <code>expo-updates</code> client</td>
+                  </tr>
+                  <tr>
+                    <td>Recurring platform fee</td>
+                    <td>None</td>
+                    <td>Approximately $199/month for the discussed Production tier</td>
+                  </tr>
+                  <tr>
+                    <td>Compute, database, storage, KMS</td>
+                    <td>Typically low tens of dollars per month before credits</td>
+                    <td>Included within plan allowances</td>
+                  </tr>
+                  <tr>
+                    <td>Bandwidth</td>
+                    <td>Main variable cost; optimize with immutable CDN caching</td>
+                    <td>1 TiB included in the discussed tier, then usage-based</td>
+                  </tr>
+                  <tr>
+                    <td>Usage allowance</td>
+                    <td>No provider MAU allowance</td>
+                    <td>50K update-downloading MAUs in the discussed tier</td>
+                  </tr>
+                  <tr>
+                    <td>How users are counted</td>
+                    <td>Not applicable</td>
+                    <td>Unique users receiving updates, not number of downloads</td>
+                  </tr>
+                  <tr>
+                    <td>Routine maintenance</td>
+                    <td>Estimated 2–6 engineering hours/month averaged over time</td>
+                    <td>Low; Expo operates protocol, storage, dashboard, and delivery</td>
+                  </tr>
+                  <tr>
+                    <td>Operational incidents</td>
+                    <td>Owned by Orca; cached/embedded bundle softens service outages</td>
+                    <td>Provider-owned infrastructure, Orca still owns bad-release response</td>
+                  </tr>
+                  <tr>
+                    <td>Signing and approvals</td>
+                    <td>KMS plus Orca's CI and Slack policy</td>
+                    <td>Managed signing and Expo release controls</td>
+                  </tr>
+                  <tr>
+                    <td>Rollout dashboard and analytics</td>
+                    <td>Build only the small subset Orca needs</td>
+                    <td>Managed dashboard, rollout controls, and update insights</td>
+                  </tr>
+                  <tr>
+                    <td>Control</td>
+                    <td>Full control over targeting, retention, rollout, and data</td>
+                    <td>Constrained by Expo's product model and pricing</td>
+                  </tr>
+                  <tr>
+                    <td>Vendor dependency</td>
+                    <td>Protocol dependency remains; hosting dependency is low</td>
+                    <td>Expo is in both the client ecosystem and operational path</td>
+                  </tr>
+                  <tr>
+                    <td>Scaling economics</td>
+                    <td>Mostly storage requests and bandwidth</td>
+                    <td>MAU and bandwidth allowances, then usage pricing</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout">
+              <strong>Pricing clarification:</strong> 5,000 users downloading ten releases in one
+              month are approximately 5,000 update MAUs, not 50,000 MAUs. They do create 50,000
+              downloads and therefore use the corresponding bandwidth. Verify Expo's current plan
+              terms before making a purchasing decision.
+            </div>
+
+            <div class="cards">
+              <article class="card">
+                <p class="label">Why self-host wins here</p>
+                <p>
+                  Orca already operates GCP services, has credits, and has Cloudflare available. The
+                  delivery plane is mostly static, signing volume is tiny, and service downtime
+                  delays updates rather than preventing app launch.
+                </p>
+              </article>
+              <article class="card">
+                <p class="label">When to choose EAS instead</p>
+                <p>
+                  Choose EAS if no one can own release infrastructure, if 2–6 monthly maintenance
+                  hours cost more than the control gained, or if managed rollouts and analytics
+                  become operationally important.
+                </p>
+              </article>
+            </div>
+
+            <h3 style="margin-top: 28px">Managed features intentionally deferred</h3>
+            <p class="section-intro">
+              Self-hosting does not reproduce every EAS product feature. These are useful, but Orca
+              does not need them to solve the current shipping-velocity problem.
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>EAS feature</th>
+                    <th>Initial Orca substitute</th>
+                    <th>Why that is sufficient</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Hosted release dashboard</td>
+                    <td>CI run, release record, and a small internal status view</td>
+                    <td>Release operators need auditability, not a broad product dashboard.</td>
+                  </tr>
+                  <tr>
+                    <td>Managed branches and channels</td>
+                    <td>Firestore pointers for internal, production, and optional canary</td>
+                    <td>Orca needs a small fixed channel set rather than arbitrary branch topology.</td>
+                  </tr>
+                  <tr>
+                    <td>Percentage rollouts</td>
+                    <td>Internal dogfood, then full promotion with instant rollback</td>
+                    <td>Add deterministic cohorts only after release volume justifies them.</td>
+                  </tr>
+                  <tr>
+                    <td>Republish and revert UI</td>
+                    <td>Audited CI promotion and rollback commands</td>
+                    <td>A pointer change is enough; a polished public control surface is unnecessary.</td>
+                  </tr>
+                  <tr>
+                    <td>Managed update insights</td>
+                    <td>Focused client telemetry and Cloud Monitoring</td>
+                    <td>Adoption, launch success, fallback, and errors cover the operational decision.</td>
+                  </tr>
+                  <tr>
+                    <td>Managed code signing</td>
+                    <td>Cloud KMS, workload identity, and Cloud Audit Logs</td>
+                    <td>The signing operation is infrequent and maps directly to existing GCP controls.</td>
+                  </tr>
+                  <tr>
+                    <td>Managed asset hosting and retention</td>
+                    <td>GCS lifecycle rules plus CDN caching</td>
+                    <td>Assets are immutable and retention requirements are straightforward.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="operations">
+            <p class="eyebrow">08 · Steady-state operations</p>
+            <h2>What Orca must continue to own</h2>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Responsibility</th>
+                    <th>Expected cadence</th>
+                    <th>Control</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Publish and production promotion</td>
+                    <td>Per release</td>
+                    <td>CI pipeline, tests, approval, immutable upload, atomic pointer update</td>
+                  </tr>
+                  <tr>
+                    <td>Rollback</td>
+                    <td>As needed</td>
+                    <td>Move pointer to prior signed release; do not rebuild or re-sign</td>
+                  </tr>
+                  <tr>
+                    <td>Update adoption and launch health</td>
+                    <td>Continuous</td>
+                    <td>Track check, download, apply, launch, fallback, and runtime version</td>
+                  </tr>
+                  <tr>
+                    <td>Retention and storage lifecycle</td>
+                    <td>Monthly policy</td>
+                    <td>Keep active and rollback releases; expire unreachable old assets conservatively</td>
+                  </tr>
+                  <tr>
+                    <td>Expo SDK and protocol compatibility</td>
+                    <td>During native upgrades</td>
+                    <td>Contract tests against every supported store runtime before release</td>
+                  </tr>
+                  <tr>
+                    <td>KMS access and audit review</td>
+                    <td>Quarterly and after incidents</td>
+                    <td>Least privilege, workload identity, audit logs, no runtime signing access</td>
+                  </tr>
+                  <tr>
+                    <td>Key rotation</td>
+                    <td>Planned, infrequent</td>
+                    <td>Introduce next trust root through a store release before retiring the old key</td>
+                  </tr>
+                  <tr>
+                    <td>CDN and origin cost review</td>
+                    <td>Monthly initially</td>
+                    <td>Watch cache hit ratio, bundle size, origin egress, and unexpected clients</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3 style="margin-top: 28px">Minimum telemetry</h3>
+            <div class="cards">
+              <article class="card">
+                <p class="label">Client events</p>
+                <ul>
+                  <li>Update check result</li>
+                  <li>Download duration and failure class</li>
+                  <li>Applied release ID and runtime version</li>
+                  <li>Successful first launch after apply</li>
+                  <li>Fallback or emergency launch</li>
+                </ul>
+              </article>
+              <article class="card">
+                <p class="label">Server signals</p>
+                <ul>
+                  <li>Manifest request rate and error rate</li>
+                  <li>Requests by platform/runtime/channel</li>
+                  <li>CDN hit ratio and bytes served</li>
+                  <li>Pointer changes and signing audit entries</li>
+                  <li>Clients on unsupported runtimes</li>
+                </ul>
+              </article>
+            </div>
+          </section>
+
+          <section id="delivery">
+            <p class="eyebrow">09 · Delivery plan</p>
+            <h2>Implementation phases</h2>
+            <p class="section-intro">
+              Complete the work behind an internal channel first. The existing store app remains
+              unaffected until the OTA-capable native shell is released.
+            </p>
+
+            <div class="phase">
+              <div class="phase-label">Phase 1</div>
+              <div>
+                <h3>Protocol and release contract</h3>
+                <ul class="checklist">
+                  <li>Define release ID, platform, runtime version, channel, and manifest schema.</li>
+                  <li>Define which repository changes force a new native runtime.</li>
+                  <li>Choose update check and apply behavior for foreground and cold launch.</li>
+                  <li>Document App Store and Play policy review rules for release managers.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="phase">
+              <div class="phase-label">Phase 2</div>
+              <div>
+                <h3>OTA-capable mobile shell</h3>
+                <ul class="checklist">
+                  <li>Add and configure <code>expo-updates</code>.</li>
+                  <li>Configure the self-hosted update URL and explicit runtime version.</li>
+                  <li>Embed the OTA public certificate and a known-good fallback bundle.</li>
+                  <li>Add update lifecycle logging and recovery behavior.</li>
+                  <li>Ship the new native shell through TestFlight and internal Android testing.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="phase">
+              <div class="phase-label">Phase 3</div>
+              <div>
+                <h3>GCP release infrastructure</h3>
+                <ul class="checklist">
+                  <li>Create immutable GCS release storage and CDN configuration.</li>
+                  <li>Create Firestore channel and release records.</li>
+                  <li>Implement the Expo Updates Protocol manifest endpoint on Cloud Run.</li>
+                  <li>Create the Cloud KMS signing key and certificate.</li>
+                  <li>Prevent Cloud Run and client-facing identities from signing or promoting.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="phase">
+              <div class="phase-label">Phase 4</div>
+              <div>
+                <h3>Publishing, approval, and rollback</h3>
+                <ul class="checklist">
+                  <li>Build one deterministic bundle and manifest per platform/runtime target.</li>
+                  <li>Validate manifest asset hashes before submitting the signing digest.</li>
+                  <li>Publish preview automatically from an approved branch.</li>
+                  <li>Add protected production approval and the Slack request message.</li>
+                  <li>Add atomic promotion and rollback commands with an audit trail.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="phase">
+              <div class="phase-label">Phase 5</div>
+              <div>
+                <h3>Verification and controlled launch</h3>
+                <ul class="checklist">
+                  <li>Test valid, invalid, expired, truncated, and wrong-runtime manifests.</li>
+                  <li>Test offline launch, interrupted download, failed apply, and rollback.</li>
+                  <li>Dogfood through an internal channel across iOS and Android.</li>
+                  <li>Release the OTA-capable shell through both stores.</li>
+                  <li>Start production with a small cohort before enabling the full channel.</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <section id="acceptance">
+            <p class="eyebrow">10 · Acceptance criteria</p>
+            <h2>Conditions for production readiness</h2>
+            <ul class="checklist">
+              <li>A UI-only source-control change reaches an internal device without a store build.</li>
+              <li>A terminal rendering fix reaches both platforms under the correct runtime version.</li>
+              <li>An update signed by an unknown key is rejected and the previous bundle launches.</li>
+              <li>A manifest with a modified bundle or asset hash is rejected.</li>
+              <li>An update requiring an unavailable native module is never offered to that runtime.</li>
+              <li>Production cannot advance without the configured human approval.</li>
+              <li>Slack identifies the release, commit, runtime, channel, and approval destination.</li>
+              <li>A production rollback completes by pointer change without a new bundle or signature.</li>
+              <li>An update-service outage does not prevent cold launch of the cached or embedded app.</li>
+              <li>Operators can see update adoption, launch success, and failures by release ID.</li>
+            </ul>
+          </section>
+
+          <section id="decisions">
+            <p class="eyebrow">11 · Open decisions</p>
+            <h2>Resolve before implementation</h2>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Decision</th>
+                    <th>Recommendation</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Runtime version format</td>
+                    <td>Explicit native compatibility identifier</td>
+                    <td>JavaScript-only releases stay compatible while native changes create a boundary.</td>
+                  </tr>
+                  <tr>
+                    <td>Channels</td>
+                    <td>Internal, production, and optional canary</td>
+                    <td>Keep promotion simple while preserving dogfood and gradual release paths.</td>
+                  </tr>
+                  <tr>
+                    <td>Apply behavior</td>
+                    <td>Background download; apply on next cold launch</td>
+                    <td>Avoid interrupting live terminal and source-control work.</td>
+                  </tr>
+                  <tr>
+                    <td>Production gate</td>
+                    <td>One protected-environment approval with Slack notification</td>
+                    <td>Matches the current release habit without coupling approval to KMS.</td>
+                  </tr>
+                  <tr>
+                    <td>Rollout model</td>
+                    <td>Start with all-or-nothing plus instant rollback; add cohorts later</td>
+                    <td>Minimize the initial control-plane surface.</td>
+                  </tr>
+                  <tr>
+                    <td>CDN</td>
+                    <td>Choose after measuring GCS/CDN versus Cloudflare path costs</td>
+                    <td>Bandwidth dominates infrastructure cost; protocol logic does not depend on CDN.</td>
+                  </tr>
+                  <tr>
+                    <td>Release retention</td>
+                    <td>Keep every active runtime's current release plus several rollback candidates</td>
+                    <td>Never garbage-collect an object still referenced by a supported runtime.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="references">
+            <p class="eyebrow">References</p>
+            <h2>Primary specifications and policies</h2>
+            <ul>
+              <li>
+                <a href="https://docs.expo.dev/technical-specs/expo-updates-1/"
+                  >Expo Updates Protocol specification</a
+                >
+              </li>
+              <li>
+                <a href="https://docs.expo.dev/versions/latest/sdk/updates/"
+                  >Expo Updates client and custom server configuration</a
+                >
+              </li>
+              <li><a href="https://expo.dev/pricing">Expo plan pricing</a></li>
+              <li>
+                <a href="https://docs.signpath.io/crypto-providers/rest-api"
+                  >SignPath hash-signing REST API</a
+                >
+              </li>
+              <li>
+                <a href="https://docs.signpath.io/editions-explained#hash-based-signing"
+                  >SignPath editions and hash signing</a
+                >
+              </li>
+              <li>
+                <a href="https://developer.apple.com/app-store/review/guidelines/#software-requirements"
+                  >Apple App Review Guidelines: software requirements</a
+                >
+              </li>
+            </ul>
+          </section>
+        </main>
+      </div>
+
+      <footer>
+        Planning document for the Orca mobile companion app. Cost figures are directional and should
+        be refreshed before a vendor or infrastructure commitment.
+      </footer>
+    </div>
+  </body>
+</html>
