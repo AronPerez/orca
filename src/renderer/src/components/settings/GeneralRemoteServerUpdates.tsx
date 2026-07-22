@@ -1,5 +1,5 @@
 import type React from 'react'
-import { Loader2, RefreshCw, ServerCog } from 'lucide-react'
+import { Download, Loader2 } from 'lucide-react'
 import { useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/store'
@@ -9,11 +9,9 @@ import { SearchableSetting } from './SearchableSetting'
 export function GeneralRemoteServerUpdates(): React.JSX.Element | null {
   const entryMap = useAppStore((state) => state.remoteServerUpdates)
   const entries = [...entryMap.values()]
-  const checking = useAppStore((state) => state.remoteServerUpdatesChecking)
   const running = useAppStore((state) => state.remoteServerUpdatesRunning)
   const refresh = useAppStore((state) => state.refreshRemoteServerUpdates)
   const setDialogOpen = useAppStore((state) => state.setRemoteServerUpdateDialogOpen)
-  const openSettingsTarget = useAppStore((state) => state.openSettingsTarget)
 
   useEffect(() => {
     void refresh()
@@ -101,7 +99,7 @@ export function GeneralRemoteServerUpdates(): React.JSX.Element | null {
           )}
         </p>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div>
         <Button
           type="button"
           variant={available > 0 ? 'default' : 'outline'}
@@ -109,7 +107,7 @@ export function GeneralRemoteServerUpdates(): React.JSX.Element | null {
           className="gap-2"
           onClick={() => setDialogOpen(true)}
         >
-          {running ? <Loader2 className="animate-spin" /> : <ServerCog />}
+          {running ? <Loader2 className="animate-spin" /> : <Download />}
           {running
             ? translate(
                 'auto.components.settings.GeneralRemoteServerUpdates.updating',
@@ -119,45 +117,17 @@ export function GeneralRemoteServerUpdates(): React.JSX.Element | null {
               ? available === 1
                 ? translate(
                     'auto.components.settings.GeneralRemoteServerUpdates.reviewUpdateOne',
-                    'Review update'
+                    '1 update available'
                   )
                 : translate(
                     'auto.components.settings.GeneralRemoteServerUpdates.reviewUpdates',
-                    'Review {{value0}} updates',
+                    '{{value0}} updates available',
                     { value0: available }
                   )
               : translate(
                   'auto.components.settings.GeneralRemoteServerUpdates.reviewServers',
-                  'Review servers'
+                  'Server updates'
                 )}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="gap-2"
-          onClick={() => void refresh()}
-          disabled={checking || running}
-        >
-          {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          {translate('auto.components.settings.GeneralRemoteServerUpdates.check', 'Check')}
-        </Button>
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          onClick={() =>
-            openSettingsTarget({
-              pane: 'servers',
-              repoId: null,
-              sectionId: 'remote-server-updates'
-            })
-          }
-        >
-          {translate(
-            'auto.components.settings.GeneralRemoteServerUpdates.manage',
-            'Manage Remote Orca Servers'
-          )}
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">{summary}</p>

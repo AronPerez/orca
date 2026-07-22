@@ -4,11 +4,11 @@
 import {
   AlertTriangle,
   ChevronDown,
+  Download,
   Loader2,
   Plus,
   RefreshCw,
   Server,
-  ServerCog,
   ServerOff,
   Share2,
   Trash2
@@ -784,16 +784,22 @@ export function RuntimeEnvironmentsPane({
                 {remoteServerUpdatesChecking || remoteServerUpdatesRunning ? (
                   <Loader2 className="animate-spin" />
                 ) : (
-                  <ServerCog />
+                  <Download />
                 )}
                 {remoteUpdateCount > 0
-                  ? translate(
-                      'auto.components.settings.RuntimeEnvironmentsPane.updateAllServers',
-                      'Update all…'
-                    )
+                  ? remoteUpdateCount === 1
+                    ? translate(
+                        'auto.components.settings.RuntimeEnvironmentsPane.updateAvailableOne',
+                        '1 update available'
+                      )
+                    : translate(
+                        'auto.components.settings.RuntimeEnvironmentsPane.updatesAvailable',
+                        '{{value0}} updates available',
+                        { value0: remoteUpdateCount }
+                      )
                   : translate(
                       'auto.components.settings.RuntimeEnvironmentsPane.reviewServerUpdates',
-                      'Review updates…'
+                      'Server updates'
                     )}
               </Button>
             ) : null}
@@ -1010,7 +1016,7 @@ export function RuntimeEnvironmentsPane({
                             >
                               {translate(
                                 'auto.components.settings.RuntimeEnvironmentsPane.updateServer',
-                                'Update…'
+                                'Update'
                               )}
                             </Button>
                           ) : null}

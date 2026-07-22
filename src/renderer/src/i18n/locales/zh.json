@@ -6404,10 +6404,11 @@
           "advertiseThisApp": "将此应用作为服务器公布",
           "advertiseThisAppHelp": "创建访问链接，让浏览器、移动客户端或另一个 Orca 客户端连接回这个正在运行的应用。",
           "runtimeReachable": "可连接到 {{value0}}。",
-          "updateAllServers": "Update all…",
+          "updateAvailableOne": "1 update available",
+          "updatesAvailable": "{{value0}} updates available",
           "versionUnavailable": "Orca version unavailable",
-          "updateServer": "Update…",
-          "reviewServerUpdates": "Review updates…",
+          "updateServer": "Update",
+          "reviewServerUpdates": "Server updates",
           "orcaVersion": "Orca v{{value0}}"
         },
         "RuntimePairingGeneratedUrlRows": {
@@ -9292,12 +9293,10 @@
           "title": "Remote Orca Servers",
           "description": "Check and update paired Orca servers from this client.",
           "updating": "Updating servers…",
-          "reviewUpdates": "Review {{value0}} updates",
-          "reviewServers": "Review servers",
-          "check": "Check",
-          "manage": "Manage Remote Orca Servers",
+          "reviewUpdates": "{{value0}} updates available",
+          "reviewServers": "Server updates",
           "serverCountOne": "1 paired server",
-          "reviewUpdateOne": "Review update"
+          "reviewUpdateOne": "1 update available"
         },
         "RemoteServerUpdateDialog": {
           "versionUnavailable": "Version unavailable",

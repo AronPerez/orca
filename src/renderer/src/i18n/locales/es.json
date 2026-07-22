@@ -6419,10 +6419,11 @@
           "advertiseThisApp": "Anunciar esta app como servidor",
           "advertiseThisAppHelp": "Crea enlaces de acceso para que navegadores, clientes móviles u otro cliente de Orca se conecten a esta app en ejecución.",
           "runtimeReachable": "{{value0}} está accesible.",
-          "updateAllServers": "Update all…",
+          "updateAvailableOne": "1 update available",
+          "updatesAvailable": "{{value0}} updates available",
           "versionUnavailable": "Orca version unavailable",
-          "updateServer": "Update…",
-          "reviewServerUpdates": "Review updates…",
+          "updateServer": "Update",
+          "reviewServerUpdates": "Server updates",
           "orcaVersion": "Orca v{{value0}}"
         },
         "RuntimePairingGeneratedUrlRows": {
@@ -9292,12 +9293,10 @@
           "title": "Remote Orca Servers",
           "description": "Check and update paired Orca servers from this client.",
           "updating": "Updating servers…",
-          "reviewUpdates": "Review {{value0}} updates",
-          "reviewServers": "Review servers",
-          "check": "Check",
-          "manage": "Manage Remote Orca Servers",
+          "reviewUpdates": "{{value0}} updates available",
+          "reviewServers": "Server updates",
           "serverCountOne": "1 paired server",
-          "reviewUpdateOne": "Review update"
+          "reviewUpdateOne": "1 update available"
         },
         "RemoteServerUpdateDialog": {
           "versionUnavailable": "Version unavailable",
