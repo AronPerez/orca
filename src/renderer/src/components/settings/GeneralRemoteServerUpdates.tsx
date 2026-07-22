@@ -1,0 +1,166 @@
+import type React from 'react'
+import { Loader2, RefreshCw, ServerCog } from 'lucide-react'
+import { useEffect } from 'react'
+import { Button } from '@/components/ui/button'
+import { useAppStore } from '@/store'
+import { translate } from '@/i18n/i18n'
+import { SearchableSetting } from './SearchableSetting'
+
+export function GeneralRemoteServerUpdates(): React.JSX.Element | null {
+  const entryMap = useAppStore((state) => state.remoteServerUpdates)
+  const entries = [...entryMap.values()]
+  const checking = useAppStore((state) => state.remoteServerUpdatesChecking)
+  const running = useAppStore((state) => state.remoteServerUpdatesRunning)
+  const refresh = useAppStore((state) => state.refreshRemoteServerUpdates)
+  const setDialogOpen = useAppStore((state) => state.setRemoteServerUpdateDialogOpen)
+  const openSettingsTarget = useAppStore((state) => state.openSettingsTarget)
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  if (entries.length === 0) {
+    return null
+  }
+
+  const available = entries.filter(
+    (entry) => entry.phase === 'available' || entry.phase === 'failed'
+  ).length
+  const manual = entries.filter((entry) => entry.phase === 'manual').length
+  const offline = entries.filter((entry) => entry.phase === 'offline').length
+  const current = entries.filter(
+    (entry) => entry.phase === 'current' || entry.phase === 'updated'
+  ).length
+  const summary = [
+    entries.length === 1
+      ? translate(
+          'auto.components.settings.GeneralRemoteServerUpdates.serverCountOne',
+          '1 paired server'
+        )
+      : translate(
+          'auto.components.settings.GeneralRemoteServerUpdates.serverCount',
+          '{{value0}} paired servers',
+          { value0: entries.length }
+        ),
+    available > 0
+      ? translate(
+          'auto.components.settings.GeneralRemoteServerUpdates.availableCount',
+          '{{value0}} ready to update',
+          { value0: available }
+        )
+      : null,
+    current > 0
+      ? translate(
+          'auto.components.settings.GeneralRemoteServerUpdates.currentCount',
+          '{{value0}} up to date',
+          { value0: current }
+        )
+      : null,
+    manual > 0
+      ? translate(
+          'auto.components.settings.GeneralRemoteServerUpdates.manualCount',
+          '{{value0}} manual',
+          { value0: manual }
+        )
+      : null,
+    offline > 0
+      ? translate(
+          'auto.components.settings.GeneralRemoteServerUpdates.offlineCount',
+          '{{value0}} offline',
+          { value0: offline }
+        )
+      : null
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <SearchableSetting
+      title={translate(
+        'auto.components.settings.GeneralRemoteServerUpdates.title',
+        'Remote Orca Servers'
+      )}
+      description={translate(
+        'auto.components.settings.GeneralRemoteServerUpdates.description',
+        'Check and update paired Orca servers from this client.'
+      )}
+      keywords={['remote server', 'update all', 'paired', 'version']}
+      className="space-y-3"
+    >
+      <div className="space-y-0.5">
+        <div className="text-sm font-medium">
+          {translate(
+            'auto.components.settings.GeneralRemoteServerUpdates.title',
+            'Remote Orca Servers'
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {translate(
+            'auto.components.settings.GeneralRemoteServerUpdates.description',
+            'Check and update paired Orca servers from this client.'
+          )}
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant={available > 0 ? 'default' : 'outline'}
+          size="sm"
+          className="gap-2"
+          onClick={() => setDialogOpen(true)}
+        >
+          {running ? <Loader2 className="animate-spin" /> : <ServerCog />}
+          {running
+            ? translate(
+                'auto.components.settings.GeneralRemoteServerUpdates.updating',
+                'Updating servers…'
+              )
+            : available > 0
+              ? available === 1
+                ? translate(
+                    'auto.components.settings.GeneralRemoteServerUpdates.reviewUpdateOne',
+                    'Review update'
+                  )
+                : translate(
+                    'auto.components.settings.GeneralRemoteServerUpdates.reviewUpdates',
+                    'Review {{value0}} updates',
+                    { value0: available }
+                  )
+              : translate(
+                  'auto.components.settings.GeneralRemoteServerUpdates.reviewServers',
+                  'Review servers'
+                )}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="gap-2"
+          onClick={() => void refresh()}
+          disabled={checking || running}
+        >
+          {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          {translate('auto.components.settings.GeneralRemoteServerUpdates.check', 'Check')}
+        </Button>
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          onClick={() =>
+            openSettingsTarget({
+              pane: 'servers',
+              repoId: null,
+              sectionId: 'remote-server-updates'
+            })
+          }
+        >
+          {translate(
+            'auto.components.settings.GeneralRemoteServerUpdates.manage',
+            'Manage Remote Orca Servers'
+          )}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">{summary}</p>
+    </SearchableSetting>
+  )
+}

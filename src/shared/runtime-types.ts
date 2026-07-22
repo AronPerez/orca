@@ -37,6 +37,7 @@ import type {
   SleepingAgentLaunchConfig
 } from './agent-session-resume'
 import type { StartupCommandDelivery } from './codex-startup-delivery'
+import type { RemoteServerUpdateSupport } from './remote-server-update'
 
 export type { RuntimeMarkdownReadTabResult, RuntimeMarkdownSaveTabResult }
 
@@ -74,6 +75,9 @@ export type RuntimeStatus = {
   runtimeProtocolVersion?: number
   minCompatibleRuntimeClientVersion?: number
   capabilities?: RuntimeCapability[]
+  // Why: optional fields let updated clients inventory both new and legacy paired servers.
+  appVersion?: string
+  remoteUpdateSupport?: RemoteServerUpdateSupport
   remoteControl?: RemoteRuntimeSharedConnectionDiagnostics | null
   hostPlatform?: NodeJS.Platform
   terminalWindowsShell?: string | null
@@ -106,6 +110,9 @@ export type CliStatusResult = {
     state: CliRuntimeState
     reachable: boolean
     runtimeId: string | null
+    appVersion?: string
+    remoteUpdateSupport?: RemoteServerUpdateSupport
+    capabilities?: RuntimeCapability[]
   }
   graph: {
     state: RuntimeGraphStatus | 'not_running' | 'starting'

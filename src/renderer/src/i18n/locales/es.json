@@ -3299,6 +3299,16 @@
             "footerDetailAria": "Usage footer detail",
             "detailedTooltip": "Uso completo con barras, etiquetas y porcentajes",
             "compactTooltip": "Uso condensado: sólo la ventana más estrecha"
+          },
+          "RemoteServerUpdateStatusSegment": {
+            "updating": "Updating {{value0}}/{{value1}}",
+            "updatingTooltip": "Remote Orca Server updates are in progress",
+            "failed": "{{value0}} server updates failed",
+            "failedTooltip": "Open Remote Orca Server updates to review and retry",
+            "updated": "{{value0}} servers updated",
+            "updatedTooltip": "Remote Orca Server updates completed",
+            "failedOne": "1 server update failed",
+            "updatedOne": "1 server updated"
           }
         }
       },
@@ -6408,7 +6418,12 @@
           "serverDetails": "Detalles del servidor",
           "advertiseThisApp": "Anunciar esta app como servidor",
           "advertiseThisAppHelp": "Crea enlaces de acceso para que navegadores, clientes móviles u otro cliente de Orca se conecten a esta app en ejecución.",
-          "runtimeReachable": "{{value0}} está accesible."
+          "runtimeReachable": "{{value0}} está accesible.",
+          "updateAllServers": "Update all…",
+          "versionUnavailable": "Orca version unavailable",
+          "updateServer": "Update…",
+          "reviewServerUpdates": "Review updates…",
+          "orcaVersion": "Orca v{{value0}}"
         },
         "RuntimePairingGeneratedUrlRows": {
           "0495f68959": "Copiar {{value0}}"
@@ -9267,6 +9282,59 @@
           "title": "Editor Font Family",
           "description": "Font used by file editors and diff views. Leave empty to follow the terminal font.",
           "placeholder": "Same as terminal font"
+        },
+        "GeneralRemoteServerUpdates": {
+          "serverCount": "{{value0}} paired servers",
+          "availableCount": "{{value0}} ready to update",
+          "currentCount": "{{value0}} up to date",
+          "manualCount": "{{value0}} manual",
+          "offlineCount": "{{value0}} offline",
+          "title": "Remote Orca Servers",
+          "description": "Check and update paired Orca servers from this client.",
+          "updating": "Updating servers…",
+          "reviewUpdates": "Review {{value0}} updates",
+          "reviewServers": "Review servers",
+          "check": "Check",
+          "manage": "Manage Remote Orca Servers",
+          "serverCountOne": "1 paired server",
+          "reviewUpdateOne": "Review update"
+        },
+        "RemoteServerUpdateDialog": {
+          "versionUnavailable": "Version unavailable",
+          "restartingHelp": "Waiting for the replacement server to reconnect on the new version.",
+          "retry": "Retry",
+          "update": "Update",
+          "title": "Update Remote Orca Servers",
+          "description": "Review paired servers and update supported installs from this Orca client.",
+          "restartWarning": "Updating restarts these servers. {{value0}} live tabs and {{value1}} terminal panes may briefly disconnect.",
+          "checking": "Checking paired servers…",
+          "empty": "No paired Remote Orca Servers.",
+          "checkAgain": "Check again",
+          "updating": "Updating servers…",
+          "updateAll": "Update {{value0}} servers",
+          "noUpdates": "No updates available",
+          "updateOne": "Update server",
+          "downloadProgress": "{{value0}} download progress",
+          "liveTabOne": "1 live tab",
+          "liveTabs": "{{value0}} live tabs",
+          "livePaneOne": "1 live pane",
+          "livePanes": "{{value0}} live panes"
+        },
+        "RemoteServerUpdateStatus": {
+          "checking": "Checking…",
+          "available": "Update available",
+          "current": "Up to date",
+          "manual": "Manual update",
+          "offline": "Offline",
+          "queued": "Queued",
+          "checkingUpdate": "Checking update…",
+          "downloading": "Downloading…",
+          "restarting": "Restarting…",
+          "updated": "Updated",
+          "failed": "Update failed",
+          "serviceManagerHelp": "Update Orca through the service manager that starts this server.",
+          "unpackedHelp": "Development builds must be updated from their source checkout.",
+          "legacyHelp": "Update this server manually once to enable remote updates."
         }
       },
       "right": {
@@ -13446,6 +13514,19 @@
           "a2c6d9e0f7": "Solicitud de fusión",
           "91b5c8d7e6": "GitLab"
         }
+      }
+    },
+    "runtime": {
+      "remoteServerUpdateErrors": {
+        "manualRequired": "This server must be updated manually through its service manager.",
+        "notAvailable": "The server no longer reports an available update. Check again.",
+        "notDownloaded": "The server update has not finished downloading.",
+        "legacyServer": "Update this server manually once to enable remote updates.",
+        "updaterTimeout": "Timed out waiting for the server updater.",
+        "requestedVersionUnavailable": "The server updater did not offer the requested Orca version.",
+        "updateUnavailable": "The server did not report an available update.",
+        "downloadIncomplete": "The server update did not finish downloading.",
+        "reconnectTimeout": "The server did not reconnect on the updated version."
       }
     }
   },

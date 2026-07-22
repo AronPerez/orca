@@ -55,7 +55,16 @@ import {
   registerAppMenu,
   rebuildAppMenu
 } from './menu/register-app-menu'
-import { checkForUpdatesFromMenu, isQuittingForUpdate, resolveUpdateInstallMode } from './updater'
+import {
+  checkForRemoteServerUpdate,
+  checkForUpdatesFromMenu,
+  downloadRemoteServerUpdate,
+  getRemoteServerUpdaterSnapshot,
+  installRemoteServerUpdate,
+  isQuittingForUpdate,
+  resolveUpdateInstallMode
+} from './updater'
+import { configureRemoteServerUpdater } from './runtime/remote-server-updater'
 import type { TuiAgent, UpdateCheckOptions } from '../shared/types'
 import { recordUpdaterLifecycle } from './updater-lifecycle-diagnostics'
 import {
@@ -452,6 +461,12 @@ const devAgentHookEndpointNamespace = devInstanceIdentity.isDev
 installUncaughtPipeErrorGuard()
 // Why: expose the app version via process.env so main and the forked daemon can set TERM_PROGRAM_VERSION without importing electron.
 process.env.ORCA_APP_VERSION = app.getVersion()
+configureRemoteServerUpdater({
+  getSnapshot: getRemoteServerUpdaterSnapshot,
+  check: checkForRemoteServerUpdate,
+  download: downloadRemoteServerUpdate,
+  install: installRemoteServerUpdate
+})
 patchPackagedProcessPath()
 // Why: the sync seed above covers early IPC (homebrew/nix); the async login-shell probe below (packaged only) then adds the user's rc PATH.
 if (app.isPackaged && process.platform !== 'win32') {
